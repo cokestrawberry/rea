@@ -245,9 +245,10 @@ Terminal frame `data` is the comparison text after the selected normalization.
 New captures also preserve `raw_data` when normalization changes a PTY chunk;
 otherwise `data` is already the original text. Older captures may lack the
 original text for changed chunks. Both values participate in Evidence identity,
-while comparisons and trace assertions use the normalized text. Retaining the
-original adds at most `limits.output_bytes` of text, because it comes from the
-same admitted PTY chunks rather than a second unbounded stream.
+while comparisons and trace assertions use the normalized text. A chunk counts
+against `limits.output_bytes` by the bytes it retains: its normalized text plus,
+when normalization changed it, the original text. A replacement that expands a
+chunk therefore cannot grow retained terminal text beyond that limit.
 
 Rendered frame `lines` hold the visible rows after normalization, with trailing
 U+0020 spaces removed. Blank rows and internal spaces remain. `columns` records
@@ -383,8 +384,8 @@ exit comparison like `settlement.elapsed_ms`.
 Every capture requires `truncation_details`, with separate accounting for:
 
 - `raw_terminal`: original UTF-8 PTY chunk bytes and observed/retained chunk
-  counts. A chunk that does not fit `limits.output_bytes` is omitted whole;
-  a later smaller chunk can still fit.
+  counts. A chunk whose retained text, as described above, does not fit
+  `limits.output_bytes` is omitted whole; a later smaller chunk can still fit.
 - `rendered_terminal`: cumulative UTF-8 serialized-state and visible-line
   bytes, plus observed/retained frame counts. This is independent of the raw
   chunk budget and does not count JSON encoding. Repeated screen snapshots can

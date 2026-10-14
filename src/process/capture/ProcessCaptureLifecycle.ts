@@ -1307,6 +1307,7 @@ export const captureTerminalFrames = (options: {
   readonly recordEvent: RecordProcessCaptureEvent;
 }): (() => TerminalRetention) => {
   let outputBytes = 0;
+  let retainedTextBytes = 0;
   let observedBytes = 0;
   let observedFrames = 0;
   options.terminal.onData((data) => {
@@ -1314,15 +1315,26 @@ export const captureTerminalFrames = (options: {
     const bytes = Buffer.byteLength(data);
     observedBytes += bytes;
     observedFrames += 1;
-    if (outputBytes + bytes > options.scenario.limits.output_bytes) {
+    // Retained text is never smaller than the chunk, so a chunk that cannot
+    // fit is omitted before normalization can expand it.
+    if (retainedTextBytes + bytes > options.scenario.limits.output_bytes) {
       return;
     }
+    const normalized = options.normalizeText(data);
+    const retainedBytes =
+      Buffer.byteLength(normalized) + (normalized === data ? 0 : bytes);
+    if (
+      retainedTextBytes + retainedBytes >
+      options.scenario.limits.output_bytes
+    ) {
+      return;
+    }
+    retainedTextBytes += retainedBytes;
     outputBytes += bytes;
     const atMs = normalizeProcessElapsedTime(
       monotonicProcessCaptureClock() - options.started,
       options.scenario.normalization.time_bucket_ms,
     );
-    const normalized = options.normalizeText(data);
     const sequence = options.frames.length;
     options.frames.push({
       sequence,
