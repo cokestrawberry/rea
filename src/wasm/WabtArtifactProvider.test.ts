@@ -8,6 +8,7 @@ import { wasmArtifactSchema } from "../domain/wasm/wasmArtifact.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import { PrivateRuntimeRootUnavailableError } from "../process/PrivateRuntimeRootUnavailableError.js";
 import { spawnOwnedProviderProcess } from "../process/ProviderProcess.js";
+import { cleanupOwnedProcessGroup } from "../process/ProcessOwnership.js";
 import { OwnedCommandFailure } from "../process/OwnedCommand.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { WABT_LIMITS } from "./WabtRelease.js";
@@ -225,6 +226,80 @@ it("retries a retained input descriptor before admitting the next WABT operation
     fileCloseFailure.selectedPath = "";
     fileCloseFailure.failFirst = false;
     await provider.close();
+  }
+});
+
+it("keeps the private runtime root until a WABT process that failed to stop is stopped", async () => {
+  const selectedRoot = await createTestTempDirectory("rea-wabt-stop-");
+  const path = join(selectedRoot, "selected.wasm");
+  await writeFile(path, Buffer.alloc(76, 1));
+  for (const tool of ["wasm-validate", "wasm-objdump", "wasm2wat"])
+    await writeFile(
+      join(selectedRoot, tool + (process.platform === "win32" ? ".exe" : "")),
+      "source-owned executable seam",
+      { mode: 0o700 },
+    );
+  let runtimePath = "";
+  let launches = 0;
+  let mayStop = false;
+  const provider = new WabtArtifactProvider(
+    { REA_WABT_BIN_DIRECTORY: selectedRoot },
+    async (input) => {
+      launches += 1;
+      const launched = await spawnOwnedProviderProcess({
+        ...input,
+        command: process.execPath,
+        arguments: ["-e", 'process.stdout.write("1.0.42\\n")'],
+        expectedCommand: null,
+      });
+      const cleanup =
+        launched.cleanup ??
+        (() => cleanupOwnedProcessGroup(launched.ownership));
+      return {
+        ...launched,
+        cleanup: async () => {
+          const cleaned = await cleanup();
+          if (!mayStop) throw new Error("injected WABT process stop failure");
+          return cleaned;
+        },
+      };
+    },
+    async () => {
+      const root = await PrivateRuntimeRoot.create({
+        prefix: "rea-wabt-stop-test-",
+      });
+      runtimePath = root.path;
+      return root;
+    },
+  );
+  const input = { path, glue_paths: [], candidate_paths: [] };
+  try {
+    const first = await provider.inspect(input);
+    if (first.ok)
+      throw new Error("A process that failed to stop must fail inspection");
+    expect(first.error).toMatchObject({
+      cleanupIncomplete: true,
+      cleanupResources: expect.arrayContaining([runtimePath]),
+    });
+    await expect(access(runtimePath)).resolves.toBeUndefined();
+
+    const blocked = await provider.inspect(input);
+    expect(blocked).toMatchObject({
+      ok: false,
+      error: {
+        cleanupIncomplete: true,
+        cleanupResources: expect.arrayContaining([runtimePath]),
+      },
+    });
+    expect(launches).toBe(1);
+    await expect(access(runtimePath)).resolves.toBeUndefined();
+
+    mayStop = true;
+    await provider.close();
+    await expect(access(runtimePath)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    mayStop = true;
+    await provider.close().catch(() => undefined);
   }
 });
 

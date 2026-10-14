@@ -9,7 +9,10 @@ import type {
   WasmArtifactPort,
 } from "../application/wasm/WasmArtifactPort.js";
 import { readStableArtifact } from "../artifacts/readStableArtifact.js";
-import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+import {
+  ArtifactResourceScope,
+  type ArtifactResourceOwner,
+} from "../artifacts/ArtifactResourceScope.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import type {
   AnalysisError,
@@ -30,7 +33,10 @@ import {
   type InspectWasmArtifactInput,
 } from "../domain/wasm/wasmArtifact.js";
 import { err, ok, type Result } from "../domain/result.js";
-import { runOwnedCommand } from "../process/OwnedCommand.js";
+import {
+  OwnedCommandFailure,
+  runOwnedCommand,
+} from "../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import { WABT_PROVIDER_IDENTITY, WABT_LIMITS } from "./WabtRelease.js";
 import { wabtFailure } from "./WabtFailures.js";
@@ -101,6 +107,9 @@ export class WabtArtifactProvider implements WasmArtifactPort {
     options?: ExecutionOptions,
   ): Promise<Result<WasmArtifactExecution, AnalysisError>> {
     let root: Pick<PrivateRuntimeRoot, "path" | "close"> | undefined;
+    let unstoppedRoot:
+      | Extract<ArtifactResourceOwner, { kind: "owned-process-root" }>
+      | undefined;
     let phase: "configuration" | "artifact" | "producer" = "configuration";
     let result: Result<WasmArtifactExecution, AnalysisError>;
     let capturedOutput: AnalysisCapturedOutput | undefined;
@@ -430,6 +439,18 @@ export class WabtArtifactProvider implements WasmArtifactPort {
         }),
       );
     } catch (cause: unknown) {
+      if (
+        cause instanceof OwnedCommandFailure &&
+        cause.cleanupOwner !== undefined &&
+        root !== undefined
+      )
+        unstoppedRoot = {
+          kind: "owned-process-root",
+          resource: root.path,
+          process: cause.cleanupOwner,
+          root,
+          resources: cause.resources,
+        };
       const failure = wabtFailure(cause, phase, input.path);
       result = err(
         failure instanceof AnalysisOutputError &&
@@ -442,7 +463,8 @@ export class WabtArtifactProvider implements WasmArtifactPort {
           : failure,
       );
     }
-    if (root !== undefined) {
+    if (unstoppedRoot !== undefined) this.#resources.retain(unstoppedRoot);
+    else if (root !== undefined) {
       const cleanup = await this.#resources.release({
         kind: "private-runtime-root",
         resource: root.path,

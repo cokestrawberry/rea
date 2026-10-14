@@ -7,6 +7,7 @@ import type { ArtifactReader } from "./ArtifactReader.js";
 import { ArtifactReaderFailure } from "./ArtifactReader.js";
 import type { SafeOutputTree } from "./SafeOutputTree.js";
 import type { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
+import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
 
 /** One artifact resource and its format-specific cleanup owner. */
 export type ArtifactResourceOwner =
@@ -44,6 +45,14 @@ export type ArtifactResourceOwner =
       readonly kind: "private-runtime-root";
       readonly resource: string;
       readonly root: Pick<PrivateRuntimeRoot, "path" | "close">;
+    }
+  | {
+      kind: "owned-process-root";
+      readonly resource: string;
+      readonly process: Pick<ProviderProcessSupervisor, "stop">;
+      readonly root: Pick<PrivateRuntimeRoot, "path" | "close">;
+      /** Process and root labels reported while the process remains unstopped. */
+      readonly resources: readonly string[];
     };
 
 export type ArtifactCleanupAttempt =
@@ -99,6 +108,11 @@ export class ArtifactResourceScope {
       this.#pending.add(owner);
       return { kind: "failed", cause };
     }
+  }
+
+  /** Keep an owner whose cleanup already failed; retries and close() attempt it again. */
+  retain(owner: ArtifactResourceOwner): void {
+    this.#pending.add(owner);
   }
 
   /** Retry retained owners without closing resource admission. */
@@ -172,6 +186,16 @@ const cleanup = async (owner: ArtifactResourceOwner): Promise<void> => {
     case "staged-output":
       await owner.output.close();
       return;
+    case "owned-process-root": {
+      // A running process may still write under the root, so remove it only after the stop.
+      const stopped = await owner.process.stop();
+      if (stopped.status === "incomplete")
+        throw new ArtifactReaderFailure("unavailable", stopped.reason, {
+          cleanup: { reason: stopped.reason, resources: owner.resources },
+        });
+      await owner.root.close();
+      return;
+    }
     case "private-runtime-root":
       await owner.root.close();
   }

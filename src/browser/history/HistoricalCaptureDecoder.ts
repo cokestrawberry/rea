@@ -17,7 +17,10 @@ import { z } from "zod";
 import type { ExecutionOptions } from "../../application/AnalysisProvider.js";
 import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
-import { ArtifactResourceScope } from "../../artifacts/ArtifactResourceScope.js";
+import {
+  ArtifactResourceScope,
+  type ArtifactResourceOwner,
+} from "../../artifacts/ArtifactResourceScope.js";
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import {
   AnalysisCapabilityUnavailableError,
@@ -35,7 +38,10 @@ import {
   type InspectWebNetworkCaptureInput,
   type WebNetworkCapture,
 } from "../../domain/webNetworkCapture.js";
-import { runOwnedCommand } from "../../process/OwnedCommand.js";
+import {
+  OwnedCommandFailure,
+  runOwnedCommand,
+} from "../../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../../process/PrivateRuntimeRoot.js";
 import { redactExplicitFailure } from "../../domain/explicitSensitiveFailure.js";
 
@@ -111,6 +117,9 @@ export class HistoricalCaptureDecoder {
     options?: ExecutionOptions,
   ): Promise<Result<WebNetworkCapture, AnalysisError>> {
     let runtime: Pick<PrivateRuntimeRoot, "path" | "close"> | undefined;
+    let unstoppedRoot:
+      | Extract<ArtifactResourceOwner, { kind: "owned-process-root" }>
+      | undefined;
     let result: Result<WebNetworkCapture, AnalysisError>;
     let phase: "capture-read" | "decoder" = "capture-read";
     try {
@@ -288,6 +297,18 @@ export class HistoricalCaptureDecoder {
         result = ok({ ...reply.value, ...common, format: input.format });
       }
     } catch (cause: unknown) {
+      if (
+        cause instanceof OwnedCommandFailure &&
+        cause.cleanupOwner !== undefined &&
+        runtime !== undefined
+      )
+        unstoppedRoot = {
+          kind: "owned-process-root",
+          resource: runtime.path,
+          process: cause.cleanupOwner,
+          root: runtime,
+          resources: cause.resources,
+        };
       const error = historicalCaptureFailure(input, cause, phase, options);
       result = err(
         redactExplicitFailure(
@@ -296,7 +317,8 @@ export class HistoricalCaptureDecoder {
         ),
       );
     }
-    if (runtime !== undefined) {
+    if (unstoppedRoot !== undefined) this.#resources.retain(unstoppedRoot);
+    else if (runtime !== undefined) {
       const cleanup = await this.#resources.release({
         kind: "private-runtime-root",
         resource: runtime.path,
