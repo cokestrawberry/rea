@@ -255,7 +255,10 @@ export const importReferenceSource = async (
     compareUnicodeCodePoints(left.path, right.path),
   );
   const sortedExclusions = sortExclusions(exclusions);
-  const sortedLimitations = [...limitations].sort(compareUnicodeCodePoints);
+  const sortedLimitations = [
+    ...prepared.value.limitations,
+    ...limitations,
+  ].sort(compareUnicodeCodePoints);
 
   const input: HistoricalSourceGraphInput = {
     schema: "HistoricalSourceGraph",
