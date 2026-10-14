@@ -66,7 +66,7 @@ if (args.includes("--version")) {
     const child =
       mode === "reserved-name"
         ? join(output, "$input")
-        : join(output, "rootfs", "config");
+        : join(output, "rootfs", mode === "nfd-name" ? "cafe\u0301" : "config");
     await mkdir(join(output, "rootfs"));
     const content = Buffer.from("firmware=true\n");
     if (

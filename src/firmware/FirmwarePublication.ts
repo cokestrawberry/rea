@@ -134,7 +134,7 @@ export const publishFirmwareExtraction = async (context: {
           "extract_firmware",
           `Extracted bytes disagree with provider report: ${entry.relativePath}`,
         );
-      await tree.write(
+      const written = await tree.write(
         entry.relativePath,
         createReadStream(entry.path),
         { sha256, bytes: entry.size },
@@ -142,7 +142,7 @@ export const publishFirmwareExtraction = async (context: {
       );
       files.push({
         relative_path: entry.relativePath,
-        path: join(tree.outputRoot, entry.relativePath),
+        path: join(tree.outputRoot, written.relativePath),
         size: entry.size,
         sha256,
         reported_sha256: reported?.sha256 ?? null,

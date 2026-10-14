@@ -1,5 +1,6 @@
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/server";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { expect, it as test, vi } from "vitest";
 import {
   firmwareFixture,
@@ -164,6 +165,23 @@ it("extracts a selected interval with verified file identity and parent-byte lin
     expect.arrayContaining(["--process-num", "1", "--randomness-depth", "0"]),
   );
   expect(fixture.launches[1]?.args).not.toContain("--no-sandbox");
+  await assertFirmwareCleanup(fixture.launches);
+});
+
+it("reports the NFC path that the output tree wrote for an NFD producer name", async () => {
+  const fixture = await firmwareFixture("nfd-name");
+  const result = await fixture.service.execute("extract_firmware", {
+    path: fixture.path,
+    output_directory: fixture.output,
+    range: { offset: 2, length: 4 },
+  });
+  if (!result.ok) throw result.error;
+  const normalized = firmwareResultSchemas.extract_firmware.parse(
+    result.value.normalized_result,
+  );
+  const written = join(fixture.output, "rootfs", "caf\u00e9");
+  expect(normalized.files[0]?.path).toBe(written);
+  expect(await readFile(written, "utf8")).toBe("firmware=true\n");
   await assertFirmwareCleanup(fixture.launches);
 });
 
