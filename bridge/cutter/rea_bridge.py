@@ -624,7 +624,8 @@ class _BridgeServer(threading.Thread):
         data = bytearray()
         deadline = time.monotonic() + AUTH_FRAME_TIMEOUT_SECONDS
         while b"\n" not in data:
-            if len(data) >= MAX_FRAME_BYTES:
+            # A frame of exactly MAX_FRAME_BYTES is valid; its newline is the next byte.
+            if len(data) > MAX_FRAME_BYTES:
                 raise ValueError("frame-limit-exceeded")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
