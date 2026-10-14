@@ -313,6 +313,25 @@ it("does not project cancellation cleanup as incomplete after a successful retry
   });
 });
 
+it("keeps the completed Evidence when cleanup fails after a successful command", async () => {
+  const service = {
+    inspectWithObjdump: vi.fn(async () => ok(observation("complete"))),
+    close: vi.fn(async () => {
+      throw new Error("raw close failure");
+    }),
+  };
+
+  const result = await runObjdump(service);
+
+  expect(result).toMatchObject({
+    details: {
+      partial_observation: {
+        normalized_result: { completion_status: "complete" },
+      },
+    },
+  });
+});
+
 it("parses the Rizin inferior TTY as an option and passes it to the manager", async () => {
   const commands = new Map<
     string,

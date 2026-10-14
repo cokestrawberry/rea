@@ -37,7 +37,8 @@ const executeWithCleanup = async (
   try {
     await service.close();
   } catch (cause) {
-    if (result.ok) return err(asCleanupError(cause));
+    if (result.ok)
+      return err(asCleanupError(cause).retainPartialObservation(result.value));
     const cleanup = cause instanceof AnalysisError ? cause.cleanup : undefined;
     const error = new AnalysisOutputError(
       "reverse_engineering_cleanup",
