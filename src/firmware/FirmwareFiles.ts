@@ -17,6 +17,10 @@ import {
   AnalysisOutputError,
 } from "../domain/analysisErrorCore.js";
 import type { FirmwareRequest } from "../domain/firmware/firmwareAnalysis.js";
+import {
+  NonRegularFileReadError,
+  openRegularFile,
+} from "../filesystem/RegularFile.js";
 import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
 import { FIRMWARE_LIMITS } from "./FirmwareRelease.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
@@ -65,17 +69,21 @@ export const snapshotFirmware = async (
 ) => {
   const sourcePath = resolve(request.input.path);
   const source = await realpath(sourcePath);
-  const handle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await openRegularFile(source, {
+    symlinks: "reject",
+    signal,
+  }).catch((cause: unknown) => {
+    if (!(cause instanceof NonRegularFileReadError)) throw cause;
+    throw new AnalysisInputError(request.operation, { cause }, [
+      { path: ["path"], reason: "invalid_value", message: cause.message },
+    ]);
+  });
   const fullPath = join(root, "firmware.bin");
   const hash = createHash("sha256");
   let size = 0;
   try {
     const stat = await handle.stat();
-    if (
-      !stat.isFile() ||
-      stat.size === 0 ||
-      stat.size > FIRMWARE_LIMITS.inputBytes
-    )
+    if (stat.size === 0 || stat.size > FIRMWARE_LIMITS.inputBytes)
       throw new AnalysisInputError(request.operation, undefined, [
         {
           path: ["path"],
