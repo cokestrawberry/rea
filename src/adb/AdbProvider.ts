@@ -131,6 +131,13 @@ const hashAdbFile = async (
   }
 };
 
+/**
+ * Classifies a push destination the way `adb push` treats it: a directory
+ * receives the file under its basename, and a dangling symlink is replaced.
+ */
+const DEVICE_PUSH_TARGET_PROBE =
+  'if [ -d "$1" ]; then echo directory; elif [ -e "$1" ] || [ -L "$1" ]; then echo exists; else echo absent; fi';
+
 /** adb joins shell operands into a remote POSIX command; quote at that boundary. */
 const quoteShellOperand = (value: string): string =>
   /^[A-Za-z0-9_./:=@+,-]+$/u.test(value)
@@ -1724,23 +1731,43 @@ export class AdbProvider {
       if (cause instanceof AnalysisCancelledError) return err(cause);
       throw cause;
     }
-    const existsProbe = await runAdb(
+    const targetProbe = await runAdb(
       operation,
       input.device_path,
       selection.binary,
-      adbArguments(input.serial, ["shell", "test", "-e", input.device_path]),
+      adbArguments(input.serial, [
+        "shell",
+        "sh",
+        "-c",
+        DEVICE_PUSH_TARGET_PROBE,
+        "sh",
+        input.device_path,
+      ]),
       { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
       signal,
     );
-    // `test -e` exits nonzero with no adb diagnosis when the path is absent.
-    // Any other probe failure leaves existence unknown, so it is reported as
-    // is rather than read as an existing path or followed by a push.
-    if (
-      !existsProbe.ok &&
-      !(existsProbe.error instanceof AnalysisProtocolError)
-    )
-      return existsProbe;
-    const deviceExists = existsProbe.ok;
+    // The probe reports absence on stdout, so any failure or unrecognized
+    // answer leaves the target unknown and no push follows.
+    if (!targetProbe.ok) return targetProbe;
+    const target = targetProbe.value.stdout.trim();
+    if (target === "directory")
+      return err(
+        new AnalysisInputError(operation, undefined, [
+          {
+            path: ["device_path"],
+            reason: "invalid_value",
+            message: `The device path ${JSON.stringify(input.device_path)} is a directory, so adb push would write the file inside it under the local file name; pass the full destination file path.`,
+          },
+        ]),
+      );
+    if (target !== "exists" && target !== "absent")
+      return err(
+        new AnalysisOutputError(
+          operation,
+          `The device path probe returned an unrecognized answer: ${JSON.stringify(target)}`,
+        ),
+      );
+    const deviceExists = target === "exists";
     if (deviceExists && !input.overwrite)
       return err(
         new AnalysisOutputError(
