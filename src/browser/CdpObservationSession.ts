@@ -350,6 +350,8 @@ class TimelineCapture {
   }
 }
 
+const maximumTimerDelayMs = 2_147_483_647;
+
 const waitForWindow = async (
   durationMs: number,
   capture: TimelineCapture,
@@ -357,6 +359,8 @@ const waitForWindow = async (
 ): Promise<EndReason> =>
   await new Promise<EndReason>((resolve, reject) => {
     let settled = false;
+    let remainingMs = durationMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let removeEnd = (): void => {};
     const finish = (reason: EndReason): void => {
       if (settled) return;
@@ -373,7 +377,17 @@ const waitForWindow = async (
       removeEnd();
       reject(new AnalysisCancelledError("observe_web_session"));
     };
-    const timer = setTimeout(() => finish("window_elapsed"), durationMs);
+    // Node shortens timer delays above 2^31-1 ms to 1 ms, so long windows
+    // run as consecutive timers.
+    const waitNextChunk = (): void => {
+      const delayMs = Math.min(remainingMs, maximumTimerDelayMs);
+      remainingMs -= delayMs;
+      timer = setTimeout(() => {
+        if (remainingMs > 0) waitNextChunk();
+        else finish("window_elapsed");
+      }, delayMs);
+    };
+    waitNextChunk();
     removeEnd = capture.onEnd(finish);
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted === true) onAbort();
