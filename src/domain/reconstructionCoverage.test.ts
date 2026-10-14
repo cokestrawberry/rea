@@ -158,6 +158,64 @@ describe("reconstruction coverage closure", () => {
       reasons: [expect.objectContaining({ code: "verifier-result-stale" })],
     });
   });
+
+  it("fails closed when a failed package proof covers the same artifact as a passing one", () => {
+    const workspace = completeReconstructionCoverageData();
+    const contradicted = createReconstructionCoverageData({
+      ...workspace,
+      package_proofs: [
+        ...workspace.package_proofs,
+        {
+          proof_id: "proof.clean-install.failed",
+          kind: "clean-install",
+          status: "fail",
+          artifact_sha256s: [digest("1")],
+          evidence_ids: [reconstructionCoverageEvidenceId("4")],
+        },
+      ],
+    });
+
+    expect(
+      evaluateReconstructionClosure(
+        contradicted,
+        "replacement.cli",
+        RECONSTRUCTION_COVERAGE_NOW,
+      ),
+    ).toMatchObject({
+      status: "failed",
+      reasons: [
+        expect.objectContaining({
+          code: "package-proof-failed",
+          subject_id: "clean-install",
+        }),
+      ],
+    });
+  });
+
+  it("keeps a failed package proof for an unrelated artifact from vetoing a passing one", () => {
+    const workspace = completeReconstructionCoverageData();
+    const unrelated = createReconstructionCoverageData({
+      ...workspace,
+      package_proofs: [
+        ...workspace.package_proofs,
+        {
+          proof_id: "proof.clean-install.other-artifact",
+          kind: "clean-install",
+          status: "fail",
+          artifact_sha256s: [digest("8")],
+          evidence_ids: [reconstructionCoverageEvidenceId("4")],
+        },
+      ],
+    });
+
+    expect(
+      evaluateReconstructionClosure(
+        unrelated,
+        "replacement.cli",
+        RECONSTRUCTION_COVERAGE_NOW,
+      ),
+    ).toMatchObject({ status: "ready" });
+  });
 });
 
 describe("reconstruction coverage verifier observations", () => {

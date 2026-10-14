@@ -436,11 +436,20 @@ export const evaluateReconstructionPackageProofs = (
     const proofs = context.coverage.package_proofs.filter(
       (proof) => proof.kind === kind,
     );
-    const passing = proofs.find(
+    // Proofs carry no timestamp, so a pass and a fail over the same
+    // artifact cannot be ordered and the fail must win.
+    const contradicted = proofs.some(
       ({ artifact_sha256s: digests, status }) =>
-        status === "pass" &&
-        requiredArtifactDigests.every((digest) => digests.includes(digest)),
+        status === "fail" &&
+        requiredArtifactDigests.some((digest) => digests.includes(digest)),
     );
+    const passing = contradicted
+      ? undefined
+      : proofs.find(
+          ({ artifact_sha256s: digests, status }) =>
+            status === "pass" &&
+            requiredArtifactDigests.every((digest) => digests.includes(digest)),
+        );
     if (passing !== undefined) {
       addEvidence(context, passing.evidence_ids);
       continue;
