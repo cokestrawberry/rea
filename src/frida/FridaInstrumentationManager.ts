@@ -1168,7 +1168,11 @@ const boundedRedactedString = (
   input: string,
   maximumBytes: number,
   secrets: readonly string[],
-): { readonly value: string; readonly truncated: boolean } => {
+): {
+  readonly value: string;
+  readonly truncated: boolean;
+  readonly bytes: number;
+} => {
   const chunks: string[] = [];
   let outputBytes = 0;
   let cursor = 0;
@@ -1197,6 +1201,13 @@ const boundedRedactedString = (
       segmentStart = cursor;
       continue;
     }
+    const segmentBytes =
+      jsonStringBytes(input.slice(cursor, nextSecretStart)) - 2;
+    if (outputBytes + segmentBytes <= maximumBytes) {
+      outputBytes += segmentBytes;
+      cursor = nextSecretStart;
+      continue;
+    }
     while (cursor < nextSecretStart) {
       const codePoint = input.codePointAt(cursor);
       if (codePoint === undefined) break;
@@ -1216,45 +1227,46 @@ const boundedRedactedString = (
   }
   chunks.push(input.slice(segmentStart, cursor));
   if (cursor < input.length) truncated = true;
-  return { value: chunks.join(""), truncated };
+  return { value: chunks.join(""), truncated, bytes: outputBytes + 2 };
+};
+
+interface BoundedJsonValue {
+  readonly value: JsonValue;
+  readonly truncated: boolean;
+  readonly bytes: number;
+}
+
+const TRUNCATED_NULL: BoundedJsonValue = {
+  value: null,
+  truncated: true,
+  bytes: Buffer.byteLength("null"),
 };
 
 const boundedJsonValue = (
   input: unknown,
   maximumBytes: number,
   secrets: readonly string[],
-): {
-  readonly value: JsonValue;
-  readonly truncated: boolean;
-  readonly bytes: number;
-} => {
+): BoundedJsonValue => {
   const seen = new WeakSet<object>();
   let remainingNodes = MAX_CAPTURE_JSON_NODES;
   const visit = (
     value: unknown,
     budget: number,
     depth: number,
-  ): { readonly value: JsonValue; readonly truncated: boolean } => {
+  ): BoundedJsonValue => {
     remainingNodes -= 1;
-    if (remainingNodes < 0) return { value: null, truncated: true };
-    if (depth > 64 || budget < 8) return { value: null, truncated: true };
-    if (value === null) return { value: null, truncated: false };
-    if (typeof value === "boolean" || typeof value === "number")
-      return {
-        value:
-          typeof value === "number" && !Number.isFinite(value) ? null : value,
-        truncated: typeof value === "number" && !Number.isFinite(value),
-      };
-    if (typeof value === "string") {
-      const bounded = boundedRedactedString(
-        value,
-        Math.max(0, budget - 2),
-        secrets,
-      );
-      return { value: bounded.value, truncated: bounded.truncated };
+    if (remainingNodes < 0) return TRUNCATED_NULL;
+    if (depth > 64 || budget < 8) return TRUNCATED_NULL;
+    if (value === null) return { ...TRUNCATED_NULL, truncated: false };
+    if (typeof value === "boolean" || typeof value === "number") {
+      if (typeof value === "number" && !Number.isFinite(value))
+        return TRUNCATED_NULL;
+      return { value, truncated: false, bytes: String(value).length };
     }
-    if (typeof value !== "object") return { value: null, truncated: true };
-    if (seen.has(value)) return { value: null, truncated: true };
+    if (typeof value === "string")
+      return boundedRedactedString(value, Math.max(0, budget - 2), secrets);
+    if (typeof value !== "object") return TRUNCATED_NULL;
+    if (seen.has(value)) return TRUNCATED_NULL;
     seen.add(value);
     try {
       if (Array.isArray(value)) {
@@ -1269,18 +1281,17 @@ const boundedJsonValue = (
             break;
           }
           const item = visit(value[index] ?? null, remaining, depth + 1);
-          const itemBytes = Buffer.byteLength(JSON.stringify(item.value));
-          if (itemBytes > remaining) {
+          if (item.bytes > remaining) {
             truncated = true;
             break;
           }
           output.push(item.value);
-          usedBytes += separatorBytes + itemBytes;
+          usedBytes += separatorBytes + item.bytes;
           truncated ||= item.truncated;
           if (item.truncated) break;
         }
         if (output.length < value.length) truncated = true;
-        return { value: output, truncated };
+        return { value: output, truncated, bytes: usedBytes };
       }
       const output: Record<string, JsonValue> = {};
       let usedBytes = 2;
@@ -1303,8 +1314,7 @@ const boundedJsonValue = (
           break;
         }
         const entry = visit(Reflect.get(value, rawKey), remaining, depth + 1);
-        const entryBytes = Buffer.byteLength(JSON.stringify(entry.value));
-        if (entryBytes > remaining) {
+        if (entry.bytes > remaining) {
           truncated = true;
           break;
         }
@@ -1315,20 +1325,17 @@ const boundedJsonValue = (
           writable: true,
         });
         entries += 1;
-        usedBytes += separatorBytes + keyBytes + entryBytes;
+        usedBytes += separatorBytes + keyBytes + entry.bytes;
         truncated ||= entry.truncated;
         if (entry.truncated) break;
       }
-      return { value: output, truncated };
+      return { value: output, truncated, bytes: usedBytes };
     } finally {
       seen.delete(value);
     }
   };
   const result = visit(input, maximumBytes, 0);
-  const bytes = Buffer.byteLength(JSON.stringify(result.value));
-  return bytes > maximumBytes
-    ? { value: null, truncated: true, bytes: Buffer.byteLength("null") }
-    : { ...result, bytes };
+  return result.bytes > maximumBytes ? TRUNCATED_NULL : result;
 };
 
 const jsonStringBytes = (value: string): number => {
@@ -1349,8 +1356,11 @@ const jsonStringBytes = (value: string): number => {
     else if (
       code >= 0xd800 &&
       code <= 0xdbff &&
-      (value.charCodeAt(index + 1) < 0xdc00 ||
-        value.charCodeAt(index + 1) > 0xdfff)
+      // A trailing high surrogate has no next unit (NaN), so it is unpaired.
+      !(
+        value.charCodeAt(index + 1) >= 0xdc00 &&
+        value.charCodeAt(index + 1) <= 0xdfff
+      )
     )
       bytes += 3;
     else if (

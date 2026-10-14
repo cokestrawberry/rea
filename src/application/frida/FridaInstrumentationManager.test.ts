@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
   Device,
@@ -1139,6 +1139,39 @@ it("bounds oversized Frida message metadata before retaining it", async () => {
     expect(JSON.stringify(message).length).toBeLessThan(100_000);
   }
   await manager.closeAll();
+});
+
+it("records in-budget message payloads without per-code-point allocation or per-level serialization", async () => {
+  let nested: unknown = "é😀\n".repeat(50_000);
+  for (let depth = 0; depth < 32; depth += 1)
+    nested = { child: nested, sibling: [depth] };
+  const fromCodePoint = vi.spyOn(String, "fromCodePoint");
+  const stringify = vi.spyOn(JSON, "stringify");
+  try {
+    const stringifyCalls: number[] = [];
+    for (const payload of [{ event: "loaded" }, nested]) {
+      const { bindings, manager, started } = await startLocalAttachedSession();
+      if (!started.ok) throw started.error;
+      bindings.device.session.nextPayload = payload;
+      fromCodePoint.mockClear();
+      stringify.mockClear();
+      const loaded = await manager.loadScript(started.value.sessionId, {
+        sourceKind: "inline",
+        source: "send('payload');",
+      });
+      stringifyCalls.push(stringify.mock.calls.length);
+      if (!loaded.ok) throw loaded.error;
+      expect(loaded.value.messagesTruncated).toBe(false);
+      expect(loaded.value.messages[0]).toMatchObject({ payload });
+      expect(fromCodePoint).not.toHaveBeenCalled();
+      await manager.closeAll();
+    }
+    // Serialization cost must not grow with payload depth.
+    expect(stringifyCalls[1]).toBe(stringifyCalls[0]);
+  } finally {
+    fromCodePoint.mockRestore();
+    stringify.mockRestore();
+  }
 });
 
 it("serializes script loading against concurrent close and unloads the loaded script", async () => {
