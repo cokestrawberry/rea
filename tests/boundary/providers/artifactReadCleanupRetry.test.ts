@@ -45,19 +45,29 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { GoBinaryProvider } from "../../../src/go/GoBinaryProvider.js";
 import { PeResourcesProvider } from "../../../src/native/pe/PeResourcesProvider.js";
+import { RustBinaryProvider } from "../../../src/rust/RustBinaryProvider.js";
 import { createGoBinaryFixture } from "../../fixtures/go/image.js";
+import { createRustImage } from "../../fixtures/rust/image.js";
 import { peResourceFixture } from "../../../src/native/pe/PeResources.fixture.js";
 
-it.each(["go", "pe"] as const)(
+it.each(["go", "pe", "rust"] as const)(
   "%s provider retains a failed descriptor close and retries that owner before the next read",
   async (kind) => {
     const root = await mkdtemp(join(tmpdir(), "rea-read-cleanup-"));
-    const path = join(root, kind === "go" ? "program.elf" : "program.exe");
+    const path = join(root, kind === "pe" ? "program.exe" : "program.elf");
     const bytes =
-      kind === "go" ? createGoBinaryFixture().bytes : peResourceFixture().bytes;
+      kind === "go"
+        ? createGoBinaryFixture().bytes
+        : kind === "pe"
+          ? peResourceFixture().bytes
+          : createRustImage({ format: "elf" });
     await writeFile(path, bytes);
     const provider =
-      kind === "go" ? new GoBinaryProvider() : new PeResourcesProvider();
+      kind === "go"
+        ? new GoBinaryProvider()
+        : kind === "pe"
+          ? new PeResourcesProvider()
+          : new RustBinaryProvider();
     cleanupState.failFirstClose = true;
     const controller = new AbortController();
     cleanupState.abortController = controller;

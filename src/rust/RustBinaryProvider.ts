@@ -1,5 +1,7 @@
 import { readStableArtifact } from "../artifacts/readStableArtifact.js";
+import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
+import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import type { ExecutionOptions } from "../application/AnalysisProvider.js";
 import type { RustBinaryPort } from "../application/rust/RustBinaryPort.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -19,6 +21,7 @@ import {
   type RustBinary,
 } from "../domain/rust/rustBinary.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
+import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { readRustBinaryImage } from "./RustBinaryImage.js";
 import {
@@ -39,6 +42,11 @@ const OPERATION = "inspect_rust_binary";
 /** Stable in-process dependency inspection without subprocesses, temporary files, or a Rust toolchain. */
 export class RustBinaryProvider implements RustBinaryPort {
   readonly identity = RUST_BINARY_PROVIDER_IDENTITY;
+  readonly #resources = new ArtifactResourceScope();
+
+  close(): Promise<void> {
+    return this.#resources.close();
+  }
 
   /** Read one dependency section and any inferred rustc commit from the selected file. */
   async inspect(
@@ -46,10 +54,14 @@ export class RustBinaryProvider implements RustBinaryPort {
     options?: ExecutionOptions,
   ): Promise<Result<RustBinary, AnalysisError>> {
     try {
-      const snapshot = await readStableArtifact(
-        input.path,
-        RUST_BINARY_INPUT_BYTES,
-        options?.signal,
+      const snapshot = await this.#resources.run(() =>
+        readStableArtifact(
+          input.path,
+          RUST_BINARY_INPUT_BYTES,
+          options?.signal,
+          undefined,
+          this.#resources,
+        ),
       );
       options?.signal?.throwIfAborted();
       const image = readRustBinaryImage(snapshot.bytes);
@@ -144,6 +156,23 @@ const rustcLimitation = (
 };
 
 const failureFor = (
+  cause: unknown,
+  path: string,
+  signal?: AbortSignal,
+): AnalysisError => {
+  const primary = failureForPrimary(cause, path, signal);
+  if (!(cause instanceof ArtifactReaderFailure) || cause.cleanup === undefined)
+    return primary;
+  const cleanup = new ProviderCleanupError(
+    RUST_BINARY_PROVIDER_IDENTITY.id,
+    cause.cleanup.resources,
+    { reason: cause.cleanup.reason },
+    { operation: OPERATION, cause },
+  );
+  return analysisErrorWithCleanupFailure(primary, cleanup, OPERATION);
+};
+
+const failureForPrimary = (
   cause: unknown,
   path: string,
   signal?: AbortSignal,
