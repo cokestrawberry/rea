@@ -216,6 +216,17 @@ export class HopperApplicationLauncher implements BridgeLauncher {
     let launched = false;
     try {
       if (signal?.aborted === true) return err(new HopperCancelledError());
+      if (
+        (this.dependencies.platform ?? process.platform) === "darwin" &&
+        !ownsProcessLifetime &&
+        alterableAppleScriptLiteral(input.loadedPath)
+      )
+        return err(
+          new HopperStartError({
+            userMessage:
+              "Hopper's macOS helper builds AppleScript from its target path without escaping it, so REA does not pass it a path containing a quote, backslash, or line break. Rename or copy the target to a path without those characters, then retry opening the target.",
+          }),
+        );
       const display = await this.#privateDisplay(signal);
       if (!display.ok) return err(display.error);
       const nativeHelperVerified =
@@ -273,12 +284,12 @@ export class HopperApplicationLauncher implements BridgeLauncher {
             ...(nativeHelperVerified
               ? { nativeHelperVerified: true as const }
               : {}),
-            // The vendor helper interpolates these values into AppleScript
-            // literals without escaping. Preserve them, but withhold the
-            // pre-handoff conclusion when they can alter that script.
+            // Launcher path and loader arguments are operator-configured and
+            // preserved; the pre-handoff conclusion is withheld when they can
+            // alter the helper's AppleScript.
             ...((this.dependencies.platform ?? process.platform) === "darwin" &&
-            ![this.options.launcherPath, ...argumentsForTarget].some((value) =>
-              /["\\\r\n]/u.test(value),
+            ![this.options.launcherPath, ...argumentsForTarget].some(
+              alterableAppleScriptLiteral,
             )
               ? { authorizationDenialBeforeHandoff: true as const }
               : {}),
@@ -392,6 +403,11 @@ export class HopperApplicationLauncher implements BridgeLauncher {
         };
   }
 }
+
+// The vendor helper interpolates its arguments into AppleScript literals
+// without escaping; these characters would alter the generated script.
+const alterableAppleScriptLiteral = (value: string): boolean =>
+  /["\\\r\n]/u.test(value);
 
 const bridgeBootstrapSource = (
   session: BridgeSession,
