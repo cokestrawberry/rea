@@ -990,3 +990,58 @@ it("projects and adopts more than the default per-file capacity when explicitly 
     "exceed the offered tree capacity",
   );
 });
+
+const FINGERPRINT_COUNT = 150_000;
+
+const fingerprintedFunction = () => {
+  const text = "function only(value) { return value + 1; }";
+  const file: JavaScriptArtifactFile = {
+    path: "fingerprints.js",
+    container_sha256: SHA256,
+    sha256: SHA256,
+    bytes: Buffer.byteLength(text),
+    inventory_artifact_id: `art_${SHA256}`,
+    kind: "javascript",
+    unpacked: false,
+    text: { included: true, value: text },
+  };
+  const ir = analyzeJavaScriptSemantics(text);
+  const fingerprint = ir.functionFingerprints[0];
+  if (fingerprint === undefined) throw new Error("Expected a fingerprint");
+  return { file, ir, fingerprint };
+};
+
+it("projects more fingerprints than push accepts as arguments", () => {
+  const { file, ir, fingerprint } = fingerprintedFunction();
+  const projection = createJavaScriptSemanticGraphProjection();
+
+  expect(() =>
+    projection.projectFile(file, {
+      ...ir,
+      functionFingerprints: Array.from(
+        { length: FINGERPRINT_COUNT },
+        () => fingerprint,
+      ),
+    }),
+  ).not.toThrow();
+}, 60_000);
+
+it("adopts more fingerprints than push accepts as arguments", () => {
+  const { file, ir } = fingerprintedFunction();
+  const steps = projectJavaScriptSemanticFileSteps(file, ir, 100);
+  let result = steps.next();
+  while (!result.done) result = steps.next();
+  const [fingerprint] = result.value.fingerprints;
+  if (fingerprint === undefined) throw new Error("Expected a fingerprint");
+  const projection = createJavaScriptSemanticGraphProjection();
+
+  expect(() =>
+    projection.adoptFileProjection({
+      ...result.value,
+      fingerprints: Array.from(
+        { length: FINGERPRINT_COUNT },
+        () => fingerprint,
+      ),
+    }),
+  ).not.toThrow();
+});

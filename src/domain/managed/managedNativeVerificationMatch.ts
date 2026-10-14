@@ -94,7 +94,8 @@ export const collectNativeSymbols = (
       unsupported += 1;
     } else {
       accepted += 1;
-      symbols.push(...extracted.symbols);
+      // Spreading into push overflows the stack on large symbol lists.
+      for (const symbol of extracted.symbols) symbols.push(symbol);
     }
   }
   return { symbols, accepted, unsupported };
