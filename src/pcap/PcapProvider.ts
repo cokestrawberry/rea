@@ -39,9 +39,10 @@ import {
   type PcapCommandCleanup,
   type PcapCommandLimits,
   type PcapCommandLauncher,
+  type PcapCommandOutput,
 } from "./PcapCommand.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
-import { jsonValueSchema } from "../domain/jsonValue.js";
+import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
 import { createPcapEvidence } from "../domain/pcap/pcapEvidence.js";
 import { preparePcapNativeBound } from "./PcapNativeBound.js";
 import { PcapSnapshot } from "./PcapSnapshot.js";
@@ -98,6 +99,7 @@ const pcapCommandCleanupError = (
   cleanup: PcapCommandCleanup,
   capturedOutput: { readonly stdout: string; readonly stderr: string },
   partialObservation?: ReturnType<typeof pcapPartialEvidence>,
+  previousError: JsonValue = null,
 ) =>
   new ProviderCleanupError(
     "pcap",
@@ -109,7 +111,7 @@ const pcapCommandCleanupError = (
     ],
     {
       reason: cleanup.reason,
-      previous_error: null,
+      previous_error: previousError,
       captured_output: {
         stdout: capturedOutput.stdout,
         stderr: capturedOutput.stderr,
@@ -167,49 +169,54 @@ export class PcapProvider {
     inputPath?: string,
   ) {
     let cleanup: PcapCommandCleanup | undefined;
-    const output = await runPcapCommand({
-      operation,
-      command,
-      arguments: args,
-      limits,
-      signal,
-      environment:
-        snapshot === undefined
-          ? this.environment
-          : {
-              ...this.environment,
-              WIRESHARK_CONFIG_DIR: snapshot.configurationPath,
-            },
-      ...(inputPath === undefined ? {} : { inputPath }),
-      ...(inputPath === undefined || this.nativeBound === undefined
-        ? {}
-        : { nativeBound: this.nativeBound }),
-      ...(this.launcher === undefined ? {} : { launcher: this.launcher }),
-      retain: (owner, resources, reason, capturedOutput) => {
-        this.commands.set(owner, {
-          snapshot,
-          resources,
-          reason,
-          capturedOutput,
-        });
-        cleanup = { reason, resources, capturedOutput };
-      },
-    });
-    if (inputPath === undefined && cleanup !== undefined)
-      throw new ProviderCleanupError(
-        "pcap",
-        cleanup.resources,
-        {
-          reason: cleanup.reason,
-          previous_error: null,
-          captured_output: {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            truncated: cleanup.capturedOutput.truncated,
-          },
+    let output: PcapCommandOutput;
+    try {
+      output = await runPcapCommand({
+        operation,
+        command,
+        arguments: args,
+        limits,
+        signal,
+        environment:
+          snapshot === undefined
+            ? this.environment
+            : {
+                ...this.environment,
+                WIRESHARK_CONFIG_DIR: snapshot.configurationPath,
+              },
+        ...(inputPath === undefined ? {} : { inputPath }),
+        ...(inputPath === undefined || this.nativeBound === undefined
+          ? {}
+          : { nativeBound: this.nativeBound }),
+        ...(this.launcher === undefined ? {} : { launcher: this.launcher }),
+        retain: (owner, resources, reason, capturedOutput) => {
+          this.commands.set(owner, {
+            snapshot,
+            resources,
+            reason,
+            capturedOutput,
+          });
+          cleanup = { reason, resources, capturedOutput };
         },
-        { operation },
-      );
+      });
+    } catch (cause) {
+      // Version probes run before any snapshot exists, so execute() cannot
+      // attach the retained owner to the failure afterwards.
+      if (inputPath === undefined && cleanup !== undefined)
+        throw pcapCommandCleanupError(
+          operation,
+          undefined,
+          cleanup,
+          cleanup.capturedOutput,
+          undefined,
+          cause instanceof AnalysisError
+            ? projectAnalysisError(cause)
+            : String(cause),
+        );
+      throw cause;
+    }
+    if (inputPath === undefined && cleanup !== undefined)
+      throw pcapCommandCleanupError(operation, undefined, cleanup, output);
     return output;
   }
 
