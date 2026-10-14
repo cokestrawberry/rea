@@ -63,7 +63,7 @@ export const run = async (
     session,
     config.value,
     serverLogger,
-    dependencies.writeStderr,
+    dependencies,
   );
   if (!opened.ok) return opened.exitCode;
   const transport = await startMcpTransport(dependencies, session, {
