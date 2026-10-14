@@ -8,6 +8,7 @@ import type {
   FridaMessage,
   Script,
   Session,
+  SpawnOptions,
 } from "frida";
 import { expect, it, onTestFinished } from "vitest";
 
@@ -42,6 +43,7 @@ const nativeFixture = () => {
   const unloaded: string[] = [];
   const scripts: Script[] = [];
   const scriptsAtResume: string[][] = [];
+  const spawns: { program: string; options: SpawnOptions | undefined }[] = [];
   const controls = {
     attach: async () => {},
     create: async () => {},
@@ -117,7 +119,8 @@ const nativeFixture = () => {
     async getProcessByPid() {
       return { pid: 512, name: "fixture" };
     },
-    async spawn() {
+    async spawn(program, options) {
+      spawns.push({ program, options });
       return 512;
     },
     async resume() {
@@ -156,6 +159,7 @@ const nativeFixture = () => {
     unloaded,
     scripts,
     scriptsAtResume,
+    spawns,
     deviceManager,
   };
 };
@@ -296,6 +300,32 @@ const retainedScriptObservation = async (
   });
   return observation;
 };
+
+it.each([{ argv: undefined }, { argv: ["--flag"] }] as const)(
+  "spawns Frida targets with piped stdio so they cannot share the MCP server streams (argv: $argv)",
+  async ({ argv }) => {
+    const fixture = await connectedFixture();
+    const result = await fixture.client.callTool({
+      name: "start_frida_session",
+      arguments: {
+        mode: "spawn",
+        program: "/fixture",
+        device_id: "local",
+        ...(argv === undefined ? {} : { argv }),
+      },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(fixture.spawns).toEqual([
+      {
+        program: "/fixture",
+        options: {
+          stdio: "pipe",
+          ...(argv === undefined ? {} : { argv: ["/fixture", ...argv] }),
+        },
+      },
+    ]);
+  },
+);
 
 it.each(["load", "resume", "unload"] as const)(
   "finishes an earlier MCP %s request before closing its Frida session",

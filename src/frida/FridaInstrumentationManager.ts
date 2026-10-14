@@ -279,12 +279,13 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
         pid = process.pid;
         target = `${process.name} (pid ${process.pid})`;
       } else {
-        pid = await device.spawn(
-          input.program,
-          input.argv === undefined
-            ? undefined
-            : { argv: [input.program, ...input.argv] },
-        );
+        // frida-core defaults to INHERIT, which shares the MCP server's stdio streams.
+        pid = await device.spawn(input.program, {
+          stdio: "pipe",
+          ...(input.argv === undefined
+            ? {}
+            : { argv: [input.program, ...input.argv] }),
+        });
         spawnedPid = pid;
         target = input.program;
       }
