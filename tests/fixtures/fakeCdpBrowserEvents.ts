@@ -276,13 +276,32 @@ const emitSessionTimeline = (
       redirectResponse: { status: 302 },
       timestamp: 13,
     });
-    event(socket, "Network.loadingFailed", command.sessionId, {
-      requestId: "failed-request",
-      frameId: "frame-main",
-      loaderId: "loader-reload",
-      errorText: "net::ERR_CONNECTION_REFUSED",
-      timestamp: 14,
-    });
+    for (const [requestId, type, frameId] of [
+      ["failed-request", "Document", "frame-main"],
+      ["failed-subresource", "Image", "frame-main"],
+      ["failed-subframe-document", "Document", "frame-child"],
+    ] as const)
+      event(socket, "Network.requestWillBeSent", command.sessionId, {
+        requestId,
+        type,
+        frameId,
+        loaderId: "loader-reload",
+        request: { url: allowed, method: "GET" },
+        initiator: { type: "other" },
+        timestamp: 13.5,
+      });
+    // Network.loadingFailed has no frameId in the CDP protocol.
+    for (const [requestId, type, errorText] of [
+      ["failed-subresource", "Image", "net::ERR_BLOCKED_BY_CLIENT"],
+      ["failed-subframe-document", "Document", "net::ERR_ABORTED"],
+      ["failed-request", "Document", "net::ERR_CONNECTION_REFUSED"],
+    ] as const)
+      event(socket, "Network.loadingFailed", command.sessionId, {
+        requestId,
+        type,
+        errorText,
+        timestamp: 14,
+      });
     event(socket, "Page.lifecycleEvent", command.sessionId, {
       frameId: "frame-main",
       loaderId: "loader-reload",
