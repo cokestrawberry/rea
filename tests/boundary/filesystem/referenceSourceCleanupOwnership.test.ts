@@ -229,7 +229,9 @@ it("preserves a directory read failure when closing that directory also fails", 
     return directory;
   });
 
-  const result = await readReferenceSource(root, resources);
+  const result = await readReferenceSource(root, resources, {
+    shouldRetainBytes: () => true,
+  });
   if (result.ok) throw new Error("Directory and cleanup failures were ignored");
   expect(result).toMatchObject({
     ok: false,

@@ -16,7 +16,10 @@ import type {
   ReferenceSourceRead,
   ReferenceSourceReaderError,
 } from "../reference/ReferenceSourceReaderTypes.js";
-import { parseReferenceSourceEntries } from "./ReferenceSourceImportEntries.js";
+import {
+  parseReferenceSourceEntries,
+  shouldRetainReferenceSourceBytes,
+} from "./ReferenceSourceImportEntries.js";
 import { readReferenceSourceVcs } from "./ReferenceSourceVcsAdapter.js";
 import type {
   ReferenceSourceImportError,
@@ -215,6 +218,7 @@ export const importReferenceSource = async (
     readReferenceSource(root, resources, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       shouldExclude,
+      shouldRetainBytes: shouldRetainReferenceSourceBytes,
     }),
     readReferenceSourceVcs(root, resources, options.signal),
   ]);

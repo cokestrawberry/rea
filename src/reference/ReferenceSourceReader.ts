@@ -60,9 +60,13 @@ const readSource = async (
     ...(options.shouldExclude === undefined
       ? {}
       : { shouldExclude: options.shouldExclude }),
+    ...(options.shouldRetainBytes === undefined
+      ? {}
+      : { shouldRetainBytes: options.shouldRetainBytes }),
     entries: [],
     pending: [{ path: canonicalRoot }],
     bytesRead: 0,
+    retainedBytes: 0,
   };
   const traversal = await traverse(state);
   state.entries.sort((left, right) =>

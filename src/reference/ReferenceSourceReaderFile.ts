@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -36,7 +37,13 @@ type PreparedFileRead =
   | { readonly status: "failed"; readonly entry: ReferenceSourceEntry };
 
 type FileContentsRead =
-  | { readonly status: "ok"; readonly chunks: Buffer[]; readonly total: number }
+  | {
+      readonly status: "ok";
+      readonly sha256: string;
+      /** Empty unless the read retained bytes. */
+      readonly chunks: Buffer[];
+      readonly total: number;
+    }
   | { readonly status: "failed"; readonly entry: ReferenceSourceEntry };
 
 type FinalizeFileReadRequest = {
@@ -47,6 +54,8 @@ type FinalizeFileReadRequest = {
   readonly handle: FileHandle;
   readonly before: BigIntStats;
   readonly parentBefore: { readonly ok: true; readonly stats: BigIntStats };
+  readonly sha256: string;
+  readonly retainBytes: boolean;
   readonly chunks: Buffer[];
   readonly total: number;
   readonly signal?: AbortSignal;
@@ -85,7 +94,10 @@ const prepareFileRead = async (
   return { status: "ready", before };
 };
 
-/** Read a stable-size file through its borrowed descriptor; growth is a change. */
+/**
+ * Hash a stable-size file through its borrowed descriptor; growth is a change.
+ * Chunks are kept only when `retainBytes` is set.
+ */
 export const readFileContents = async (request: {
   readonly handle: {
     read(
@@ -97,10 +109,13 @@ export const readFileContents = async (request: {
   };
   readonly path: string;
   readonly expectedSize: bigint;
+  readonly retainBytes: boolean;
   readonly signal?: AbortSignal;
 }): Promise<FileContentsRead> => {
-  const { handle, path, signal } = request;
+  const { handle, path, retainBytes, signal } = request;
+  const hash = createHash("sha256");
   const chunks: Buffer[] = [];
+  let scratch: Buffer | undefined;
   let total = 0;
   for (;;) {
     if (isAborted(signal))
@@ -120,8 +135,10 @@ export const readFileContents = async (request: {
       remaining >= BigInt(READ_CHUNK_BYTES)
         ? READ_CHUNK_BYTES
         : Number(remaining) + 1;
-    const chunk = Buffer.allocUnsafe(chunkBytes);
-    const read = await handle.read(chunk, 0, chunk.byteLength, null);
+    const chunk = retainBytes
+      ? Buffer.allocUnsafe(chunkBytes)
+      : (scratch ??= Buffer.allocUnsafe(READ_CHUNK_BYTES));
+    const read = await handle.read(chunk, 0, chunkBytes, null);
     if (isAborted(signal))
       return {
         status: "failed",
@@ -146,9 +163,11 @@ export const readFileContents = async (request: {
           total,
         ),
       };
-    chunks.push(chunk.subarray(0, read.bytesRead));
+    const observed = chunk.subarray(0, read.bytesRead);
+    hash.update(observed);
+    if (retainBytes) chunks.push(observed);
   }
-  return { status: "ok", chunks, total };
+  return { status: "ok", sha256: hash.digest("hex"), chunks, total };
 };
 
 const finalizeFileRead = async (
@@ -162,6 +181,8 @@ const finalizeFileRead = async (
     handle,
     before,
     parentBefore,
+    sha256,
+    retainBytes,
     chunks,
     total,
   } = request;
@@ -192,8 +213,9 @@ const finalizeFileRead = async (
     status: "read",
     kind: "file",
     path,
-    bytes: Buffer.concat(chunks, total),
+    sha256,
     size: total,
+    ...(retainBytes ? { bytes: Buffer.concat(chunks, total) } : {}),
   };
 };
 
@@ -258,6 +280,7 @@ const readStableFileEntry = async (
       handle,
       path,
       expectedSize: prepared.before.size,
+      retainBytes: request.retainBytes,
       ...(signal === undefined ? {} : { signal }),
     });
     if (contents.status === "failed") return contents.entry;
@@ -269,6 +292,8 @@ const readStableFileEntry = async (
       handle,
       before: prepared.before,
       parentBefore,
+      sha256: contents.sha256,
+      retainBytes: request.retainBytes,
       chunks: contents.chunks,
       total: contents.total,
       ...(signal === undefined ? {} : { signal }),
