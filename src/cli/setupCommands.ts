@@ -254,7 +254,7 @@ const setupRunOptions = (
     structured: input.formatExplicit || options.dryRun,
     dryRun: options.dryRun,
     allDetectedClients: options.allDetected,
-    proposeHopper: interactive || options.installHopper,
+    proposeHopper: options.installHopper || (interactive && !hasExplicitScope),
     ...(hasSelectedClients ? { clientIds: options.client } : {}),
     ...(options.skillClient.length > 0
       ? { skillClientIds: options.skillClient }
