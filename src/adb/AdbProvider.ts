@@ -275,6 +275,17 @@ const packageChangeRefusal = (
       );
 };
 
+/** A `test -e` run that exited 1 without any output found the path absent. */
+const probeReportsAbsence = (error: AnalysisError): boolean => {
+  if (!(error instanceof AnalysisProtocolError)) return false;
+  const failure = execFileOutputFailure(error.cause);
+  return (
+    failure?.code === 1 &&
+    failure.stdout.trim() === "" &&
+    failure.stderr.trim() === ""
+  );
+};
+
 const clientIdentityResult = (
   selection: AdbBinarySelection,
   identity: AdbClientIdentity,
@@ -1732,13 +1743,10 @@ export class AdbProvider {
       { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
       signal,
     );
-    // `test -e` exits nonzero with no adb diagnosis when the path is absent.
-    // Any other probe failure leaves existence unknown, so it is reported as
-    // is rather than read as an existing path or followed by a push.
-    if (
-      !existsProbe.ok &&
-      !(existsProbe.error instanceof AnalysisProtocolError)
-    )
+    // `test -e` exits 1 with no output when the path is absent. Any other probe
+    // failure leaves existence unknown, so it is reported as is rather than
+    // read as an absent path or followed by a push.
+    if (!existsProbe.ok && !probeReportsAbsence(existsProbe.error))
       return existsProbe;
     const deviceExists = existsProbe.ok;
     if (deviceExists && !input.overwrite)

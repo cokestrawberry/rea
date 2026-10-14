@@ -873,6 +873,39 @@ if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; printf '%s\
   },
 );
 
+it.each([
+  ["stderr diagnostic", "printf 'error: closed\\n' >&2; exit 1", false],
+  ["stderr diagnostic", "printf 'error: closed\\n' >&2; exit 1", true],
+  ["stdout output", "printf 'unexpected\\n'; exit 1", false],
+  ["exit code other than 1", "exit 2", false],
+] as const)(
+  "does not read a push existence probe failure with a %s as an absent path (overwrite %s)",
+  async (_label, probe, overwrite) => {
+    const { binary, root } = await writeAdbStub(
+      (stubRoot) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ]; then ${probe}; fi
+exit 0`,
+    );
+    const localFile = join(root, "payload.bin");
+    await writeFile(localFile, "x");
+    const result = await providerOver(binary).execute({
+      operation: "push_adb_file",
+      input: {
+        serial: "emulator-5554",
+        local_path: localFile,
+        device_path: "/data/local/tmp/payload.bin",
+        overwrite,
+      },
+    });
+    // Existence is unknown, so the probe failure is reported and no push runs.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error._tag).toBe("AnalysisProtocolError");
+    expect(await readFile(join(root, "calls"), "utf8")).toBe("shell\n");
+  },
+);
+
 it("reports a local push source that does not exist", async () => {
   const { binary } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
