@@ -1122,6 +1122,19 @@ try {
     assert.deepEqual(await readFile(badPackedPath), packedFile);
     cases++;
   }
+  assert.ok(BigInt(packedTable.location.bytes) >= 16n);
+  const wideOffsetFile = await readFile(join(root.path, "packed-relative"));
+  const packedStart = Number(BigInt(packedTable.location.offset));
+  // The anchor leaves the bitmap's first slot at 2^64, beyond the 64-bit range.
+  wideOffsetFile.writeBigUInt64LE(0xfffffffffffffff8n, packedStart);
+  wideOffsetFile.writeBigUInt64LE(3n, packedStart + 8);
+  const wideOffsetPath = join(root.path, "relr-offset-beyond-64-bits");
+  await writeFile(wideOffsetPath, wideOffsetFile);
+  for (const mode of ["cli", "mcp"]) {
+    await inspect(mode, wideOffsetPath, "invalid_input");
+    assert.deepEqual(await readFile(wideOffsetPath), wideOffsetFile);
+    cases++;
+  }
   const brokenPython = join(root.path, "broken-configured-python");
   await writeFile(
     brokenPython,
