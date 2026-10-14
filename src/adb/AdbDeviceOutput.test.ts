@@ -5,6 +5,7 @@ import {
   parseGetpropOutput,
   parsePackageListOutput,
   parsePmPathOutput,
+  stderrReportsDaemonStart,
 } from "./AdbDeviceOutput.js";
 
 describe("parseAdbDevicesOutput", () => {
@@ -120,6 +121,26 @@ describe("parseAdbDevicesOutput", () => {
     ].join("\n");
     const { devices } = parseAdbDevicesOutput(output);
     expect(devices[0]?.transport_id).toBeNull();
+  });
+});
+
+describe("stderrReportsDaemonStart", () => {
+  it("recognizes the daemon start notice adb writes to stderr", () => {
+    const stderr = [
+      "* daemon not running; starting now at tcp:5037",
+      "* daemon started successfully",
+      "",
+    ].join("\r\n");
+    expect(stderrReportsDaemonStart(stderr)).toBe(true);
+  });
+
+  it("does not report a start for a failed daemon or unrelated stderr", () => {
+    expect(
+      stderrReportsDaemonStart(
+        "* daemon not running; starting now at tcp:5037\n* failed to start daemon\n",
+      ),
+    ).toBe(false);
+    expect(stderrReportsDaemonStart("")).toBe(false);
   });
 });
 
