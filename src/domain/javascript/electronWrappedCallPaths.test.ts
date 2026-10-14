@@ -319,6 +319,16 @@ it("retains distinct wrapper invocation ranges for one IPC API source", () => {
     findings[1]?.invocation_location,
   );
 });
+it("does not assign a wrapper parameter after an unresolved spread argument", () => {
+  const result = analyzeJavaScriptStaticSource(`
+      const e=require("electron");
+      function register(first,second,channel){e.ipcMain.on(channel,()=>{});}
+      register("ui",...extra,"app:quit");
+    `);
+  expect(result.electron.ipc).not.toContainEqual(
+    expect.objectContaining({ channel: "app:quit" }),
+  );
+});
 it("keeps a directly observed renderer operation singular when tracing its exposed callback", () => {
   const result = analyzeJavaScriptStaticSource(`
     const {contextBridge,ipcRenderer}=require("electron");

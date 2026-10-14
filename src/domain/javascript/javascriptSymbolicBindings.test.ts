@@ -90,6 +90,30 @@ it("substitutes numeric modules, named exports and captured wrapper arguments", 
   });
 });
 
+it.each([
+  [
+    "a parameter after an unresolved spread",
+    `function wrap(first, second, third) { return third; }
+     inspect(wrap("ui", ...extra, "app:quit"));`,
+    { kind: "unknown" },
+  ],
+  [
+    "a rest parameter covering an unresolved spread",
+    `function wrap(first, ...rest) { return rest; }
+     inspect(wrap("ui", ...extra, "app:quit"));`,
+    { kind: "unknown" },
+  ],
+  [
+    "a parameter after an expanded rest array",
+    `function inner(first, second) { return second; }
+     function outer(...args) { return inner(...args); }
+     inspect(outer("a", "b"));`,
+    { kind: "literal", value: "b" },
+  ],
+] as const)("binds call arguments for %s", (_case, source, expected) => {
+  expect(inspectOne(source)).toMatchObject(expected);
+});
+
 it("checks block lexical initializers against their containing function call", () => {
   const { parsed, resolver } = resolverFor(`run();
     function run() { { const value = require("electron"); inspect(value); } }`);
