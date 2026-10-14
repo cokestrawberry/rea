@@ -1430,7 +1430,7 @@ export class GdbSessionManager {
       const records = [...pending.lines];
       pending.reject(
         new GdbProtocolFailureError(message, {
-          command: pending.command,
+          command: pending.evidenceCommand,
           mi: "",
           records,
           console: records.filter((line) => line.startsWith("~")).join("\n"),
