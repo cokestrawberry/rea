@@ -216,6 +216,9 @@ const isExpectedAbort = (
   (cause === signal.reason ||
     (cause instanceof Error && cause.name === "AbortError"));
 
+/** Deadline for one `ps` read, matching the Darwin helper's per-read deadline. */
+const PS_TIMEOUT_MS = 15_000;
+
 /** Create the operating-system process inspector for an explicit host context. */
 export const createSystemProcessOwnershipHost = (
   platform: NodeJS.Platform = process.platform,
@@ -227,8 +230,11 @@ export const createSystemProcessOwnershipHost = (
     readonly darwinModuleCachePath?: string;
     /** Deadline for Darwin ownership-helper compilation. */
     readonly compileTimeoutMs?: number;
+    /** Deadline for each `ps` process-table or environment read. */
+    readonly psTimeoutMs?: number;
   } = {},
 ): ProcessOwnershipHost => {
+  const psTimeoutMs = options.psTimeoutMs ?? PS_TIMEOUT_MS;
   const darwinModuleCachePath =
     options.darwinModuleCachePath ??
     hostEnvironment.REA_DARWIN_MODULE_CACHE_PATH;
@@ -259,7 +265,11 @@ export const createSystemProcessOwnershipHost = (
     const { stdout } = await execFileOutput(
       "ps",
       ["-axo", "pid=,ppid=,pgid=,uid=,stat=,command="],
-      { env: hostEnvironment, ...(signal === undefined ? {} : { signal }) },
+      {
+        env: hostEnvironment,
+        timeout: psTimeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+      },
     );
     return stdout
       .split("\n")
@@ -412,6 +422,7 @@ export const createSystemProcessOwnershipHost = (
         ["eww", "-p", String(pid)],
         {
           env: hostEnvironment,
+          timeout: psTimeoutMs,
           ...(signal === undefined ? {} : { signal }),
         },
       );
