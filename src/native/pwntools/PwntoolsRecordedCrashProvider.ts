@@ -126,7 +126,16 @@ export class PwntoolsRecordedCrashProvider
               options,
               runCommand,
             });
-            const enriched = validate(context);
+            // GDB may report a substitute PID; only a PID that a recorded
+            // PRSTATUS thread carries is recorded metadata.
+            const enriched = validate(
+              context.status === "available" &&
+                !value.threads.some(
+                  (thread) => thread.historical_pid === context.historical_pid,
+                )
+                ? { ...context, historical_pid: null }
+                : context,
+            );
             if (!enriched.success)
               throw new AnalysisOutputError(
                 "inspect_recorded_crash",

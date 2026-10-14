@@ -154,6 +154,7 @@ it
   .each([
     "unconfigured",
     "success",
+    "unrecorded-pid",
     "process-failure",
     "invalid-context",
     "cancelled",
@@ -218,6 +219,7 @@ it
         }
         expect(request.snapshot_path).toBe(snapshotPath);
         const context = recordedCrashDebuggerFixture();
+        if (scenario === "unrecorded-pid") context.historical_pid = 1;
         if (scenario === "invalid-context")
           context.maps = context.maps.map((map) => ({ ...map, end: "0x0" }));
         await writeFile(
@@ -256,10 +258,11 @@ it
       },
       { signal: controller.signal },
     );
-    if (scenario === "success") {
+    if (scenario === "success" || scenario === "unrecorded-pid") {
       if (!result.ok) throw result.error;
       expect(result.value.debugger).toMatchObject({
         status: "available",
+        historical_pid: scenario === "success" ? 123 : null,
         maps: [{ permissions: null }],
         diagnostics: { stdout: "debugger stage diagnostic" },
       });

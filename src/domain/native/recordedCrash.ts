@@ -160,7 +160,7 @@ export const recordedCrashDebuggerSchema = z.discriminatedUnion("status", [
     pwndbg_version: z.string().min(1),
     connection: z.literal("core"),
     executable: z.null(),
-    historical_pid: signed32,
+    historical_pid: signed32.nullable(),
     reported_limits: z.strictObject({
       address_space_bytes: index,
       cpu_seconds: index,
