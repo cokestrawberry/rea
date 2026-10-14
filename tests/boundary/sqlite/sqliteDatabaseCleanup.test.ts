@@ -3,7 +3,11 @@ import { expect, it, onTestFinished } from "vitest";
 import { SqliteDatabaseProvider } from "../../../src/sqlite/SqliteDatabaseProvider.js";
 import { PrivateRuntimeRoot } from "../../../src/process/PrivateRuntimeRoot.js";
 import { OwnedCommandFailure } from "../../../src/process/OwnedCommand.js";
-import { ProviderProcessSupervisor } from "../../../src/process/ProviderProcess.js";
+import {
+  ProviderProcessSupervisor,
+  spawnOwnedProviderProcess,
+  type ProviderProcessHandle,
+} from "../../../src/process/ProviderProcess.js";
 import {
   spawnProviderProcessFixture,
   stopProviderProcessFixture,
@@ -271,5 +275,69 @@ it("retains the snapshot until a failed worker cleanup owner can be stopped", as
   rootRemovalAllowed = true;
   await provider.close();
   expect(workerAttempts).toBe(4);
+  await expect(access(root.path)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("retains the snapshot when cancellation leaves the worker process group unstopped", async () => {
+  const workspace = await createTestWorkspace("rea-sqlite-cancelled-worker-");
+  const database = createSqliteDatabaseFixture(workspace.root);
+  database.close();
+  const controller = new AbortController();
+  const roots: PrivateRuntimeRoot[] = [];
+  let worker: ProviderProcessHandle | undefined;
+  let workerRemovalAllowed = false;
+  const provider = new SqliteDatabaseProvider(
+    process.env,
+    async (spawn) => {
+      const launched = await spawnOwnedProviderProcess({
+        ...spawn,
+        arguments: [
+          "-e",
+          "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);",
+        ],
+      });
+      worker = launched.process;
+      await waitForProviderProcessReady(launched.process);
+      setImmediate(() => controller.abort());
+      return {
+        ...launched,
+        cleanup: async () => {
+          if (!workerRemovalAllowed)
+            return { cleaned: false, reason: "SQLite worker cleanup denied" };
+          await stopProviderProcessFixture(launched.process);
+          return { cleaned: true, signaled: true };
+        },
+      };
+    },
+    async () => {
+      const root = await PrivateRuntimeRoot.create({ parent: workspace.root });
+      roots.push(root);
+      return root;
+    },
+  );
+  onTestFinished(async () => {
+    workerRemovalAllowed = true;
+    await provider.close();
+    if (worker !== undefined) await stopProviderProcessFixture(worker);
+    await Promise.all(roots.map((root) => root.close()));
+    await removeTestWorkspace(workspace.root);
+  });
+  const result = await provider.inspect(
+    { path: database.path },
+    { signal: controller.signal },
+  );
+  const root = roots[0];
+  if (root === undefined) throw new Error("Missing retained snapshot");
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      cleanupIncomplete: true,
+      cleanupResources: expect.arrayContaining([root.path]),
+    },
+  });
+  // The snapshot cannot be removed while its worker may still use it.
+  await expect(access(root.path)).resolves.toBeUndefined();
+  workerRemovalAllowed = true;
+  await provider.close();
   await expect(access(root.path)).rejects.toMatchObject({ code: "ENOENT" });
 });

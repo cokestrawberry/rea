@@ -288,7 +288,10 @@ export class SqliteDatabaseProvider implements SqliteDatabasePort {
         );
       result = ok(createSqliteObservation(validated.data, input.path));
     } catch (cause: unknown) {
-      if (cause instanceof OwnedCommandFailure)
+      if (
+        cause instanceof OwnedCommandFailure &&
+        cause.cleanupOwner !== undefined
+      )
         processOwner = cause.cleanupOwner;
       const failure = sqliteDatabaseFailure(
         cause,
