@@ -157,6 +157,9 @@ export const inspectPwndbgCore = async ({
           requestPath,
         ],
         cwd: stage,
+        // launch.py execs into GDB, so the Python command no longer matches.
+        // Keep parent/group/run-token ownership across exec.
+        expectedCommand: null,
         runId: `rea-recorded-core-debugger-${randomUUID()}`,
         hostEnvironment: {
           ...environment,
