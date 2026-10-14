@@ -9,6 +9,7 @@ import { JAVASCRIPT_APPLICATION_EVIDENCE_EXAMPLE } from "../../contracts/javascr
 import { createEvidence, parseEvidence } from "../../domain/evidence.js";
 import { functionDossierSchema } from "../../domain/hopperValues.js";
 import { ghidraFunctionDossier } from "../../domain/ghidraValues.fixture.js";
+import type { RelationshipCoverage } from "../../domain/relationshipCoverage.js";
 import {
   analysisViewJavaScriptAnalysisWithSource,
   analysisViewJavaScriptEvidence,
@@ -65,6 +66,32 @@ it.each(["/fixtures/unknown.exe", ""])(
     );
   },
 );
+
+it("carries parent relationship coverage into native callers view Evidence", () => {
+  const limitation = "Caller inventory omits sources of 1 call reference(s).";
+  const coverage: RelationshipCoverage = {
+    status: "partial",
+    limitations: [limitation],
+    limited_directions: ["callers"],
+  };
+  const parent = createEvidence(
+    { path: "/fixtures/example.exe", format: "pe", sha256: "c".repeat(64) },
+    { id: "ghidra", name: "Ghidra", version: "12.1.4" },
+    {
+      operation: "analyze_function",
+      parameters: {},
+      result: functionDossierSchema.parse(ghidraFunctionDossier()),
+      relationshipCoverage: coverage,
+    },
+  );
+  const result = inspectAnalysisView({
+    source: { kind: "inline", evidence: parent },
+    view: { kind: "native", facet: "callers", offset: 0, limit: 8 },
+  });
+  if (!result.ok) throw result.error;
+  expect(result.value.relationship_coverage).toEqual(coverage);
+  expect(result.value.limitations).toContain(limitation);
+});
 
 it("reports inline Evidence identity failures at the complete source path", () => {
   const parent = analysisViewLayoutEvidence();
