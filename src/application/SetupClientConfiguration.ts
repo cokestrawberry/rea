@@ -647,6 +647,25 @@ const registrationCurrent = (
   !Object.hasOwn(parsed.legacyServers, PRODUCT_IDENTITY.mcpServerKey) &&
   !clientServerListedDisabled(parsed, PRODUCT_IDENTITY.mcpServerKey);
 
+/** Entry fields that decide whether and over which transport the client starts REA. */
+const REGISTRATION_STATE_FIELDS: ReadonlySet<string> = new Set([
+  "type",
+  "transport",
+  "enabled",
+  "disabled",
+  "enable",
+]);
+
+/** The caller's other fields on an existing REA entry survive a setup rewrite. */
+const preservedEntryFields = (entry: unknown): Record<string, unknown> =>
+  typeof entry === "object" && entry !== null && !Array.isArray(entry)
+    ? Object.fromEntries(
+        Object.entries(entry).filter(
+          ([field]) => !REGISTRATION_STATE_FIELDS.has(field),
+        ),
+      )
+    : {};
+
 const clientConfigurationDesired = (
   client: SetupClient,
   providerEnvironment: SetupProviderEnvironment,
@@ -688,15 +707,8 @@ const clientConfigurationDesired = (
     launcher,
     environment.value,
   );
-  const previous = parsed?.servers[PRODUCT_IDENTITY.mcpServerKey];
-  if (
-    client.name === "kimi" &&
-    typeof previous === "object" &&
-    previous !== null &&
-    "enabledTools" in previous
-  )
-    registration.enabledTools = previous.enabledTools;
   return {
+    ...preservedEntryFields(parsed?.servers[PRODUCT_IDENTITY.mcpServerKey]),
     ...registration,
     ...(client.name === "codex" || client.name === "grok_build"
       ? {
