@@ -24,6 +24,7 @@ import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import { parseExecutableHeader } from "../domain/binaryTarget.js";
 import { GhidraProvider } from "./GhidraProvider.js";
 import type { GhidraTargetSnapshot } from "./GhidraClient.js";
+import type { GhidraSnapshotReader } from "./GhidraSnapshotReader.js";
 import type { GhidraProviderClientFactory } from "./GhidraProviderClient.js";
 import type { GhidraHeadlessLauncher } from "./GhidraLauncher.js";
 import type { GhidraInstallationHost } from "./GhidraInstallation.js";
@@ -1199,8 +1200,14 @@ describe("Ghidra measured DOS load-image projection", () => {
         ...(state === "missing-snapshot"
           ? {}
           : {
-              readTargetSnapshot: () =>
-                Promise.resolve(ok({ kind: "captured", bytes: fixture.bytes })),
+              readTargetSnapshot: () => {
+                throw new Error(
+                  "MZ verification must not capture the complete file",
+                );
+              },
+              withTargetSnapshotReader: <T>(
+                use: (reader: GhidraSnapshotReader) => Promise<T>,
+              ) => use(fixture.reader).then((value) => ok(value)),
             }),
       });
       const ghidra = provider(installationHost(), factory);
