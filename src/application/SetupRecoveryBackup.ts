@@ -86,3 +86,26 @@ export const preserveRecoveryBackup = async (
     return cause instanceof Error && "code" in cause && cause.code === "EEXIST";
   }
 };
+
+/** Preserve `source` and return the path that verifiably holds its original bytes. */
+export const preserveCurrentRecoveryBackup = async (
+  source: string,
+  firstBackupPath: string,
+  original: string | Buffer,
+): Promise<string | undefined> => {
+  const selection = await selectCurrentRecoveryBackup(
+    firstBackupPath,
+    original,
+  );
+  if (
+    !selection.ok ||
+    !(await preserveRecoveryBackup(source, selection.value.backupPath))
+  )
+    return undefined;
+  const verified = await selectCurrentRecoveryBackup(firstBackupPath, original);
+  return verified.ok &&
+    verified.value.present &&
+    verified.value.backupPath === selection.value.backupPath
+    ? verified.value.backupPath
+    : undefined;
+};

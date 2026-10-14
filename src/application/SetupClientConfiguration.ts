@@ -35,7 +35,7 @@ import {
   RegularFileCleanupFailure,
 } from "./RegularFileRead.js";
 import {
-  preserveRecoveryBackup,
+  preserveCurrentRecoveryBackup,
   selectCurrentRecoveryBackup,
 } from "./SetupRecoveryBackup.js";
 import type { ClientConfigurationFileError } from "./ClientConfigurationFiles.js";
@@ -220,23 +220,13 @@ const persistClientConfiguration = async ({
     original === undefined ? undefined : `${client.configPath}.rea.backup`;
   let recoveryBackupPath: string | undefined;
   if (backupPath !== undefined && original !== undefined) {
-    const selection = await selectCurrentRecoveryBackup(backupPath, original);
-    if (!selection.ok) return { status: "failed", reason: "backup" };
-    if (
-      !(await preserveRecoveryBackup(
-        transactionPath,
-        selection.value.backupPath,
-      ))
-    )
+    recoveryBackupPath = await preserveCurrentRecoveryBackup(
+      transactionPath,
+      backupPath,
+      original,
+    );
+    if (recoveryBackupPath === undefined)
       return { status: "failed", reason: "backup" };
-    const verified = await selectCurrentRecoveryBackup(backupPath, original);
-    if (
-      !verified.ok ||
-      verified.value.backupPath !== selection.value.backupPath ||
-      !verified.value.present
-    )
-      return { status: "failed", reason: "backup" };
-    recoveryBackupPath = verified.value.backupPath;
   }
   // A native OpenCode V2 entry replaces REA's legacy V1 entry, which would
   // otherwise conflict with it.
