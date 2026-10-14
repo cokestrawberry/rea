@@ -48,6 +48,7 @@ const nativeFixture = () => {
     load: async () => {},
     afterLoad: () => {},
     discover: async () => {},
+    emittedPayloads: [] as unknown[],
     unloadFailures: 0,
     detachFailures: 0,
     detachCalls: 0,
@@ -91,6 +92,8 @@ const nativeFixture = () => {
           await controls.load();
           loaded.push(source);
           listener?.({ type: "send", payload: source }, null);
+          for (const payload of controls.emittedPayloads)
+            listener?.({ type: "send", payload }, null);
           controls.afterLoad();
         },
         async unload() {
@@ -641,3 +644,18 @@ it.each([0, 1, 2, 3, 4, 8])(
     }
   },
 );
+
+it("bounds the payload nodes a Frida session retains across messages", async () => {
+  const fixture = await connectedFixture();
+  const id = await fixture.start();
+  const emptyObjects = () => Array.from({ length: 150_000 }, () => ({}));
+  fixture.controls.emittedPayloads = [emptyObjects(), emptyObjects()];
+  const loaded = await fixture.manager.loadScript(id, {
+    sourceKind: "inline",
+    source: "node-flood",
+  });
+  expect(loaded.ok).toBe(true);
+  const status = fixture.manager.status(id);
+  expect(status?.messages.length).toBe(1);
+  expect(status?.messagesTruncated).toBe(true);
+});
