@@ -259,6 +259,57 @@ process.stdout.write(JSON.stringify(snapshot) + "\\n");
   });
 });
 
+it("records each child process launch once, including synchronous variants", async () => {
+  const root = await createTestTempDirectory("rea-electron-hook-child-");
+  temporary.push(root);
+  await writeFile(join(root, "electron.js"), electronModuleSource);
+  const script = join(root, "child-processes.cjs");
+  await writeFile(
+    script,
+    `const { exec, execFileSync, execSync, spawnSync } = require("node:child_process");
+const node = process.execPath;
+exec(JSON.stringify(node) + ' -e ""', () => {
+  execSync(JSON.stringify(node) + ' -e ""');
+  spawnSync(node, ["-e", ""]);
+  execFileSync(node, ["-e", ""]);
+  try { execFileSync(node, ["-e", "process.exit(3)"]); } catch {}
+  process.stdout.write(JSON.stringify(globalThis.__reaElectronActiveSnapshot()) + "\\n");
+});
+`,
+  );
+  const hook = join(process.cwd(), "scripts/electron-active-hook.cjs");
+  const execution = await runNode(hook, script, root, root);
+  expect(execution.code, execution.stderr).toBe(0);
+  const snapshot = JSON.parse(
+    execution.stdout.trim().split("\n").at(-1) ?? "null",
+  ) as {
+    readonly events: readonly {
+      readonly kind: string;
+      readonly event: string;
+      readonly phase: string;
+    }[];
+  };
+  const launches = (phase: string) =>
+    snapshot.events
+      .filter(
+        (event) =>
+          event.kind === "process-lifecycle" &&
+          event.event.startsWith("child.") &&
+          event.phase === phase,
+      )
+      .map(({ event }) => event);
+  const launched = [
+    "child.exec",
+    "child.execSync",
+    "child.spawnSync",
+    "child.execFileSync",
+    "child.execFileSync",
+  ];
+  expect(launches("attempted")).toEqual(launched);
+  expect(launches("completed")).toEqual(launched.slice(0, 4));
+  expect(launches("failed")).toEqual(["child.execFileSync"]);
+});
+
 it("preserves fatal process termination after recording uncaught exceptions", async () => {
   const root = await createTestTempDirectory("rea-electron-hook-fatal-");
   temporary.push(root);
