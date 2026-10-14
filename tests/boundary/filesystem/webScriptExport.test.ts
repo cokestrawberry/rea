@@ -114,6 +114,70 @@ describe("empty URL component publication", () => {
   });
 });
 
+describe("over-long URL path publication", () => {
+  it("isolates a script whose path segment exceeds the filesystem name limit", async () => {
+    const scripts = [
+      {
+        url: "https://fixture.test/ordinary.js",
+        bytes: Buffer.from("export const ordinary = 1;"),
+      },
+      {
+        url: `https://fixture.test/${"a".repeat(256)}.js`,
+        bytes: Buffer.from("export const long = 2;"),
+      },
+    ];
+    const { input, resources } = await setup(scriptScenarioFixture(scripts));
+    const exported = await exportWebScripts(input, resources);
+    if (!exported.ok) throw exported.error;
+    const result = webScriptExportResultSchema.parse(
+      exported.value.normalized_result,
+    );
+    if (result.analysis_input === null)
+      throw new Error("Missing analysis input");
+    for (const [index, script] of result.scripts.entries()) {
+      if (script.content.state !== "exported")
+        throw new Error("Missing source bytes");
+      expect(script.content.layout).toBe(index === 0 ? "url-path" : "isolated");
+      expect(
+        await readFile(
+          join(result.analysis_input.input_path, script.content.relative_path),
+        ),
+      ).toEqual(scripts[index]?.bytes);
+    }
+  });
+
+  it("isolates a script when the destination reports ENAMETOOLONG for its planned path", async () => {
+    const bytes = Buffer.from("export const main = 1;");
+    const { input, resources } = await setup(
+      scriptScenarioFixture([
+        { url: "https://fixture.test/app/main.js", bytes },
+      ]),
+    );
+    openMock.mockImplementation(async (...args) => {
+      if (String(args[0]).includes("origins"))
+        throw Object.assign(new Error("injected name limit"), {
+          code: "ENAMETOOLONG",
+        });
+      return actualFs.open(...args);
+    });
+    const exported = await exportWebScripts(input, resources);
+    if (!exported.ok) throw exported.error;
+    const result = webScriptExportResultSchema.parse(
+      exported.value.normalized_result,
+    );
+    const [script] = result.scripts;
+    if (script?.content.state !== "exported" || result.analysis_input === null)
+      throw new Error("Missing source bytes");
+    expect(script.content.layout).toBe("isolated");
+    expect(script.content.layout_reason).toContain("ENAMETOOLONG");
+    expect(
+      await readFile(
+        join(result.analysis_input.input_path, script.content.relative_path),
+      ),
+    ).toEqual(bytes);
+  });
+});
+
 describe("captured script publication boundary", () => {
   it("verifies durable bytes, manifest, capture identity, and existing module analysis", async () => {
     const capture = scriptScenarioFixture([
