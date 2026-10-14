@@ -912,6 +912,68 @@ itWithCaptureCapability(
 );
 
 itWithCaptureCapability(
+  "sends the zero-interval deadline kill and a scripted signal through the retained identity",
+  async () => {
+    const calls: string[] = [];
+    const finalizationHost: FinalizationHost = {
+      observe: async () => ({ state: "readable" as const, identity: "launch" }),
+      signal: async (_pid, identity, signal) => {
+        calls.push(`${identity}:${signal}`);
+        return signal === "SIGKILL" ? "unverified" : "identity-changed";
+      },
+    };
+    const root = await createTestTempDirectory("rea-zero-interval-host-");
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: [finalizationFixture, "ignoring", root],
+        working_directory: root,
+        filesystem_observation_paths: [root],
+        events: [{ type: "signal", at_ms: 0, signal: "SIGINT" }],
+        idle_timeout_ms: 10_000,
+        timeout_ms: 500,
+      }),
+      undefined,
+      process.platform,
+      process.env,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      finalizationHost,
+    );
+
+    if (result.ok) throw new Error("expected an unobserved exit");
+    if (!(result.error instanceof ProcessCaptureError)) throw result.error;
+    if (result.error.cleanupIncomplete)
+      expectUnverifiedHostCleanup(result.error);
+    expect(
+      calls,
+      "the scripted signal and the deadline kill both used the identity-checked host",
+    ).toEqual(["launch:SIGINT", "launch:SIGKILL"]);
+    const partial = result.error.partialObservation;
+    if (partial === undefined || !("observations" in partial))
+      throw new Error("expected incomplete process observations");
+    expect(
+      partial.observations.interaction_events,
+      "a scripted signal that was not delivered is not recorded as dispatched",
+    ).toMatchObject({
+      state: "available",
+      value: [{ type: "signal", data: "SIGINT", outcome: "failed" }],
+    });
+    expect(
+      partial.observations.exit.state,
+      "no exit is invented when the deadline kill was not delivered",
+    ).toBe("unavailable");
+    expect(
+      partial.observations,
+      "a scenario without an interval carries no finalization record",
+    ).not.toHaveProperty("finalization");
+  },
+  15_000,
+);
+
+itWithCaptureCapability(
   "classifies cancellation raised by the initial filesystem snapshot",
   async () => {
     const root = await createTestTempDirectory("rea-snapshot-initial-cancel-");

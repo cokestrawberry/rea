@@ -307,13 +307,18 @@ immediately, also during finalization, and ends the run as cancelled.
 REA binds the captured root's first start identity to its ownership token,
 checking the identity before and after reading that token. A missing or
 mismatched token, or an identity change during validation, leaves the identity
-unverified rather than adopting a replacement process. Both finalization
-signals recheck that retained identity immediately before the call; the check
-and signal remain separate operating-system operations. REA does not fall back
-to a bare PID kill for either finalization signal; failed identity or ownership
-validation is recorded as `unverified` with its reason. Cancellation before any
-deadline keeps the existing terminal kill. Descendants are not signalled during
+unverified rather than adopting a replacement process. Every signal REA sends to
+the captured root rechecks that retained identity immediately before the call:
+both finalization signals, the immediate `SIGKILL` of a deadline without
+`finalization_ms` or of a cancellation, and each `signal` event of the scenario.
+The check and signal remain separate operating-system operations. REA does not
+fall back to a bare PID kill; failed identity or ownership validation is
+recorded as `unverified` with its reason. Descendants are not signalled during
 finalization; owned-process cleanup handles them afterwards.
+
+A `signal` event is recorded once its delivery settles: `dispatched` when the
+signal was sent, `target_exited` when no live process matched the root, and
+`failed` when the identity changed or could not be verified.
 
 `exit.reason` keeps the initiating deadline (`timeout` or `idle_timeout`).
 `exit.code` is `null` for every deadline exit; the code of an exit observed
@@ -365,7 +370,9 @@ absent when no finalization was attempted:
   apart from it.
 - If the `SIGKILL` cannot be delivered, REA stops waiting for an exit, keeps every
   observation collected so far with the delivery results, and releases the run
-  through owned-process cleanup.
+  through owned-process cleanup. The same holds for the immediate `SIGKILL` of a
+  deadline with `finalization_ms` of `0` and of a cancellation before any
+  deadline, which carry no finalization record.
 - The `SIGKILL` is not sequenced after the `SIGTERM` delivery result: the two
   deliveries are independent, because cancellation must not wait for a slow
   identity check.

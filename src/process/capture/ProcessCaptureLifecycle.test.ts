@@ -16,8 +16,8 @@ interface FakeExit {
 
 /**
  * Terminal whose exit notification the test delivers when it chooses, plus
- * the identity-checked signaller that finalization uses instead of a bare
- * terminal kill. Both record into `signals`.
+ * the identity-checked signaller that every deadline and cancellation signal
+ * goes through. The signaller records into `signals`.
  */
 const fakeTerminal = (
   deliveries: Partial<Record<"SIGTERM" | "SIGKILL", Delivery>> = {},
@@ -26,13 +26,10 @@ const fakeTerminal = (
 ) => {
   let listener: ((exit: FakeExit) => void) | undefined;
   const signals: string[] = [];
-  const terminal: Pick<IPty, "onExit" | "kill"> = {
+  const terminal: Pick<IPty, "onExit"> = {
     onExit: (next) => {
       listener = next;
       return { dispose: () => undefined };
-    },
-    kill: (signal) => {
-      signals.push(`terminal:${signal ?? "SIGHUP"}`);
     },
   };
   const signalTarget = async (
@@ -145,10 +142,6 @@ it("kills at once when cancelled during the finalization interval", async () => 
     exit.finalization?.signals.map(({ signal }) => signal),
     "cancellation records both attempts",
   ).toEqual(["SIGTERM", "SIGKILL"]);
-  expect(
-    fake.signals.filter((signal) => signal.startsWith("terminal:")),
-    "cancellation during finalization never uses a bare terminal kill",
-  ).toEqual([]);
 });
 
 it("records escalation attempts alongside an observed SIGKILL exit", async () => {
@@ -309,10 +302,6 @@ it.each(["identity-changed", "unverified"] as const)(
         { signal: "SIGKILL", delivery },
       ],
     });
-    expect(
-      fake.signals.filter((signal) => signal.startsWith("terminal:")),
-      "a failed identity check never falls back to a bare terminal kill",
-    ).toEqual([]);
   },
 );
 
@@ -358,19 +347,82 @@ it("waits for a pending delivery before reporting an observed exit", async () =>
   ).toMatchObject([{ signal: "SIGTERM", delivery: "signaled" }]);
 });
 
-it("keeps the zero-interval deadline as a bare SIGKILL", async () => {
+it("sends the zero-interval deadline kill once through the identity-checked signaller", async () => {
   const fake = fakeTerminal();
   const pending = start(fake, { timeout_ms: 60, finalization_ms: 0 });
-  await waitFor(() => fake.signals.includes("terminal:SIGKILL"));
+  await waitFor(() => fake.signals.includes("SIGKILL"));
+  await new Promise((resolve) => setTimeout(resolve, 100));
   fake.deliverExit({ exitCode: 0, signal: 9 });
 
   const exit = observed(await pending);
 
   expect(
-    fake.signals.filter((signal) => !signal.startsWith("terminal:")),
-    "the identity-checked signaller is never used without an interval",
-  ).toEqual([]);
+    fake.signals,
+    "the deadline kill is sent once, not on every poll",
+  ).toEqual(["SIGKILL"]);
+  expect(exit.reason, "the initiating deadline is retained").toBe("timeout");
   expect(exit.finalization, "no finalization record exists").toBeUndefined();
+});
+
+it("sends a cancellation kill without an interval through the identity-checked signaller", async () => {
+  const fake = fakeTerminal();
+  const controller = new AbortController();
+  const pending = start(
+    fake,
+    { timeout_ms: 60_000, finalization_ms: 60_000 },
+    controller.signal,
+  );
+  controller.abort();
+  await waitFor(() => fake.signals.includes("SIGKILL"));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  fake.deliverExit({ exitCode: 0, signal: 9 });
+
+  const exit = observed(await pending);
+
+  expect(
+    fake.signals,
+    "cancellation before any deadline sends one kill and no SIGTERM",
+  ).toEqual(["SIGKILL"]);
+  expect(exit.reason, "cancellation is the exit reason").toBe("cancelled");
+  expect(
+    exit.finalization,
+    "cancellation before any deadline records no finalization",
+  ).toBeUndefined();
+});
+
+it.each(["identity-changed", "unverified"] as const)(
+  "stops waiting for an exit when the zero-interval kill reports %s",
+  async (delivery) => {
+    const fake = fakeTerminal({ SIGKILL: delivery });
+    const pending = start(fake, { timeout_ms: 60, finalization_ms: 0 });
+
+    const result = await pending;
+
+    expect(result.unobserved, "no exit is invented").toBe(true);
+    expect(result.reason, "the initiating deadline is retained").toBe(
+      "timeout",
+    );
+    expect(
+      result.finalization,
+      "the undelivered kill leaves no finalization record",
+    ).toBeUndefined();
+  },
+);
+
+it("returns at once when a cancellation kill without an interval cannot be delivered", async () => {
+  const fake = fakeTerminal({ SIGKILL: "unverified" });
+  const controller = new AbortController();
+  const pending = start(
+    fake,
+    { timeout_ms: 60_000, finalization_ms: 60_000 },
+    controller.signal,
+  );
+  controller.abort();
+
+  const result = await pending;
+
+  expect(result.reason, "cancellation is the exit reason").toBe("cancelled");
+  expect(result.unobserved, "the capture does not wait for an exit").toBe(true);
 });
 
 it("stops waiting for a hung delivery once the exit is observed", async () => {
@@ -470,14 +522,15 @@ it("leaves no referenced timer behind after a zero-interval exit", async () => {
   const fake = fakeTerminal();
   const before = activeTimers();
   const pending = start(fake, { timeout_ms: 60, finalization_ms: 0 });
-  await waitFor(() => fake.signals.includes("terminal:SIGKILL"));
+  await waitFor(() => fake.signals.includes("SIGKILL"));
   fake.deliverExit({ exitCode: 0, signal: 9 });
 
   await pending;
+  await new Promise((resolve) => setImmediate(resolve));
 
   expect(
     activeTimers(),
-    "the zero path resolves without a bounded-wait timer",
+    "the zero path leaves no bounded-wait timer behind",
   ).toBeLessThanOrEqual(before);
 });
 
