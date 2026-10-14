@@ -142,24 +142,6 @@ export const runPcapCommand = async (options: {
     };
   } catch (cause) {
     if (cause instanceof AnalysisError) throw cause;
-    if (
-      cause instanceof OwnedCommandFailure &&
-      cause.cleanupOwner !== undefined
-    )
-      options.retain(
-        cause.cleanupOwner,
-        cause.resources,
-        cause.cleanupFailure ?? cause.message,
-        cause.snapshot === null
-          ? { stdout: "", stderr: "", truncated: true }
-          : {
-              stdout: cause.snapshot.stdout.text,
-              stderr: cause.snapshot.stderr.text,
-              truncated:
-                cause.snapshot.diagnosticTruncated === true ||
-                cause.snapshot.outputIncomplete === true,
-            },
-      );
     const details = {
       cause,
       ...(cause instanceof OwnedCommandFailure && cause.snapshot !== null
@@ -172,14 +154,6 @@ export const runPcapCommand = async (options: {
                 cause.snapshot.outputIncomplete === true,
               exit_code: cause.snapshot.exitCode ?? null,
               signal: cause.snapshot.signal ?? null,
-            },
-          }
-        : {}),
-      ...(cause instanceof OwnedCommandFailure && cause.cleanupFailure !== null
-        ? {
-            cleanup: {
-              reason: cause.cleanupFailure,
-              resources: cause.resources,
             },
           }
         : {}),

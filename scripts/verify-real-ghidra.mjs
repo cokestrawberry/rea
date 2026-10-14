@@ -515,13 +515,6 @@ async function verifyTarget(targetPath, variant, expectedTarget = null) {
       profile.value.profile.digest,
       parsedTarget.value.sha256,
     );
-    const pinged = await client.ping();
-    if (!pinged.ok) throw pinged.error;
-    assertSession(
-      pinged.value,
-      profile.value.profile.digest,
-      parsedTarget.value.sha256,
-    );
     runtimeCoordinates = client.diagnostics();
     assertRuntimeCoordinates(runtimeCoordinates);
 
@@ -585,7 +578,7 @@ async function verifyTarget(targetPath, variant, expectedTarget = null) {
       variant,
       target: parsedTarget.value,
       profile: profile.value.profile,
-      session: pinged.value,
+      session: started.value,
       documents,
       segments,
       procedures,

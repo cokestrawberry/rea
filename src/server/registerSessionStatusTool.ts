@@ -65,14 +65,10 @@ export const registerSessionStatusTool = (
       }
       const status = session.status();
       const statusObject = jsonObjectSchema.parse(status);
-      const toolAvailability = buildCapabilityInventory(
-        status,
-        {
-          ...availabilityPolicy(),
-          androidAnalysisAvailability: androidAvailability,
-        },
-        clientFeatures,
-      );
+      const toolAvailability = buildCapabilityInventory(status, {
+        ...availabilityPolicy(),
+        androidAnalysisAvailability: androidAvailability,
+      });
       const serverIdentity = createServerIdentity({
         startedAt,
         expected: {
