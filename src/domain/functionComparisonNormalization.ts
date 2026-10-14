@@ -249,7 +249,7 @@ const swiftLiteralSites = (snapshot: FunctionSnapshot) => {
   return { values, complete };
 };
 
-export const sorted = (values: readonly unknown[]): readonly unknown[] =>
+export const sorted = <T>(values: readonly T[]): readonly T[] =>
   values
     .map((value) => ({
       value,

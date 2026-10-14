@@ -268,6 +268,20 @@ const compareReferences = (
       context,
     );
   if (
+    [...leftProjection, ...rightProjection].some(({ source, target }) =>
+      [source, target].some((name) => name !== null && isAutoName(name)),
+    )
+  )
+    return unresolvedDimension({
+      dimension: "references",
+      links: context.links,
+      leftCount: leftProjection.length,
+      rightCount: rightProjection.length,
+      limitations: [
+        "Address-derived reference endpoint names cannot be matched safely.",
+      ],
+    });
+  if (
     canonicalJson(leftProjection, "Function comparison") !==
     canonicalJson(rightProjection, "Function comparison")
   )
