@@ -28,6 +28,20 @@ import {
 import { waitForExit as waitForChildExit } from "../../../support/process/processFixture.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 
+const runtime = vi.hoisted(() => ({ limit: undefined as number | undefined }));
+vi.mock("node:buffer", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:buffer")>();
+  return {
+    ...original,
+    constants: {
+      ...original.constants,
+      get MAX_STRING_LENGTH() {
+        return runtime.limit ?? original.constants.MAX_STRING_LENGTH;
+      },
+    },
+  };
+});
+
 const fixturePath = fileURLToPath(
   new URL("../../../fixtures/fakeGhidra.mjs", import.meta.url),
 );
@@ -150,6 +164,7 @@ const clientFor = (
 
 afterEach(async () => {
   vi.useRealTimers();
+  runtime.limit = undefined;
   await Promise.all(clients.splice(0).map((client) => client.close()));
 });
 
@@ -431,6 +446,31 @@ describe("GhidraClient", () => {
     expect(value.length).toBe(64 * 1024 * 1024 + 1);
     expect(value.slice(0, 4)).toBe("xxxx");
     expect(value.slice(-4)).toBe("xxxx");
+  });
+
+  it("fails the request with a resource constraint when a result outgrows the runtime string limit", async () => {
+    const client = clientFor(new FixtureLauncher("oversized_result"));
+    const started = await client.start();
+    if (!started.ok) throw started.error;
+    runtime.limit = 1024 * 1024;
+
+    const result = await client.callTool("list_strings", { document: null });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "protocol",
+        cause: {
+          _tag: "AnalysisResourceConstraintError",
+          operation: "ghidra_bridge_response",
+          resource: "memory",
+          reportedLimits: {
+            boundary: "ghidra-bridge-response",
+            max_string_code_units: 1024 * 1024,
+          },
+        },
+      },
+    });
   });
 
   it("completes the same authenticated handshake over loopback TCP", async () => {

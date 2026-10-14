@@ -1,3 +1,6 @@
+import { constants } from "node:buffer";
+
+import { ProviderResponseLineLimitError } from "../process/ProviderResponseLineLimit.js";
 import {
   parseBridgeMessageLine,
   type HopperBridgeMessage,
@@ -8,20 +11,33 @@ export interface HopperResponseStreamOptions {
   readonly hasQueued: (id: number) => boolean;
   readonly nextRequestId: () => number;
   readonly abort: (message: string, cause?: Error) => void;
+  readonly overflow: (error: ProviderResponseLineLimitError) => void;
 }
 
 /** Incrementally validates Hopper NDJSON response frames. */
 export class HopperResponseStream {
   #buffer = "";
   #fragments: string[] = [];
+  #fragmentUnits = 0;
 
   constructor(readonly options: HopperResponseStreamOptions) {}
 
   push(chunk: string): void {
+    const pending = this.#buffer.length + this.#fragmentUnits + chunk.length;
+    // Joining past the runtime string limit throws outside any error handler.
+    if (pending > constants.MAX_STRING_LENGTH) {
+      this.reset();
+      this.options.overflow(
+        new ProviderResponseLineLimitError("Hopper", pending),
+      );
+      return;
+    }
     this.#fragments.push(chunk);
+    this.#fragmentUnits += chunk.length;
     if (!chunk.includes("\n")) return;
     this.#buffer += this.#fragments.join("");
     this.#fragments = [];
+    this.#fragmentUnits = 0;
     let newline = this.#buffer.indexOf("\n");
     while (newline >= 0) {
       const line = this.#buffer.slice(0, newline).trim();
@@ -34,6 +50,7 @@ export class HopperResponseStream {
   reset(): void {
     this.#buffer = "";
     this.#fragments = [];
+    this.#fragmentUnits = 0;
   }
 
   #acceptLine(line: string): boolean {

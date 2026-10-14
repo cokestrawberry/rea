@@ -196,6 +196,7 @@ export class HopperClient {
       hasQueued: (id) => this.#requests.hasQueued(id),
       nextRequestId: () => this.#nextId,
       abort: (message, cause) => this.#abortProtocol(message, cause),
+      overflow: (error) => this.#abortConnection(error),
     });
   }
 
@@ -972,7 +973,11 @@ export class HopperClient {
   }
 
   #abortProtocol(message: string, cause?: Error): void {
-    this.#failAll(new HopperProtocolError(message, { cause }));
+    this.#abortConnection(new HopperProtocolError(message, { cause }));
+  }
+
+  #abortConnection(error: HopperError): void {
+    this.#failAll(error);
     this.#socket?.destroy();
   }
 
