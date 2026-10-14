@@ -160,6 +160,10 @@ existing analysis families directly, for example
 - Cancellation during a package pull preserves caller-selected output. The
   error includes partial observations identifying completed artifacts and the
   interrupted local path; remaining APKs were not attempted.
+- `pull_adb_file` refuses a device path that the device shell does not report
+  as a regular file before creating output. A file left by a failed or
+  cancelled pull stays in place, and the error's partial observation gives its
+  `local_path` and an unknown digest status.
 - Bugreports collect into isolated staging and publish with exclusive creation;
   filename collisions select the next numeric suffix. If publication fails, the
   completed archive remains in staging. The error's partial observation gives
