@@ -5,6 +5,7 @@ import { createConnection } from "node:net";
 import { lstat, open, opendir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parse } from "lossless-json";
 import { z } from "zod";
 
 import {
@@ -98,6 +99,14 @@ const serializeRequest = (
       { frame_bytes: frameBytes, max_frame_bytes: MAX_FRAME_BYTES },
     );
   return requestBytes as AuthenticatedRequestBytes;
+};
+
+// Number() would round integers beyond 2^53; keep their exact decimal digits.
+const parseBridgeNumber = (literal: string): number | string => {
+  const value = Number(literal);
+  return /^-?\d+$/.test(literal) && !Number.isSafeInteger(value)
+    ? literal
+    : value;
 };
 
 class CutterBridgeResponseFrames {
@@ -867,7 +876,11 @@ export class CutterBridgeClient {
                 !timingSafeEqual(expected, Buffer.from(envelope.proof, "hex"))
               )
                 throw new Error("response proof failed");
-              const response: unknown = JSON.parse(envelope.response);
+              const response: unknown = parse(
+                envelope.response,
+                undefined,
+                parseBridgeNumber,
+              );
               connection.end();
               finish(() => resolve(response));
               return false;
