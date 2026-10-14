@@ -126,6 +126,35 @@ export class FridaInstrumentationService {
     cause: unknown,
     loaded?: FridaScriptObservation,
   ): Promise<Result<never, AnalysisError>> {
+    const { closed, partialObservation } = await this.#closeWithObservation(
+      operation,
+      session,
+      input,
+      loaded,
+    );
+    return err(
+      new AnalysisCancelledError(operation, {
+        ...(cause === undefined ? {} : { cause }),
+        partialObservation,
+        ...(closed.ok
+          ? {}
+          : {
+              cleanup: {
+                reason: closed.error.message,
+                resources: [session.sessionId],
+              },
+            }),
+      }),
+    );
+  }
+
+  /** Close a started session and describe what was observed before and during cleanup. */
+  async #closeWithObservation(
+    operation: string,
+    session: FridaSessionObservation,
+    input: StartFridaSessionInput,
+    loaded?: FridaScriptObservation,
+  ) {
     const status = this.#provider.status(session.sessionId);
     const observation = status ?? {
       ...session,
@@ -163,20 +192,7 @@ export class FridaInstrumentationService {
       },
       fridaParameters(session.sessionId, input, session.deviceId),
     );
-    return err(
-      new AnalysisCancelledError(operation, {
-        ...(cause === undefined ? {} : { cause }),
-        partialObservation,
-        ...(closed.ok
-          ? {}
-          : {
-              cleanup: {
-                reason: closed.error.message,
-                resources: [session.sessionId],
-              },
-            }),
-      }),
-    );
+    return { closed, partialObservation };
   }
 
   async loadScript(
@@ -293,18 +309,20 @@ export class FridaInstrumentationService {
           loaded.value,
         );
       if (!resumed.ok) {
-        const closed = await this.#provider.closeSession(
-          started.value.sessionId,
+        const { closed, partialObservation } = await this.#closeWithObservation(
+          "instrument_with_frida",
+          started.value,
+          input,
+          loaded.value,
         );
-        return closed.ok
-          ? resumed
-          : err(
-              withCleanupFailure(
-                resumed.error,
-                closed.error.message,
-                started.value.sessionId,
-              ),
+        const failure = closed.ok
+          ? resumed.error
+          : withCleanupFailure(
+              resumed.error,
+              closed.error.message,
+              started.value.sessionId,
             );
+        return err(failure.retainPartialObservation(partialObservation));
       }
     }
     try {

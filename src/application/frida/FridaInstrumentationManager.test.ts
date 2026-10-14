@@ -1239,3 +1239,29 @@ it("names the unknown session or script ID it rejects", async () => {
   });
   await manager.closeAll();
 });
+
+it("reports a detached session as unavailable instead of an unknown session_id", async () => {
+  const bindings = new FakeDeviceManager();
+  const manager = new FridaInstrumentationManager({ deviceManager: bindings });
+  const started = await manager.startSession({
+    mode: "spawn",
+    deviceId: "local",
+    program: "/tmp/fixture",
+  });
+  if (!started.ok) throw started.error;
+  const { sessionId } = started.value;
+  bindings.device.session.markDetached();
+
+  for (const result of [
+    await manager.loadScript(sessionId, { sourceKind: "inline", source: "" }),
+    await manager.resumeSession(sessionId),
+  ])
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCapabilityUnavailableError",
+        reason: `Frida session ${sessionId} is detached; close it with close_frida_session.`,
+      },
+    });
+  expect(await manager.closeSession(sessionId)).toMatchObject({ ok: true });
+});

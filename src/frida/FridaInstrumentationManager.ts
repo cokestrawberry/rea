@@ -372,8 +372,10 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
     if (signal?.aborted)
       return err(cancelledOperation("load_frida_script", signal));
     const managed = this.#sessions.get(sessionId);
-    if (managed === undefined || managed.state === "detached")
+    if (managed === undefined)
       return err(unknownFridaSession("load_frida_script", sessionId));
+    if (managed.state === "detached")
+      return err(detachedFridaSession("load_frida_script", sessionId));
 
     let scriptSource: string;
     try {
@@ -494,8 +496,10 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
     sessionId: string,
   ): Promise<Result<null, AnalysisError>> {
     const managed = this.#sessions.get(sessionId);
-    if (managed === undefined || managed.state === "detached")
+    if (managed === undefined)
       return err(unknownFridaSession("resume_frida_session", sessionId));
+    if (managed.state === "detached")
+      return err(detachedFridaSession("resume_frida_session", sessionId));
     if (managed.mode !== "spawn" || managed.state !== "paused")
       return err(
         new AnalysisCapabilityUnavailableError(
@@ -1432,6 +1436,17 @@ const providerError = (
         }),
   });
 };
+
+/** An owned session whose target or transport detached; only closing it remains valid. */
+const detachedFridaSession = (
+  operation: string,
+  sessionId: string,
+): AnalysisError =>
+  new AnalysisCapabilityUnavailableError(
+    "frida",
+    operation,
+    `Frida session ${sessionId} is detached; close it with close_frida_session.`,
+  );
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
