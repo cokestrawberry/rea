@@ -1,5 +1,4 @@
 import type { IPty } from "@lydell/node-pty";
-import type { TerminalRetention } from "../../domain/process/processCaptureCoverage.js";
 import type { ProcessCapture } from "../../domain/process/processCaptureParsing.js";
 import type { ProcessScenario } from "../../domain/process/processScenario.js";
 import { parseProcessCapture } from "../../domain/process/processCaptureParsing.js";
@@ -32,6 +31,7 @@ import {
   cleanupReportFailure,
   captureTerminalFrames,
   createProcessCaptureObservationBuffer,
+  type TerminalFrameCapture,
   createRunManifest,
   observeLaunchedExecutable,
   observeSelectedExecutable,
@@ -79,7 +79,7 @@ interface StartedCaptureRuntime {
   readonly startedAt: Date;
   readonly executableIdentity: ReturnType<typeof observeLaunchedExecutable>;
   readonly lastOutput: () => number;
-  readonly rawTerminalRetention: () => TerminalRetention;
+  readonly rawTerminal: TerminalFrameCapture;
   readonly stopSampler: ReturnType<typeof startProcessSampler>;
   /** Signals the captured root only while its launch-time start identity still matches. */
   readonly signalRoot: (signal: "SIGTERM" | "SIGKILL") => Promise<{
@@ -295,7 +295,7 @@ const startCaptureRuntime = async (
       scenario.executable,
       selectedExecutable,
     );
-    const rawTerminalRetention = captureTerminalFrames({
+    const rawTerminal = captureTerminalFrames({
       ...options,
       terminal,
       started,
@@ -324,7 +324,7 @@ const startCaptureRuntime = async (
       startedAt,
       executableIdentity,
       lastOutput: () => lastOutput,
-      rawTerminalRetention,
+      rawTerminal,
       stopSampler,
       signalRoot: retainRootSignaller(
         terminal.pid,
@@ -499,6 +499,7 @@ const completeCapture = async (options: {
   const sampling = await runtime.stopSampler();
   const samplingPartial = sampling.partial;
   await settleProcessCaptureJournal(options.eventJournal);
+  runtime.rawTerminal.flush();
   assertNotCancelled(options.signal);
   let after: Awaited<ReturnType<typeof snapshotRoots>>;
   try {
@@ -575,7 +576,7 @@ const completeCapture = async (options: {
     before: options.before,
     after,
     truncationDetails: {
-      raw_terminal: runtime.rawTerminalRetention(),
+      raw_terminal: runtime.rawTerminal.retention(),
       rendered_terminal: runtime.renderer.retention(),
       filesystem_before: options.before.coverage,
       filesystem_after: after.coverage,
@@ -775,6 +776,7 @@ const runProcessScenario = async (
     });
   } catch (cause: unknown) {
     executionFailure = normalizeCaptureFailure(cause, signal);
+    runtime?.rawTerminal.flush();
     if (
       runtime !== undefined &&
       observations.rendered_frames.state === "unavailable" &&

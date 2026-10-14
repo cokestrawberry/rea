@@ -42,6 +42,10 @@ import {
 import { PROCESS_PROVIDER } from "../../domain/process/processEvidenceProvider.js";
 import { TerminalRenderer } from "./TerminalRenderer.js";
 import {
+  createSensitiveOutputRedactor,
+  sensitiveTerminalInput,
+} from "./SensitiveTerminalInput.js";
+import {
   hasCaptureTruncation,
   type TerminalRetention,
   type ProcessCaptureTruncationDetails,
@@ -290,6 +294,7 @@ export const buildCaptureResult = (
   );
   const sensitiveInputUnknown =
     "Sensitive scripted input values are redacted from process capture Evidence.";
+  const terminalWithheld = !sensitiveTerminalInput(options.scenario).redactable;
   const filesystemObservationUnknown =
     "No filesystem observation paths were selected; filesystem effects remain unknown.";
   const hasFilesystemObservations =
@@ -351,9 +356,10 @@ export const buildCaptureResult = (
       "Inherited host environment variables are not recorded and may affect results.",
       ...(!hasFilesystemObservations ? [filesystemObservationUnknown] : []),
       ...filesystemUnknowns,
-      ...captureCoverageUnknowns(options.truncationDetails).map(
-        ({ reason }) => reason,
-      ),
+      ...captureCoverageUnknowns(
+        options.truncationDetails,
+        terminalWithheld,
+      ).map(({ reason }) => reason),
       ...(hasSensitiveScriptedInput ? [sensitiveInputUnknown] : []),
     ],
     residual_unknowns: [
@@ -390,15 +396,17 @@ export const buildCaptureResult = (
       ...(hasSensitiveScriptedInput
         ? [{ scope: "interaction" as const, reason: sensitiveInputUnknown }]
         : []),
-      ...captureCoverageUnknowns(options.truncationDetails).filter(
-        ({ scope }) => scope !== "terminal",
-      ),
+      ...captureCoverageUnknowns(
+        options.truncationDetails,
+        terminalWithheld,
+      ).filter(({ scope }) => scope !== "terminal"),
     ],
   };
 };
 
 const captureCoverageUnknowns = (
   details: ProcessCaptureTruncationDetails,
+  terminalWithheld: boolean,
 ): UnverifiedProcessCapture["residual_unknowns"] => {
   const unknowns: Array<UnverifiedProcessCapture["residual_unknowns"][number]> =
     [];
@@ -407,8 +415,9 @@ const captureCoverageUnknowns = (
   )
     unknowns.push({
       scope: "terminal",
-      reason:
-        "Raw PTY chunks exceeded output_bytes and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
+      reason: terminalWithheld
+        ? "Raw PTY chunks were withheld because a sensitive scripted input contains control characters, so its echo cannot be redacted exactly; rendered states also lack those inputs. See truncation_details.raw_terminal."
+        : "Raw PTY chunks exceeded output_bytes and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
     });
   if (
     details.rendered_terminal.observed_frames >
@@ -1296,8 +1305,15 @@ export const cleanupReportFailure = (
         .join("; ");
 };
 
+/** Raw PTY retention accounting and the release of redaction-held output. */
+export interface TerminalFrameCapture {
+  readonly retention: () => TerminalRetention;
+  /** Retain output held back at a chunk boundary; call once no more can arrive. */
+  readonly flush: () => void;
+}
+
 export const captureTerminalFrames = (options: {
-  readonly terminal: IPty;
+  readonly terminal: Pick<IPty, "onData">;
   readonly scenario: ProcessScenario;
   readonly frames: TerminalFrame[];
   readonly started: number;
@@ -1305,16 +1321,22 @@ export const captureTerminalFrames = (options: {
   readonly renderer: TerminalRenderer;
   readonly normalizeText: (value: string) => string;
   readonly recordEvent: RecordProcessCaptureEvent;
-}): (() => TerminalRetention) => {
+}): TerminalFrameCapture => {
+  const sensitive = sensitiveTerminalInput(options.scenario);
+  const redactor = createSensitiveOutputRedactor(
+    sensitive.redactable ? sensitive.values : [],
+  );
   let outputBytes = 0;
   let observedBytes = 0;
   let observedFrames = 0;
-  options.terminal.onData((data) => {
-    options.onOutput();
+  const retain = (data: string): void => {
     const bytes = Buffer.byteLength(data);
     observedBytes += bytes;
     observedFrames += 1;
-    if (outputBytes + bytes > options.scenario.limits.output_bytes) {
+    if (
+      !sensitive.redactable ||
+      outputBytes + bytes > options.scenario.limits.output_bytes
+    ) {
       return;
     }
     outputBytes += bytes;
@@ -1332,14 +1354,25 @@ export const captureTerminalFrames = (options: {
     });
     options.renderer.write(data, atMs);
     options.recordEvent("frames", sequence);
+  };
+  options.terminal.onData((data) => {
+    options.onOutput();
+    const visible = redactor.push(data);
+    if (visible !== "") retain(visible);
   });
-  return () => ({
-    budget_bytes: options.scenario.limits.output_bytes,
-    observed_bytes: observedBytes,
-    retained_bytes: outputBytes,
-    observed_frames: observedFrames,
-    retained_frames: options.frames.length,
-  });
+  return {
+    retention: () => ({
+      budget_bytes: options.scenario.limits.output_bytes,
+      observed_bytes: observedBytes,
+      retained_bytes: outputBytes,
+      observed_frames: observedFrames,
+      retained_frames: options.frames.length,
+    }),
+    flush: () => {
+      const tail = redactor.flush();
+      if (tail !== "") retain(tail);
+    },
+  };
 };
 
 export const resolveProcessResult = (

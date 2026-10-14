@@ -1070,6 +1070,33 @@ itWithCaptureCapability(
 );
 
 itWithCaptureCapability(
+  "redacts a sensitive scripted input from PTY echo and rendered terminal state",
+  async () => {
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: [processFixture, "interactive"],
+        working_directory: dirname(processFixture),
+        events: [
+          { type: "resize", at_ms: 0, columns: 100, rows: 40 },
+          { type: "input", at_ms: 0, data: "answer\n", sensitive: true },
+        ],
+        timeout_ms: 20_000,
+        idle_timeout_ms: 10_000,
+      }),
+    );
+    const { capture } = captureObservations(result);
+    expect(capture.frames.map(({ data }) => data).join("")).toContain(
+      "input:<redacted-input> unicode:雪",
+    );
+    expect(
+      JSON.stringify([capture.frames, capture.rendered_frames]),
+    ).not.toContain("answer");
+    expect(capture.exit.code).toBe(0);
+  },
+);
+
+itWithCaptureCapability(
   "dispatches an external signal without depending on child startup output",
   async () => {
     const result = await captureProcessScenario(

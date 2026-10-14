@@ -216,6 +216,14 @@ resource limits, and normalization settings have defaults; see
 `processScenarioSchema` for the exact contract. Event times are milliseconds
 from launch, must be ordered, and must fall within `timeout_ms`. Inputs marked
 `sensitive` are sent to the process but persisted as a byte-count placeholder.
+Their text, without a trailing line break, is also replaced with
+`<redacted-input>` wherever it appears in terminal output, such as the PTY echo.
+Redaction precedes normalization, so `frames`, `raw_data`, and rendered frames
+all carry the placeholder. A value split across PTY chunks is matched across the
+boundary. If a sensitive input contains control characters or an inner line
+break, the PTY rewrites its echo and REA cannot match it exactly. The capture
+then withholds all terminal output and reports it as omitted, with a `terminal`
+limitation naming the cause.
 Environment overrides are recorded in the scenario commitment; inherited
 values are not copied into Evidence.
 
