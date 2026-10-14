@@ -104,6 +104,22 @@ it.skipIf(process.platform === "win32")(
 );
 
 it.skipIf(process.platform === "win32")(
+  "truncates oversized recent frames at a UTF-8 byte boundary",
+  async () => {
+    const provider = await makeProvider(
+      'process.stdout.write("\\0"); process.stdin.resume(); setTimeout(() => process.stdout.write("\\uAC00".repeat(10000) + "\\0"), 20);',
+    );
+    const { manager, sessionId } = await start(provider);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const status = manager.status(sessionId);
+    expect(status?.recent_output_truncated).toBe(true);
+    expect(status?.recent_output.at(-1)).toBe(
+      `${"가".repeat(Math.floor((16 * 1024) / 3))}[recent frame truncated]`,
+    );
+  },
+);
+
+it.skipIf(process.platform === "win32")(
   "bounds recent history after many unsolicited frames",
   async () => {
     const provider = await makeProvider(

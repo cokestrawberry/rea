@@ -1087,7 +1087,7 @@ export class RizinDebugSessionManager {
   ): void {
     const historyFrame =
       frameBytes > MAX_RECENT_FRAME_BYTES || frame.truncated
-        ? `${frame.text.slice(0, MAX_RECENT_FRAME_BYTES)}[recent frame truncated]`
+        ? `${truncateUtf8(frame.text, MAX_RECENT_FRAME_BYTES)}[recent frame truncated]`
         : frame.text;
     if (frameBytes > MAX_RECENT_FRAME_BYTES || frame.truncated)
       session.historyTruncated = true;
