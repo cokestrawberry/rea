@@ -171,6 +171,21 @@ describe("setup workflow", () => {
     expect(result.remediation).toBeUndefined();
   });
 
+  it("passes the caller cancellation signal to the Hopper installer", async () => {
+    const host = new FakeSetupHost("linux");
+    host.distribution = {
+      id: "ubuntu",
+      versionId: "24.04",
+      packageFamily: "deb",
+      hopperSetupSupported: true,
+    };
+    const controller = new AbortController();
+
+    await runSetup({ ...options(true, true), signal: controller.signal }, host);
+
+    expect(host.hopperSignals).toEqual([controller.signal]);
+  });
+
   it("reuses existing Hopper without selecting every detected client", async () => {
     const host = new FakeSetupHost();
     host.hopper = "/Applications/Hopper";

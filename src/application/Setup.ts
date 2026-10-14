@@ -369,7 +369,10 @@ const installHopperAction = async (input: {
     label,
     state: "started",
   });
-  const installed = await input.host.installHopper(input.options.installHopper);
+  const installed = await input.host.installHopper(
+    input.options.installHopper,
+    input.options.signal,
+  );
   if (installed.status === "failed") {
     emitProgress(input.options, {
       actionId: "install_hopper",

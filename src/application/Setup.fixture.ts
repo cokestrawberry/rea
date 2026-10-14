@@ -41,6 +41,7 @@ export class FakeSetupHost implements SetupHost {
   clientInspections = new Map<string, ClientConfigurationInspection>();
   hopperInstalls = 0;
   hopperReplaceRequests: boolean[] = [];
+  hopperSignals: Array<AbortSignal | undefined> = [];
   configurations = 0;
   skillInstalls = 0;
   doctorCalls = 0;
@@ -79,9 +80,11 @@ export class FakeSetupHost implements SetupHost {
   });
   installHopper = (
     replaceExisting: boolean,
+    signal?: AbortSignal,
   ): Promise<SetupHopperInstallResult> => {
     this.hopperInstalls += 1;
     this.hopperReplaceRequests.push(replaceExisting);
+    this.hopperSignals.push(signal);
     this.linuxDemoRuntimeMissing = false;
     if (this.hopperInstallSucceeds) {
       this.hopper = "/manual/Hopper";

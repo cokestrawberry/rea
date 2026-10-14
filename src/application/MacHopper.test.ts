@@ -130,6 +130,35 @@ describe("macOS Hopper installation", () => {
     expect(host.cleanups).toBe(1);
   });
 
+  it("detaches the image and removes the staged files when cancelled after mounting", async () => {
+    const host = new FakeMacHopperHost();
+    const controller = new AbortController();
+    host.mount = () => {
+      controller.abort();
+      return Promise.resolve(true);
+    };
+
+    await expect(
+      installMacHopper({ signal: controller.signal }, host),
+    ).resolves.toEqual({ status: "failed", reason: "cancelled" });
+    expect(host.installs).toBe(0);
+    expect(host.opens).toBe(0);
+    expect(host.unmounts).toBe(1);
+    expect(host.cleanups).toBe(1);
+  });
+
+  it("does not mount the image when cancelled before mounting", async () => {
+    const host = new FakeMacHopperHost();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      installMacHopper({ signal: controller.signal }, host),
+    ).resolves.toEqual({ status: "failed", reason: "cancelled" });
+    expect(host.unmounts).toBe(0);
+    expect(host.cleanups).toBe(1);
+  });
+
   it("reports a publisher mismatch without copying or launching the bundle", async () => {
     const host = new FakeMacHopperHost();
     host.verification = "unverified_publisher";
