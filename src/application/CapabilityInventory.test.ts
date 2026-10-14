@@ -630,6 +630,69 @@ describe("binary_overview capability requirements", () => {
   });
 });
 
+describe("trace_call_path requirements", () => {
+  const capabilities = (operations: readonly string[]) =>
+    operations.map((operation) => ({
+      operation,
+      available: true,
+      reason: null,
+    }));
+
+  it.each(["procedure_callees", "procedure_callers"])(
+    "is available with procedure_address and %s",
+    (direction) => {
+      expect(
+        entry(
+          "trace_call_path",
+          status({
+            open: true,
+            kind: "executable",
+            capabilities: capabilities(["procedure_address", direction]),
+          }),
+        ),
+      ).toMatchObject({
+        available: true,
+        reason: "available",
+        remediation: null,
+      });
+    },
+  );
+
+  it("is unavailable without procedure_address", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities(["procedure_callees"]),
+        }),
+      ),
+    ).toMatchObject({
+      available: false,
+      reason: "provider_missing",
+      remediation: expect.stringContaining("procedure_address"),
+    });
+  });
+
+  it("is unavailable without a call-direction operation", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities(["procedure_address"]),
+        }),
+      ),
+    ).toMatchObject({
+      available: false,
+      reason: "provider_missing",
+      remediation: expect.stringContaining("procedure_callees"),
+    });
+  });
+});
+
 describe("trace_feature requirements", () => {
   const capabilities = (operations: readonly string[]) =>
     operations.map((operation) => ({
