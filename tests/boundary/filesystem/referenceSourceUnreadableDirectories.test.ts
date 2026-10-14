@@ -1,4 +1,4 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -58,6 +58,35 @@ describe("reference source native unreadable directories", () => {
         ).toMatchObject({ content_state: "hashed" });
       } finally {
         await chmod(deniedPath, 0o700);
+      }
+    },
+  );
+
+  it.skipIf(permissionChecksUnavailable)(
+    "keeps a partial graph when a symlink targets a search-only directory",
+    async () => {
+      const root = await createTestTempDirectory("rea-source-search-only-dir-");
+      const searchOnly = join(root, "blocked");
+      await mkdir(searchOnly);
+      await writeFile(join(searchOnly, "file.js"), "export {};\n");
+      await symlink("blocked/file.js", join(root, "link.js"));
+      await chmod(searchOnly, 0o311);
+      try {
+        const imported = await importTree(root);
+        if (!imported.ok) throw new Error(imported.error.message);
+        expect(imported.value.inventory_state).toBe("partial");
+        expect(
+          imported.value.entries.find(({ path }) => path === "blocked"),
+        ).toMatchObject({ kind: "directory", tree_state: "unreadable" });
+        expect(
+          imported.value.entries.find(({ path }) => path === "link.js"),
+        ).toMatchObject({
+          kind: "symlink",
+          target: "blocked/file.js",
+          target_state: "internal",
+        });
+      } finally {
+        await chmod(searchOnly, 0o700);
       }
     },
   );
