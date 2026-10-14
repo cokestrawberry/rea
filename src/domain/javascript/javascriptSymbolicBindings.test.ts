@@ -497,6 +497,63 @@ it.each([
   expect(inspectOne(source)).toEqual(expected);
 });
 
+it.each([
+  [
+    "a plain assignment yields its right operand",
+    `let channel = "app:"; inspect(channel = "ping");`,
+    { kind: "literal", value: "ping" },
+  ],
+  [
+    "an arithmetic assignment is unknown",
+    `let channel = "app:"; inspect(channel += "ping");`,
+    { kind: "unknown", reason: "compound assignment" },
+  ],
+] as const)(
+  "evaluates an assignment expression where %s",
+  (_case, source, expected) => {
+    expect(inspectOne(source)).toEqual(expected);
+  },
+);
+
+it.each(["||=", "&&=", "??="])(
+  "keeps the previous value reachable through a %s expression",
+  (operator) => {
+    const variants = symbolicVariants(
+      inspectOne(`let channel = "app:"; inspect(channel ${operator} "ping");`),
+    );
+    expect(variants.some((variant) => variant.kind === "unknown")).toBe(true);
+    expect(variants).toContainEqual(
+      expect.objectContaining({ kind: "literal", value: "ping" }),
+    );
+  },
+);
+
+it("does not read a compound export write as its right operand", () => {
+  const exportWriteFixture = (write: string) => `(() => {
+    const modules = {
+      5(module, exports) { exports.channel = "app:"; ${write} },
+      9(module, exports, load) { const helper = load(5); inspect(helper.channel); }
+    };
+    function load(id) { const m = {exports:{}}; modules[id](m,m.exports,load); return m.exports; }
+    load(9);
+  })();`;
+  expect(inspectOne(exportWriteFixture(`exports.channel = "ping";`))).toEqual({
+    kind: "literal",
+    value: "ping",
+  });
+  expect(inspectOne(exportWriteFixture(`exports.channel += "ping";`))).toEqual({
+    kind: "unknown",
+    reason: "compound assignment",
+  });
+  const variants = symbolicVariants(
+    inspectOne(exportWriteFixture(`exports.channel ||= "ping";`)),
+  );
+  expect(variants.some((variant) => variant.kind === "unknown")).toBe(true);
+  expect(variants).toContainEqual(
+    expect.objectContaining({ kind: "literal", value: "ping" }),
+  );
+});
+
 it("propagates branch guards through object properties and function calls", () => {
   const inspected = inspectedValues(`
     const direct = flag
