@@ -83,6 +83,24 @@ const createElectronActiveBoundaryPatches = ({
     }
   };
 
+  const denyPermissionRequest = (webContents, permission, callback) => {
+    recordRuntime("permission", "permission-request", "blocked", {
+      target: identity(webContents, "webContents"),
+      argument_shape_values: [permission],
+      error: true,
+    });
+    if (typeof callback === "function") callback(false);
+  };
+
+  const denyPermissionCheck = (webContents, permission) => {
+    recordRuntime("permission", "permission-check", "blocked", {
+      target: identity(webContents, "webContents"),
+      argument_shape_values: [permission],
+      error: true,
+    });
+    return false;
+  };
+
   const patchSession = (session) => {
     if (session === null || session === undefined) return;
     if (
@@ -115,34 +133,22 @@ const createElectronActiveBoundaryPatches = ({
         },
       );
     });
+    // Electron grants every permission while no handler is installed.
     const originalPermissionRequest = session.setPermissionRequestHandler;
-    if (typeof originalPermissionRequest === "function")
+    if (typeof originalPermissionRequest === "function") {
+      originalPermissionRequest.call(session, denyPermissionRequest);
       session.setPermissionRequestHandler =
         function blockedPermissionRequest() {
-          return originalPermissionRequest.call(
-            this,
-            (webContents, permission, callback) => {
-              recordRuntime("permission", "permission-request", "blocked", {
-                target: identity(webContents, "webContents"),
-                argument_shape_values: [permission],
-                error: true,
-              });
-              if (typeof callback === "function") callback(false);
-            },
-          );
+          return originalPermissionRequest.call(this, denyPermissionRequest);
         };
+    }
     const originalPermissionCheck = session.setPermissionCheckHandler;
-    if (typeof originalPermissionCheck === "function")
+    if (typeof originalPermissionCheck === "function") {
+      originalPermissionCheck.call(session, denyPermissionCheck);
       session.setPermissionCheckHandler = function blockedPermissionCheck() {
-        return originalPermissionCheck.call(this, (webContents, permission) => {
-          recordRuntime("permission", "permission-check", "blocked", {
-            target: identity(webContents, "webContents"),
-            argument_shape_values: [permission],
-            error: true,
-          });
-          return false;
-        });
+        return originalPermissionCheck.call(this, denyPermissionCheck);
       };
+    }
     const originalCertificate = session.setCertificateVerifyProc;
     if (typeof originalCertificate === "function")
       session.setCertificateVerifyProc = function blockedCertificate() {
@@ -200,6 +206,7 @@ const createElectronActiveBoundaryPatches = ({
     if (app === undefined || app.isReady())
       patchSession(sessionModule.defaultSession);
     else app.once("ready", () => patchSession(sessionModule.defaultSession));
+    if (app !== undefined) app.on("session-created", patchSession);
     for (const method of ["fromPartition", "fromPath"]) {
       const original = sessionModule[method];
       if (typeof original !== "function") continue;
