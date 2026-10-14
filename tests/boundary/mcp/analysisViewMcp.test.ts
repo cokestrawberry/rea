@@ -544,6 +544,46 @@ it("rejects inconsistent portable coverage and accepts caller-ordered ordinal su
   });
 });
 
+it("rejects capture and api-surface views whose parent subject does not identify the report artifact", async () => {
+  const { client } = await connect();
+  const capture = analysisViewCaptureFixture();
+  const parentWith = (subject: { path: string; sha256: string } | undefined) =>
+    createEvidence(
+      subject === undefined ? undefined : { ...subject, format: "file" },
+      { id: "fixture", name: "fixture", version: "1" },
+      {
+        operation: "inspect_web_network_capture",
+        parameters: { sensitive_value_count: 0 },
+        result: capture,
+        confidence: "observed",
+      },
+    );
+  const parents = [
+    parentWith({ path: "/fixtures/other.har", sha256: "c".repeat(64) }),
+    parentWith({ path: capture.artifact.path, sha256: "d".repeat(64) }),
+    parentWith(undefined),
+  ];
+
+  for (const evidence of parents)
+    for (const view of [{ kind: "summary" }, { kind: "api-surface" }]) {
+      const response = await client.callTool({
+        name: "inspect_analysis_view",
+        arguments: { source: { kind: "inline", evidence }, view },
+      });
+      expect(parseMcpToolError(response).error).toMatchObject({
+        code: "invalid_request",
+        details: {
+          issues: [
+            expect.objectContaining({
+              path: ["source", "subject"],
+              reason: "invalid_value",
+            }),
+          ],
+        },
+      });
+    }
+});
+
 it("delivers a bounded native dossier view over MCP without a Ghidra provider or lost connection", async () => {
   const { client, session } = await connect();
   const original = functionDossierSchema.parse(ghidraFunctionDossier());
