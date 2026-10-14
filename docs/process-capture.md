@@ -396,9 +396,13 @@ Every capture requires `truncation_details`, with separate accounting for:
   When a directory exceeds that capacity, the retained subset follows filesystem
   enumeration order and is then sorted; it is explicitly incomplete and cannot
   establish that an omitted path is absent.
-  An unreadable directory is recorded in `enumeration_omissions` with its
-  root-aliased path and operating-system error code. Entries observed before
-  that directory remain available, while descendants beneath it stay unknown.
+  A directory that cannot be read, or whose entries cannot be inspected (no
+  search permission, or an entry changed or disappeared during enumeration), is
+  recorded in `enumeration_omissions` with its root-aliased path and the first
+  operating-system error code observed. Entries observed before that directory
+  remain available, while descendants beneath it stay unknown. A selected root
+  that cannot be inspected adds the `directory_unavailable` reason without an
+  omission, since no retained directory identifies it.
   Each retained regular file without a digest has an aliased path, size,
   remaining budget and reason: `file_bytes_budget`,
   `file_changed_or_short_read`, or `file_unavailable`. Its `system_code` is
