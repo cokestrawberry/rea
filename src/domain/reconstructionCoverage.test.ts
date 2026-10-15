@@ -187,6 +187,7 @@ describe("reconstruction coverage closure", () => {
         expect.objectContaining({
           code: "package-proof-failed",
           subject_id: "clean-install",
+          detail: expect.stringContaining("conflicts with a passing proof"),
         }),
       ],
     });
@@ -215,6 +216,40 @@ describe("reconstruction coverage closure", () => {
         RECONSTRUCTION_COVERAGE_NOW,
       ),
     ).toMatchObject({ status: "ready" });
+  });
+
+  it("does not report an unrelated failed proof as a required artifact failure", () => {
+    const workspace = completeReconstructionCoverageData();
+    const unrelated = createReconstructionCoverageData({
+      ...workspace,
+      package_proofs: [
+        ...workspace.package_proofs.filter(
+          (proof) => proof.kind !== "clean-install",
+        ),
+        {
+          proof_id: "proof.clean-install.other-artifact",
+          kind: "clean-install",
+          status: "fail",
+          artifact_sha256s: [digest("8")],
+          evidence_ids: [reconstructionCoverageEvidenceId("4")],
+        },
+      ],
+    });
+    expect(
+      evaluateReconstructionClosure(
+        unrelated,
+        "replacement.cli",
+        RECONSTRUCTION_COVERAGE_NOW,
+      ),
+    ).toMatchObject({
+      status: "unknown",
+      reasons: [
+        expect.objectContaining({
+          code: "package-proof-unknown",
+          subject_id: "clean-install",
+        }),
+      ],
+    });
   });
 });
 
