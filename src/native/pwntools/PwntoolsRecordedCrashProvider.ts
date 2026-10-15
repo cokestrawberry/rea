@@ -126,13 +126,20 @@ export class PwntoolsRecordedCrashProvider
               options,
               runCommand,
             });
-            // GDB may report a substitute PID; only a PID that a recorded
-            // PRSTATUS thread carries is recorded metadata.
+            const recordedPids = new Set(
+              value.notes.flatMap((note) =>
+                note.process_info === undefined
+                  ? []
+                  : [note.process_info.historical_pid],
+              ),
+            );
+            // A missing or conflicting PRPSINFO PID cannot authenticate GDB's substitute.
             const enriched = validate(
               context.status === "available" &&
-                !value.threads.some(
-                  (thread) => thread.historical_pid === context.historical_pid,
-                )
+                (recordedPids.size !== 1 ||
+                  context.historical_pid === null ||
+                  context.historical_pid === 0 ||
+                  !recordedPids.has(context.historical_pid))
                 ? { ...context, historical_pid: null }
                 : context,
             );

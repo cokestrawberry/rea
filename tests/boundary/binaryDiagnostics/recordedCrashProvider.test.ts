@@ -21,6 +21,7 @@ import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.
 import { waitForProviderProcessReady } from "../../fixtures/providerProcess.js";
 import {
   recordedCrashFixture,
+  addRecordedCrashProcessInfo,
   recordedCrashDebuggerFixture,
   recordedCrashFixtureBytes,
   recordedCrashSignalFixture,
@@ -155,6 +156,8 @@ it
     "unconfigured",
     "success",
     "unrecorded-pid",
+    "missing-prpsinfo",
+    "leader-not-a-thread",
     "process-failure",
     "invalid-context",
     "cancelled",
@@ -163,7 +166,16 @@ it
   ] as const)(
   "owns optional context from the same snapshot: %s",
   async (scenario) => {
-    const { path, value, bytes, root } = await fixture();
+    const { path, value, bytes, root } = await fixture(
+      false,
+      false,
+      "x86_64-little-endian",
+      scenario === "missing-prpsinfo"
+        ? undefined
+        : scenario === "leader-not-a-thread"
+          ? 456
+          : 123,
+    );
     const controller = new AbortController();
     let owned = "";
     let snapshotPath = "";
@@ -220,6 +232,7 @@ it
         expect(request.snapshot_path).toBe(snapshotPath);
         const context = recordedCrashDebuggerFixture();
         if (scenario === "unrecorded-pid") context.historical_pid = 1;
+        if (scenario === "leader-not-a-thread") context.historical_pid = 456;
         if (scenario === "invalid-context")
           context.maps = context.maps.map((map) => ({ ...map, end: "0x0" }));
         await writeFile(
@@ -258,11 +271,23 @@ it
       },
       { signal: controller.signal },
     );
-    if (scenario === "success" || scenario === "unrecorded-pid") {
+    if (
+      [
+        "success",
+        "unrecorded-pid",
+        "missing-prpsinfo",
+        "leader-not-a-thread",
+      ].includes(scenario)
+    ) {
       if (!result.ok) throw result.error;
       expect(result.value.debugger).toMatchObject({
         status: "available",
-        historical_pid: scenario === "success" ? 123 : null,
+        historical_pid:
+          scenario === "success"
+            ? 123
+            : scenario === "leader-not-a-thread"
+              ? 456
+              : null,
         maps: [{ permissions: null }],
         diagnostics: { stdout: "debugger stage diagnostic" },
       });
@@ -356,6 +381,7 @@ const fixture = async (
   includeSignal = false,
   opaqueOwner = false,
   architecture: RecordedCrashArchitecture = "x86_64-little-endian",
+  processPid?: number,
 ) => {
   const workspace = await createTestWorkspace("rea-recorded-core-seam-");
   onTestFinished(() => removeTestWorkspace(workspace.root));
@@ -363,6 +389,7 @@ const fixture = async (
   const value = includeSignal
     ? recordedCrashSignalFixture(path, architecture)
     : recordedCrashFixture(path, architecture);
+  if (processPid !== undefined) addRecordedCrashProcessInfo(value, processPid);
   if (opaqueOwner) {
     value.notes = value.notes.map((note) =>
       note.index === 0

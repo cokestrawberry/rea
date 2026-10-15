@@ -70,6 +70,17 @@ for note in notes:
         note_header(content, note, n_type=0x7ffeff)
 save("unknown-signals", content)
 content = bytearray(original)
+for note in notes:
+    if note.n_name == "CORE" and note.n_type == "NT_PRPSINFO":
+        note_header(content, note, n_type=0x7ffefe)
+save("missing-prpsinfo", content)
+content = bytearray(original)
+process_info = next(note for note in notes if note.n_name == "CORE" and note.n_type == "NT_PRPSINFO")
+for note in notes:
+    if note.n_name == "CORE" and note.n_type == "NT_PRSTATUS" and elf_prstatus_amd64.from_buffer_copy(original[descriptor_start(note):descriptor_start(note) + note.n_descsz]).pr_pid == process_info.n_desc.pr_pid:
+        note_header(content, note, n_type=0x7ffefd)
+save("missing-leader-status", content)
+content = bytearray(original)
 for index, segment in enumerate(segments):
     if segment.header.p_type == "PT_NOTE":
         header = dict(segment.header, p_type="PT_NULL")
