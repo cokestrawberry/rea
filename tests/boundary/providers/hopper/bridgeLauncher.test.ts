@@ -205,59 +205,6 @@ it("launches Hopper helpers with the caller-selected environment without restori
   }
 });
 
-it.each([
-  ["a quote", '/work/quoted"target'],
-  ["a backslash", "/work/back\\slash"],
-  ["a line break", "/work/line\nbreak"],
-])(
-  "refuses to hand the macOS native helper a target path containing %s",
-  async (_label, targetPath) => {
-    const directory = await createTestTempDirectory("rea-hopper-applescript-");
-    let helperVerifications = 0;
-    let releases = 0;
-    const launcher = new HopperApplicationLauncher(
-      {
-        environment: {},
-        launcherPath: join(directory, "nonexistent-hopper"),
-        targetPath,
-        targetKind: "executable",
-        loaderArgs: [],
-        bridgeScriptPath: join(directory, "bridge.py"),
-        launchMode: "native",
-      },
-      {
-        platform: "darwin",
-        verifyNativeHelper: async () => {
-          helperVerifications += 1;
-          return "verified";
-        },
-        acquireTargetLease: async () => ({
-          acquired: true,
-          lease: { release: async () => void (releases += 1) },
-        }),
-      },
-    );
-    const result = await launcher.launch({
-      directory,
-      socketPath: join(directory, "bridge.sock"),
-      token: "fixture-token",
-      runId: randomUUID(),
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        _tag: "HopperStartError",
-        userMessage: expect.stringContaining("without escaping"),
-      },
-    });
-    expect(helperVerifications).toBe(0);
-    expect(releases).toBe(1);
-    await expect(
-      access(join(directory, "bootstrap.py")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-  },
-);
-
 it.skipIf(process.platform !== "linux")(
   "gives the demo helper a live owner stream through Node's actual stdio transport",
   async () => {

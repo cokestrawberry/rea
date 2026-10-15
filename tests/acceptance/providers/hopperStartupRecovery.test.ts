@@ -142,10 +142,11 @@ test("refuses a target path that can alter the helper's AppleScript before start
   await mcp.connect(transport);
   const call = (name: string, arguments_: Record<string, string> = {}) =>
     mcp.callTool({ name, arguments: arguments_ });
-  expect((await call("open_binary", { path: target })).isError).not.toBe(true);
-  const { error } = parseMcpToolError(await call("current_document"));
+  const { error } = parseMcpToolError(
+    await call("open_binary", { path: target }),
+  );
   expect(error).toMatchObject({
-    code: "provider_unavailable",
+    code: "unsupported_target",
     message: expect.stringContaining("without escaping"),
   });
   // The fixture writes its receipt first, so no receipt means the helper never ran.

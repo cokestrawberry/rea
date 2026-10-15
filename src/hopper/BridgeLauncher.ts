@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { chmod, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
+import { alterableAppleScriptLiteral } from "./HopperAnalysisProfile.js";
 
 import {
   HopperCancelledError,
@@ -216,17 +217,6 @@ export class HopperApplicationLauncher implements BridgeLauncher {
     let launched = false;
     try {
       if (signal?.aborted === true) return err(new HopperCancelledError());
-      if (
-        (this.dependencies.platform ?? process.platform) === "darwin" &&
-        !ownsProcessLifetime &&
-        alterableAppleScriptLiteral(input.loadedPath)
-      )
-        return err(
-          new HopperStartError({
-            userMessage:
-              "Hopper's macOS helper builds AppleScript from its target path without escaping it, so REA does not pass it a path containing a quote, backslash, or line break. Rename or copy the target to a path without those characters, then retry opening the target.",
-          }),
-        );
       const display = await this.#privateDisplay(signal);
       if (!display.ok) return err(display.error);
       const nativeHelperVerified =
@@ -403,11 +393,6 @@ export class HopperApplicationLauncher implements BridgeLauncher {
         };
   }
 }
-
-// The vendor helper interpolates its arguments into AppleScript literals
-// without escaping; these characters would alter the generated script.
-const alterableAppleScriptLiteral = (value: string): boolean =>
-  /["\\\r\n]/u.test(value);
 
 const bridgeBootstrapSource = (
   session: BridgeSession,
