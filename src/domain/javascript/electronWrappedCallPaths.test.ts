@@ -20,6 +20,28 @@ const bundle = (entry: string) => `(() => {
  load(9);
 })();`;
 
+it.each(["||=", "&&=", "??="])(
+  "preserves a logical-assignment guard for %s",
+  (operator) => {
+    const result = analyzeJavaScriptStaticSource(`
+    const e = require("electron");
+    function send() { e.ipcRenderer.send("app:init"); }
+    ready ${operator} send();
+    other ${operator} e.ipcRenderer.send("app:direct");
+  `);
+    for (const [entry, expression] of [
+      ["app:init", "ready"],
+      ["app:direct", "other"],
+    ])
+      expect(result.electron.call_paths).toContainEqual(
+        expect.objectContaining({
+          entry,
+          conditions: [expect.objectContaining({ expression })],
+        }),
+      );
+  },
+);
+
 describe("wrapped Electron control-flow alternatives", () => {
   it.each(["flag ? copy : cut", "flag ? copy : unknownHandler", "choose()"])(
     "does not select one IPC handler from %s",

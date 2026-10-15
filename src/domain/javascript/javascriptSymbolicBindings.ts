@@ -12,7 +12,10 @@ import {
   indexJavaScriptElectronIdentitySteps,
   type JavaScriptElectronIdentity,
 } from "./javascriptSemanticAnalysis.js";
-import { symbolicLogicalRight } from "./javascriptSymbolicControlFlow.js";
+import {
+  symbolicLogicalRight,
+  LOGICAL_ASSIGNMENT_OPERATORS,
+} from "./javascriptSymbolicControlFlow.js";
 import {
   moduleFactory,
   modulePropertyName,
@@ -49,9 +52,6 @@ interface SymbolicReturnFlow {
   readonly fallsThrough: boolean;
 }
 const emptyEnvironment: SymbolicEnvironment = { values: new Map() };
-const LOGICAL_ASSIGNMENT_OPERATORS: Readonly<
-  Partial<Record<string, t.LogicalExpression["operator"]>>
-> = { "||=": "||", "&&=": "&&", "??=": "??" };
 const isObjectPrototypeSetter = (
   property: t.ObjectMethod | t.ObjectProperty,
   name: string,
@@ -507,7 +507,8 @@ export class JavaScriptSymbolicBindings {
   ): SymbolicValue {
     const left = this.evaluate(leftNode, env);
     const right = symbolicLogicalRight(operator, left);
-    if (right !== undefined) return right ? this.evaluate(rightNode, env) : left;
+    if (right !== undefined)
+      return right ? this.evaluate(rightNode, env) : left;
     const leftCondition: SymbolicCondition = {
       node: leftNode,
       positive:

@@ -516,7 +516,7 @@ it.each([
 );
 
 it.each(["||=", "&&=", "??="])(
-  "keeps the previous value reachable through a %s expression",
+  "unions an unknown left operand with the right literal for %s",
   (operator) => {
     const variants = symbolicVariants(
       inspectOne(`let channel = "app:"; inspect(channel ${operator} "ping");`),
@@ -527,6 +527,18 @@ it.each(["||=", "&&=", "??="])(
     );
   },
 );
+
+it.each([
+  ["||=", "kept"],
+  ["??=", "kept"],
+  ["&&=", ""],
+])("short-circuits %s with a known object property", (operator, left) => {
+  expect(
+    inspectOne(
+      `inspect(({value: ${JSON.stringify(left)}}).value ${operator} "ping");`,
+    ),
+  ).toEqual({ kind: "literal", value: left });
+});
 
 it("does not read a compound export write as its right operand", () => {
   const exportWriteFixture = (write: string) => `(() => {
