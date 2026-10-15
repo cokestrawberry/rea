@@ -171,7 +171,7 @@ export const installMacHopper = async (
     void cause;
     result = {
       status: "failed",
-      reason: options.signal?.aborted === true ? "cancelled" : "download",
+      reason: "download",
     };
   }
 
@@ -194,6 +194,8 @@ export const installMacHopper = async (
     }
   }
 
+  if (result.status === "failed" && options.signal?.aborted)
+    result = { ...result, reason: "cancelled" };
   return cleanupFailure === undefined ? result : { ...result, cleanupFailure };
 };
 

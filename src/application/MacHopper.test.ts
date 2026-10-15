@@ -77,6 +77,38 @@ class FakeMacHopperHost implements MacHopperInstallHost {
 }
 
 describe("macOS Hopper installation", () => {
+  it.each(["mount", "bundle", "copy"] as const)(
+    "preserves cancellation when %s returns a failure value",
+    async (stage) => {
+      const host = new FakeMacHopperHost();
+      const controller = new AbortController();
+      if (stage === "mount")
+        host.mount = async () => {
+          controller.abort();
+          return false;
+        };
+      if (stage === "bundle")
+        host.validBundle = async () => {
+          controller.abort();
+          return "invalid_signature";
+        };
+      if (stage === "copy") {
+        host.copySucceeds = false;
+        const install = host.installBundle;
+        host.installBundle = async (...args) => {
+          const result = await install(...args);
+          controller.abort();
+          return result;
+        };
+      }
+      await expect(
+        installMacHopper({ signal: controller.signal }, host),
+      ).resolves.toEqual({ status: "failed", reason: "cancelled" });
+      expect(host.unmounts).toBe(stage === "mount" ? 0 : 1);
+      expect(host.cleanups).toBe(1);
+      expect(host.opens).toBe(0);
+    },
+  );
   it("installs, verifies, opens, and cleans the official package", async () => {
     const host = new FakeMacHopperHost();
     await expect(installMacHopper({}, host)).resolves.toEqual({

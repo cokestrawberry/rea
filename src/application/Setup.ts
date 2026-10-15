@@ -113,6 +113,17 @@ const runSetupWorkflow = async (
     initialDoctor: initialState.doctor,
   });
   clientStates = discovery.clientStates;
+  const cancelled = (): SetupResult => ({
+    ...setupCancelled(
+      plannedActions,
+      clients,
+      clientStates,
+      discovery.initialDoctor,
+    ),
+    appliedActions,
+    code: "setup_cancelled",
+  });
+  if (options.signal?.aborted) return cancelled();
   const clientSelectionAllowed =
     options.clientIds === undefined &&
     options.readinessScope?.clients === undefined &&
@@ -159,12 +170,14 @@ const runSetupWorkflow = async (
       skillClientIds: selectionSkillClientIds,
       installSkill: offerSkillAction,
     });
+    if (options.signal?.aborted) return cancelled();
     const decision = await confirm(selectionActions.plannedActions, {
       stage: "select",
       clientStates,
       selectedClientIds: discovery.defaultClientIds,
       clientSelectionAllowed,
     });
+    if (options.signal?.aborted) return cancelled();
     if (isSetupDecisionCancelled(decision))
       return setupCancelled(
         selectionActions.plannedActions,
@@ -235,6 +248,7 @@ const runSetupWorkflow = async (
   );
 
   const manualRemediation = manualClientsRemediation(planned.selectedClients);
+  if (options.signal?.aborted) return cancelled();
   if (options.dryRun === true)
     return {
       status: "planned",
@@ -257,6 +271,7 @@ const runSetupWorkflow = async (
       selectedClientIds,
       clientSelectionAllowed: false,
     });
+    if (options.signal?.aborted) return cancelled();
     if (decision !== undefined) {
       if (isSetupDecisionCancelled(decision))
         return setupCancelled(
@@ -287,6 +302,7 @@ const runSetupWorkflow = async (
 
   let selectedClients: readonly SetupClient[] =
     planSelection.clientsToConfigure;
+  if (options.signal?.aborted) return cancelled();
   if (
     planSelection.installHopper &&
     (interactiveApproval || options.installHopper)
@@ -302,9 +318,11 @@ const runSetupWorkflow = async (
       doctorScope: readinessScope,
       clientStates,
     });
+    if (options.signal?.aborted) return cancelled();
     if ("failure" in install) return install.failure;
     ({ hopperPath, providerEnvironment, selectedClients } = install);
   }
+  if (options.signal?.aborted) return cancelled();
   const clientFailure = await configureDetectedClients({
     host,
     detectedClients: selectedClients,
@@ -312,10 +330,12 @@ const runSetupWorkflow = async (
     command: host.registrationCommand,
     clients,
     appliedActions,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.onProgress === undefined
       ? {}
       : { onProgress: options.onProgress }),
   });
+  if (options.signal?.aborted) return cancelled();
   if (clientFailure !== undefined) return fail(clientFailure);
   if (planSelection.installSkill) {
     const skillFailure = await installSkillAction(
@@ -324,6 +344,7 @@ const runSetupWorkflow = async (
       appliedActions,
       selectedSkillClientIds,
     );
+    if (options.signal?.aborted) return cancelled();
     if (skillFailure !== undefined) {
       return {
         ...(await fail(skillFailure.remediation)),
@@ -332,6 +353,7 @@ const runSetupWorkflow = async (
     }
   }
   const doctor = summarizeDoctor(await host.doctor(readinessScope));
+  if (options.signal?.aborted) return cancelled();
   const remediation = combineRemediation(
     finalSetupRemediation(
       host.platform,
@@ -431,6 +453,7 @@ const installSkillAction = async (
     label,
     state: "started",
   });
+  if (options.signal?.aborted) return undefined;
   const skill = await host.installSkill(skillClientIds);
   if (!skill.ok) {
     emitProgress(options, {
