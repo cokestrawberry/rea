@@ -279,9 +279,9 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
         pid = process.pid;
         target = `${process.name} (pid ${process.pid})`;
       } else {
-        // frida-core defaults to INHERIT, which shares the MCP server's stdio streams.
+        // Local INHERIT shares the MCP server streams; Android app spawns require INHERIT on remote/USB devices.
         pid = await device.spawn(input.program, {
-          stdio: "pipe",
+          ...(device.type === "local" ? { stdio: "pipe" as const } : {}),
           ...(input.argv === undefined
             ? {}
             : { argv: [input.program, ...input.argv] }),

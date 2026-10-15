@@ -37,7 +37,7 @@ const gate = () => {
   };
 };
 
-const nativeFixture = () => {
+const nativeFixture = (deviceType: Device["type"] = "local") => {
   const created: string[] = [];
   const loaded: string[] = [];
   const unloaded: string[] = [];
@@ -111,7 +111,7 @@ const nativeFixture = () => {
   const device: Device = {
     id: "local",
     name: "Local fixture",
-    type: "local",
+    type: deviceType,
     async enumerateProcesses() {
       await controls.discover();
       return [{ pid: 512, name: "fixture" }];
@@ -164,8 +164,8 @@ const nativeFixture = () => {
   };
 };
 
-const connectedFixture = async () => {
-  const native = nativeFixture();
+const connectedFixture = async (deviceType: Device["type"] = "local") => {
+  const native = nativeFixture(deviceType);
   const manager = new FridaInstrumentationManager({
     deviceManager: native.deviceManager,
   });
@@ -323,6 +323,27 @@ it.each([{ argv: undefined }, { argv: ["--flag"] }] as const)(
           ...(argv === undefined ? {} : { argv: ["/fixture", ...argv] }),
         },
       },
+    ]);
+  },
+);
+
+it.each(["remote", "usb"] as const)(
+  "keeps %s device spawn stdio on the selected device",
+  async (deviceType) => {
+    const fixture = await connectedFixture(deviceType);
+    const result = await fixture.client.callTool({
+      name: "start_frida_session",
+      arguments: {
+        mode: "spawn",
+        program: "com.example.app",
+        ...(deviceType === "remote"
+          ? { remote: { address: "127.0.0.1:27042" } }
+          : { device_id: "usb" }),
+      },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(fixture.spawns).toEqual([
+      { program: "com.example.app", options: {} },
     ]);
   },
 );
