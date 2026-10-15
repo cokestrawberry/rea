@@ -8,22 +8,16 @@ export const openInitialTarget = async (
   session: BinarySession,
   config: AppConfig,
   serverLogger: Logger,
-  dependencies: Pick<RuntimeDependencies, "registerShutdown" | "writeStderr">,
+  dependencies: Pick<RuntimeDependencies, "writeStderr">,
+  signal: AbortSignal,
 ): Promise<
   { readonly ok: true } | { readonly ok: false; readonly exitCode: 1 }
 > => {
   if (config.hopperTargetPath === undefined) return { ok: true };
-  // Without a handler, a signal during a slow open kills the process before
-  // the provider process and runtime root are cleaned up.
-  const cancelOpen = new AbortController();
-  const unregisterShutdown = dependencies.registerShutdown(() =>
-    cancelOpen.abort(),
-  );
   const opened = await session.open(config.hopperTargetPath, {
     targetKind: config.hopperTargetKind,
-    signal: cancelOpen.signal,
+    signal,
   });
-  unregisterShutdown();
   if (opened.ok) return { ok: true };
   const closed = await session.close();
   serverLogger.error(
