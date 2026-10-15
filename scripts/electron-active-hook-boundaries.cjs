@@ -207,15 +207,6 @@ const createElectronActiveBoundaryPatches = ({
       patchSession(sessionModule.defaultSession);
     else app.once("ready", () => patchSession(sessionModule.defaultSession));
     if (app !== undefined) app.on("session-created", patchSession);
-    for (const method of ["fromPartition", "fromPath"]) {
-      const original = sessionModule[method];
-      if (typeof original !== "function") continue;
-      sessionModule[method] = function patchedSessionFactory(...args) {
-        const session = original.apply(this, args);
-        patchSession(session);
-        return session;
-      };
-    }
   };
 
   const patchApplicationEffects = (app) => {
@@ -388,7 +379,6 @@ const createElectronActiveBoundaryPatches = ({
     patchContextBridge,
     patchIpcRenderer,
     patchNativeAddonLoading,
-    patchSession,
     patchSessionManager,
     patchShell,
     patchWindowOpenHandler,

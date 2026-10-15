@@ -28,6 +28,8 @@ class WebContents extends EventEmitter {
   constructor() {
     super();
     this.id = 12;
+    this.session = sessionModule.fromPartition("web-contents");
+    app.emit("web-contents-created", {}, this);
   }
   loadFile() { return Promise.resolve(); }
   loadURL() { return Promise.resolve(); }
@@ -60,10 +62,19 @@ const createSession = () => {
   value.setPermissionRequestHandler = (handler) => { value.permissionRequestHandler = handler; };
   value.setPermissionCheckHandler = (handler) => { value.permissionCheckHandler = handler; };
   value.setCertificateVerifyProc = () => undefined;
+  app.emit("session-created", value);
   return value;
 };
 const session = createSession();
-const customSession = createSession();
+const sessions = new Map();
+const sessionModule = {
+  defaultSession: session,
+  fromPartition(partition) {
+    if (!sessions.has(partition)) sessions.set(partition, createSession());
+    return sessions.get(partition);
+  },
+  fromPath(path) { return this.fromPartition(path); },
+};
 const contextBridge = {
   exposeInMainWorld: () => undefined,
   exposeInIsolatedWorld: () => undefined,
@@ -74,10 +85,7 @@ module.exports = {
   contextBridge,
   ipcMain,
   ipcRenderer,
-  session: {
-    defaultSession: session,
-    fromPartition: () => customSession,
-  },
+  session: sessionModule,
   shell,
   utilityProcess,
 };
@@ -194,6 +202,14 @@ it("retains active hook evidence within its event-retention budget", async () =>
   expect(result.popup_decision).toEqual({ action: "deny" });
   expect(
     snapshot.events.filter(
+      (event) => event.event === "loadURL" && event.phase === "attempted",
+    ),
+  ).toHaveLength(1);
+  expect(
+    snapshot.events.find((event) => event.event === "render-process-gone"),
+  ).toMatchObject({ sender: "window:3" });
+  expect(
+    snapshot.events.filter(
       (event) => event.kind === "download" && event.phase === "blocked",
     ),
   ).toHaveLength(2);
@@ -282,6 +298,7 @@ const decide = (session) => {
 const createdSession = createNativeSession();
 electron.app.emit("session-created", createdSession);
 const contentsSession = createNativeSession();
+electron.app.emit("session-created", contentsSession);
 const webContents = new EventEmitter();
 webContents.id = 21;
 webContents.session = contentsSession;
@@ -290,6 +307,7 @@ electron.app.emit("web-contents-created", {}, webContents);
 const decisions = {
   default_session: decide(electron.session.defaultSession),
   partition_session: decide(electron.session.fromPartition("persist:custom")),
+  path_session: decide(electron.session.fromPath("/custom/path")),
   created_session: decide(createdSession),
   web_contents_session: decide(contentsSession),
 };
@@ -318,6 +336,7 @@ process.stdout.write(JSON.stringify({ decisions, popup, snapshot }) + "\\n");
   expect(result.decisions).toEqual({
     default_session: denied,
     partition_session: denied,
+    path_session: denied,
     created_session: denied,
     web_contents_session: denied,
   });
@@ -330,7 +349,7 @@ process.stdout.write(JSON.stringify({ decisions, popup, snapshot }) + "\\n");
           recorded.kind === "permission" &&
           recorded.phase === "blocked",
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
 });
 
 it("preserves fatal process termination after recording uncaught exceptions", async () => {

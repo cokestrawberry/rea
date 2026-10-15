@@ -560,7 +560,6 @@ const patchWebContents = (webContents, windowId) => {
 const patchWindows = (app) => {
   if (app === null || app === undefined) return;
   app.on("web-contents-created", (_event, webContents) => {
-    boundaries.patchSession(webContents?.session);
     patchWebContents(webContents, null);
   });
   app.on("browser-window-created", (_event, window) => {
