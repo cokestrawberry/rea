@@ -748,7 +748,7 @@ describe("CutterBridgeClient: scenario group 4", () => {
       request.kind === "ack"
         ? respond({ ok: true, acknowledged: true })
         : respond(
-            '{"ok":true,"output":[{"offset":18446744073709551615,"low":-9007199254740993,"safe":9007199254740991,"ratio":1.5,"huge":1e300}]}',
+            '{"ok":true,"output":[{"offset":18446744073709551615,"low":-9007199254740993,"safe":9007199254740991,"ratio":1.5,"huge":1e300,"meta":{"__proto__":{"a":1},"constructor":"ordinary"}}]}',
             { raw: true },
           ),
     );
@@ -772,10 +772,17 @@ describe("CutterBridgeClient: scenario group 4", () => {
         safe: 9007199254740991,
         ratio: 1.5,
         huge: 1e300,
+        meta: JSON.parse('{"__proto__":{"a":1},"constructor":"ordinary"}'),
       },
     ];
     expect(result.value.normalized_result).toMatchObject({ output });
     expect(result.value.raw_result).toEqual(output);
+    expect(
+      Object.hasOwn(
+        (result.value.raw_result as typeof output)[0]!.meta,
+        "__proto__",
+      ),
+    ).toBe(true);
   });
 
   it("returns unknown completion for invalid JSON and rejects a pre-aborted request", async () => {
