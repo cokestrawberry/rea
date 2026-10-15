@@ -42,7 +42,7 @@ import {
   type PcapCommandOutput,
 } from "./PcapCommand.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
-import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
+import { jsonValueSchema } from "../domain/jsonValue.js";
 import { createPcapEvidence } from "../domain/pcap/pcapEvidence.js";
 import { preparePcapNativeBound } from "./PcapNativeBound.js";
 import { PcapSnapshot } from "./PcapSnapshot.js";
@@ -97,11 +97,12 @@ const pcapCommandCleanupError = (
   operation: PcapOperation,
   snapshotPath: string | undefined,
   cleanup: PcapCommandCleanup,
-  capturedOutput: { readonly stdout: string; readonly stderr: string },
   partialObservation?: ReturnType<typeof pcapPartialEvidence>,
-  previousError: JsonValue = null,
-) =>
-  new ProviderCleanupError(
+  previousError?: AnalysisError,
+) => {
+  const failureOutput = previousError?.capturedOutput;
+  const capturedOutput = failureOutput ?? cleanup.capturedOutput;
+  return new ProviderCleanupError(
     "pcap",
     [
       ...new Set([
@@ -111,18 +112,22 @@ const pcapCommandCleanupError = (
     ],
     {
       reason: cleanup.reason,
-      previous_error: previousError,
-      captured_output: {
-        stdout: capturedOutput.stdout,
-        stderr: capturedOutput.stderr,
-        truncated: cleanup.capturedOutput.truncated,
-      },
+      previous_error:
+        previousError === undefined
+          ? null
+          : projectAnalysisError(previousError),
+      ...(failureOutput === undefined &&
+      capturedOutput.stdout === "" &&
+      capturedOutput.stderr === ""
+        ? {}
+        : { captured_output: { ...capturedOutput } }),
     },
     {
       operation,
       ...(partialObservation === undefined ? {} : { partialObservation }),
     },
   );
+};
 
 export interface PcapProviderOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -202,21 +207,22 @@ export class PcapProvider {
     } catch (cause) {
       // Version probes run before any snapshot exists, so execute() cannot
       // attach the retained owner to the failure afterwards.
-      if (inputPath === undefined && cleanup !== undefined)
+      if (
+        inputPath === undefined &&
+        cleanup !== undefined &&
+        cause instanceof AnalysisError
+      )
         throw pcapCommandCleanupError(
           operation,
           undefined,
           cleanup,
-          cleanup.capturedOutput,
           undefined,
-          cause instanceof AnalysisError
-            ? projectAnalysisError(cause)
-            : String(cause),
+          cause,
         );
       throw cause;
     }
     if (inputPath === undefined && cleanup !== undefined)
-      throw pcapCommandCleanupError(operation, undefined, cleanup, output);
+      throw pcapCommandCleanupError(operation, undefined, cleanup);
     return output;
   }
 
@@ -504,32 +510,13 @@ export class PcapProvider {
       const partialObservation = result.ok
         ? createPcapEvidence(request, result.value)
         : result.error.partialObservation;
-      const capturedOutput = result.ok
-        ? undefined
-        : result.error.capturedOutput;
       result = err(
-        new ProviderCleanupError(
-          "pcap",
-          [...new Set([snapshot.path, ...pendingCommand.resources])],
-          {
-            reason: pendingCommand.reason,
-            previous_error: result.ok
-              ? null
-              : projectAnalysisError(result.error),
-            ...(capturedOutput === undefined &&
-            pendingCommand.capturedOutput.stdout === "" &&
-            pendingCommand.capturedOutput.stderr === ""
-              ? {}
-              : {
-                  captured_output: {
-                    ...(capturedOutput ?? pendingCommand.capturedOutput),
-                  },
-                }),
-          },
-          {
-            operation: request.operation,
-            ...(partialObservation === undefined ? {} : { partialObservation }),
-          },
+        pcapCommandCleanupError(
+          request.operation,
+          snapshot.path,
+          pendingCommand,
+          partialObservation,
+          result.ok ? undefined : result.error,
         ),
       );
     }
@@ -569,7 +556,6 @@ export class PcapProvider {
         request.operation,
         snapshot.path,
         info.cleanup,
-        info,
         pcapPartialEvidence(
           request,
           provider,
@@ -677,7 +663,6 @@ export class PcapProvider {
         request.operation,
         snapshot.path,
         dissected.cleanup,
-        dissected,
         pcapPartialEvidence(
           request,
           provider,

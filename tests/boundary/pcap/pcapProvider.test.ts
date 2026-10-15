@@ -296,7 +296,12 @@ it("retains cleanup ownership when a failed version probe leaves cleanup unresol
   expect(result.error.diagnostics).toMatchObject({
     reason: "injected retained cleanup failure",
     previous_error: { code: "capability_unavailable" },
-    captured_output: { stderr: "version probe failed", truncated: false },
+    captured_output: {
+      stderr: "version probe failed",
+      truncated: false,
+      exit_code: 3,
+      signal: null,
+    },
   });
   expect(
     result.error.cleanupResources.some((resource) =>
