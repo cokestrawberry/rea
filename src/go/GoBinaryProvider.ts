@@ -152,6 +152,7 @@ export class GoBinaryProvider implements GoBinaryPort {
     input: InspectGoBinaryInput,
     options?: ExecutionOptions,
   ): Promise<Result<GoBinary, AnalysisError>> {
+    let cleanupFailure: ProviderCleanupError | undefined;
     try {
       const snapshot = await this.#resources.run(() =>
         readStableArtifact(
@@ -160,6 +161,14 @@ export class GoBinaryProvider implements GoBinaryPort {
           options?.signal,
           undefined,
           this.#resources,
+          (cleanup) => {
+            cleanupFailure = new ProviderCleanupError(
+              GO_BINARY_PROVIDER_IDENTITY.id,
+              cleanup.resources,
+              { reason: cleanup.reason },
+              { operation: OPERATION },
+            );
+          },
         ),
       );
       options?.signal?.throwIfAborted();
@@ -223,9 +232,16 @@ export class GoBinaryProvider implements GoBinaryPort {
           { cause: parsed.error },
         );
       options?.signal?.throwIfAborted();
-      return ok(parsed.data);
+      return cleanupFailure === undefined
+        ? ok(parsed.data)
+        : err(cleanupFailure.retainPartialObservation(parsed.data));
     } catch (cause: unknown) {
-      return err(failureFor(cause, input.path, options?.signal));
+      const primary = failureFor(cause, input.path, options?.signal);
+      return err(
+        cleanupFailure === undefined
+          ? primary
+          : analysisErrorWithCleanupFailure(primary, cleanupFailure, OPERATION),
+      );
     }
   }
 }

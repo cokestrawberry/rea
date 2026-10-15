@@ -28,6 +28,7 @@ export class PeResourcesProvider implements PeResourcesPort {
   }
 
   async inspect(input: InspectPeResourcesInput, options?: ExecutionOptions) {
+    let cleanupFailure: ProviderCleanupError | undefined;
     try {
       const snapshot = await this.#resources.run(() =>
         readStableArtifact(
@@ -36,22 +37,40 @@ export class PeResourcesProvider implements PeResourcesPort {
           options?.signal,
           undefined,
           this.#resources,
-        ),
-      );
-      return ok(
-        await parsePeResources(
-          snapshot.bytes,
-          {
-            path: input.path,
-            sha256: snapshot.sha256,
-            bytes: snapshot.bytes.length,
+          (cleanup) => {
+            cleanupFailure = new ProviderCleanupError(
+              PE_RESOURCES_PROVIDER.id,
+              cleanup.resources,
+              { reason: cleanup.reason },
+              { operation: "inspect_pe_resources" },
+            );
           },
-          input,
-          options?.signal,
         ),
       );
+      const report = await parsePeResources(
+        snapshot.bytes,
+        {
+          path: input.path,
+          sha256: snapshot.sha256,
+          bytes: snapshot.bytes.length,
+        },
+        input,
+        options?.signal,
+      );
+      return cleanupFailure === undefined
+        ? ok(report)
+        : err(cleanupFailure.retainPartialObservation(report));
     } catch (cause) {
-      return err(peResourcesFailure(cause, input, options?.signal));
+      const primary = peResourcesFailure(cause, input, options?.signal);
+      return err(
+        cleanupFailure === undefined
+          ? primary
+          : analysisErrorWithCleanupFailure(
+              primary,
+              cleanupFailure,
+              "inspect_pe_resources",
+            ),
+      );
     }
   }
 }

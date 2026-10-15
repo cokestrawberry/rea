@@ -53,6 +53,7 @@ export class RustBinaryProvider implements RustBinaryPort {
     input: InspectRustBinaryInput,
     options?: ExecutionOptions,
   ): Promise<Result<RustBinary, AnalysisError>> {
+    let cleanupFailure: ProviderCleanupError | undefined;
     try {
       const snapshot = await this.#resources.run(() =>
         readStableArtifact(
@@ -61,6 +62,14 @@ export class RustBinaryProvider implements RustBinaryPort {
           options?.signal,
           undefined,
           this.#resources,
+          (cleanup) => {
+            cleanupFailure = new ProviderCleanupError(
+              RUST_BINARY_PROVIDER_IDENTITY.id,
+              cleanup.resources,
+              { reason: cleanup.reason },
+              { operation: OPERATION },
+            );
+          },
         ),
       );
       options?.signal?.throwIfAborted();
@@ -84,9 +93,16 @@ export class RustBinaryProvider implements RustBinaryPort {
           { cause: parsed.error },
         );
       options?.signal?.throwIfAborted();
-      return ok(parsed.data);
+      return cleanupFailure === undefined
+        ? ok(parsed.data)
+        : err(cleanupFailure.retainPartialObservation(parsed.data));
     } catch (cause: unknown) {
-      return err(failureFor(cause, input.path, options?.signal));
+      const primary = failureFor(cause, input.path, options?.signal);
+      return err(
+        cleanupFailure === undefined
+          ? primary
+          : analysisErrorWithCleanupFailure(primary, cleanupFailure, OPERATION),
+      );
     }
   }
 }
