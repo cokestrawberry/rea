@@ -1,3 +1,4 @@
+import { FridaSessionDetachedError } from "./fridaInputErrors.js";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
@@ -284,9 +285,18 @@ export class FridaInstrumentationService {
         scriptObservation,
       );
     if (!loaded.ok) {
-      const closed = await this.#provider.closeSession(started.value.sessionId);
+      const { closed, partialObservation } = await this.#closeWithObservation(
+        "instrument_with_frida",
+        started.value,
+        input,
+        scriptObservation,
+      );
       return closed.ok
-        ? err(withRecoveredFridaCleanup(loaded.error))
+        ? err(
+            recoveredInstrumentationFailure(
+              loaded.error,
+            ).retainPartialObservation(partialObservation),
+          )
         : err(
             withCleanupFailure(
               loaded.error,
@@ -316,7 +326,7 @@ export class FridaInstrumentationService {
           loaded.value,
         );
         const failure = closed.ok
-          ? resumed.error
+          ? recoveredInstrumentationFailure(resumed.error)
           : withCleanupFailure(
               resumed.error,
               closed.error.message,
@@ -448,6 +458,21 @@ const withCleanupFailure = (
       },
     },
   );
+
+const recoveredInstrumentationFailure = (
+  error: AnalysisError,
+): AnalysisError => {
+  if (!(error instanceof FridaSessionDetachedError))
+    return withRecoveredFridaCleanup(error);
+  const reason =
+    "The target detached before instrumentation could resume it; the Frida session has been cleaned up.";
+  return new AnalysisCapabilityUnavailableError(
+    "frida",
+    "instrument_with_frida",
+    reason,
+    { cause: error, userMessage: reason },
+  );
+};
 
 /** Preserve the original Frida failure after its owner confirms cleanup. */
 export const withRecoveredFridaCleanup = (

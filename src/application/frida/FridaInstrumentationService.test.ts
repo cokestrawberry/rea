@@ -1,3 +1,4 @@
+import { FridaSessionDetachedError } from "./fridaInputErrors.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -289,10 +290,9 @@ it("retains the loaded script and session status when resume fails", async () =>
       async resumeSession() {
         return {
           ok: false,
-          error: new AnalysisCapabilityUnavailableError(
-            "frida",
+          error: new FridaSessionDetachedError(
             "resume_frida_session",
-            "Frida session is detached",
+            createSession().sessionId,
           ),
         };
       },
@@ -323,6 +323,10 @@ it("retains the loaded script and session status when resume fails", async () =>
 
   if (result.ok) throw new Error("Resume unexpectedly succeeded");
   expect(result.error).toBeInstanceOf(AnalysisCapabilityUnavailableError);
+  expect(result.error).toMatchObject({
+    operation: "instrument_with_frida",
+    userMessage: expect.stringContaining("has been cleaned up"),
+  });
   expect(result.error.partialObservation).toMatchObject({
     normalized_result: {
       state: "detached",
