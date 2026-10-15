@@ -1,7 +1,7 @@
 import { runtime } from "../../../fixtures/providerResponseLimit.js";
 import { once } from "node:events";
 
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { HopperProcessError } from "../../../../src/domain/hopperErrors.js";
 import { HOPPER_OPERATIONS } from "../../../../src/hopper/HopperProviderCapabilities.js";
