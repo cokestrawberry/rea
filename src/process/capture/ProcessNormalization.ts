@@ -1,8 +1,18 @@
 import { isIP } from "node:net";
+import { constants as bufferConstants } from "node:buffer";
 
 import type { ProcessScenario } from "../../domain/process/processScenario.js";
 
 import type { ProcessSample } from "../../domain/process/processCapture.js";
+
+export interface ProcessTextNormalizer {
+  (value: string): string;
+  (
+    value: string,
+    maxBytes: number,
+    onOmitted?: (bytes: number) => void,
+  ): string | undefined;
+}
 /** Bucket one elapsed process-capture timestamp under scenario normalization. */
 export const normalizeProcessElapsedTime = (
   elapsedMs: number,
@@ -14,13 +24,17 @@ export const createProcessTextNormalizer = (
   scenario: ProcessScenario,
   temporaryRoot: string,
   pid: number | (() => number),
-): ((value: string) => string) => {
+): ProcessTextNormalizer => {
   const normalizePaths = scenario.normalization.paths
     ? createPathNormalizer(scenario, temporaryRoot)
     : (value: string): string => value;
   let previousPid: number | undefined;
   let normalizePids = (value: string): string => value;
-  return (value) => {
+  const normalize = (
+    value: string,
+    maxBytes = Infinity,
+    onOmitted?: (bytes: number) => void,
+  ): string | undefined => {
     let normalized = normalizePaths(value);
     if (scenario.normalization.ports)
       normalized = normalizePortTokens(normalized);
@@ -32,13 +46,66 @@ export const createProcessTextNormalizer = (
       }
       normalized = normalizePids(normalized);
     }
-    for (const pattern of scenario.normalization.patterns)
+    if (Buffer.byteLength(normalized) > maxBytes) {
+      onOmitted?.(Buffer.byteLength(normalized));
+      return undefined;
+    }
+    for (const pattern of scenario.normalization.patterns) {
+      const size = literalReplacementSize(
+        normalized,
+        pattern.pattern,
+        pattern.replacement,
+      );
+      if (
+        size.bytes > maxBytes ||
+        (maxBytes !== Infinity &&
+          size.length > bufferConstants.MAX_STRING_LENGTH)
+      ) {
+        onOmitted?.(size.bytes);
+        return undefined;
+      }
       normalized = normalized.replaceAll(
         pattern.pattern,
         () => pattern.replacement,
       );
+    }
     return normalized;
   };
+  return normalize as ProcessTextNormalizer;
+};
+
+const literalReplacementSize = (
+  value: string,
+  pattern: string,
+  replacement: string,
+): { readonly bytes: number; readonly length: number } => {
+  let bytes = 0;
+  let length = 0;
+  let trailingHighSurrogate = false;
+  const replacementBytes = Buffer.byteLength(replacement);
+  const append = (text: string, textBytes = Buffer.byteLength(text)): void => {
+    if (text.length === 0) return;
+    bytes += textBytes;
+    const first = text.charCodeAt(0);
+    if (trailingHighSurrogate && first >= 0xdc00 && first <= 0xdfff) bytes -= 2;
+    const last = text.charCodeAt(text.length - 1);
+    trailingHighSurrogate = last >= 0xd800 && last <= 0xdbff;
+    length += text.length;
+  };
+  let offset = 0;
+  for (;;) {
+    const match = pattern === "" ? offset : value.indexOf(pattern, offset);
+    if (match === -1 || match > value.length) break;
+    append(value.slice(offset, match));
+    append(replacement, replacementBytes);
+    offset = match + pattern.length;
+    if (pattern === "") {
+      append(value.slice(offset, offset + 1));
+      offset += 1;
+    }
+  }
+  append(value.slice(offset));
+  return { bytes, length };
 };
 
 /** Normalize one payload when its caller does not retain a capture-local matcher. */

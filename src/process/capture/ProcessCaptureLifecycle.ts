@@ -408,7 +408,7 @@ const captureCoverageUnknowns = (
     unknowns.push({
       scope: "terminal",
       reason:
-        "Raw PTY chunks exceeded output_bytes and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
+        "Retained normalized and original terminal text exceeded output_bytes and chunks were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
     });
   if (
     details.rendered_terminal.observed_frames >
@@ -1303,7 +1303,10 @@ export const captureTerminalFrames = (options: {
   readonly started: number;
   readonly onOutput: () => void;
   readonly renderer: TerminalRenderer;
-  readonly normalizeText: (value: string) => string;
+  readonly normalizeText: (
+    value: string,
+    maxBytes: number,
+  ) => string | undefined;
   readonly recordEvent: RecordProcessCaptureEvent;
 }): (() => TerminalRetention) => {
   let outputBytes = 0;
@@ -1320,7 +1323,11 @@ export const captureTerminalFrames = (options: {
     if (retainedTextBytes + bytes > options.scenario.limits.output_bytes) {
       return;
     }
-    const normalized = options.normalizeText(data);
+    const normalized = options.normalizeText(
+      data,
+      options.scenario.limits.output_bytes - retainedTextBytes,
+    );
+    if (normalized === undefined) return;
     const retainedBytes =
       Buffer.byteLength(normalized) + (normalized === data ? 0 : bytes);
     if (
