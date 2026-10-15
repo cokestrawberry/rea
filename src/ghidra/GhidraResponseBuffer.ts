@@ -1,4 +1,4 @@
-import { constants } from "node:buffer";
+import { ProviderResponseLines } from "../process/ProviderResponseLines.js";
 
 import { ProviderResponseLineLimitError } from "../process/ProviderResponseLineLimit.js";
 
@@ -10,46 +10,21 @@ export interface GhidraResponseBufferOptions {
 
 /** Splits fragmented UTF-8 socket data into response lines. */
 export class GhidraResponseBuffer {
-  readonly #options: GhidraResponseBufferOptions;
-  #buffer = "";
-  #fragments: string[] = [];
-  #fragmentUnits = 0;
+  readonly #lines: ProviderResponseLines;
 
   constructor(options: GhidraResponseBufferOptions) {
-    this.#options = options;
+    this.#lines = new ProviderResponseLines(
+      "Ghidra",
+      options.onLine,
+      options.onOverflow,
+    );
   }
 
-  /** Consume one decoded socket chunk. */
   push(chunk: string): void {
-    const pending = this.#buffer.length + this.#fragmentUnits + chunk.length;
-    // Joining past the runtime string limit throws outside any error handler.
-    if (pending > constants.MAX_STRING_LENGTH) {
-      this.reset();
-      this.#options.onOverflow(
-        new ProviderResponseLineLimitError("Ghidra", pending),
-      );
-      return;
-    }
-    this.#fragments.push(chunk);
-    this.#fragmentUnits += chunk.length;
-    if (!chunk.includes("\n")) return;
-    this.#buffer += this.#fragments.join("");
-    this.#fragments = [];
-    this.#fragmentUnits = 0;
-    let newline = this.#buffer.indexOf("\n");
-    while (newline >= 0) {
-      const encodedLine = this.#buffer.slice(0, newline);
-      this.#buffer = this.#buffer.slice(newline + 1);
-      const line = encodedLine.trim();
-      if (line.length > 0) this.#options.onLine(line);
-      newline = this.#buffer.indexOf("\n");
-    }
+    this.#lines.push(chunk);
   }
 
-  /** Drop any incomplete line when a session closes. */
   reset(): void {
-    this.#buffer = "";
-    this.#fragments = [];
-    this.#fragmentUnits = 0;
+    this.#lines.reset();
   }
 }

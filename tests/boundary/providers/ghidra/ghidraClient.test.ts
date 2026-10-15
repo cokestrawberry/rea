@@ -1,3 +1,4 @@
+import { runtime } from "../../../fixtures/providerResponseLimit.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -27,20 +28,6 @@ import {
 } from "../../../../src/ghidra/GhidraSessionValues.js";
 import { waitForExit as waitForChildExit } from "../../../support/process/processFixture.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
-
-const runtime = vi.hoisted(() => ({ limit: undefined as number | undefined }));
-vi.mock("node:buffer", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:buffer")>();
-  return {
-    ...original,
-    constants: {
-      ...original.constants,
-      get MAX_STRING_LENGTH() {
-        return runtime.limit ?? original.constants.MAX_STRING_LENGTH;
-      },
-    },
-  };
-});
 
 const fixturePath = fileURLToPath(
   new URL("../../../fixtures/fakeGhidra.mjs", import.meta.url),

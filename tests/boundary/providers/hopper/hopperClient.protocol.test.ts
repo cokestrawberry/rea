@@ -1,6 +1,7 @@
+import { runtime } from "../../../fixtures/providerResponseLimit.js";
 import { once } from "node:events";
 
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 
 import { HopperProcessError } from "../../../../src/domain/hopperErrors.js";
 import { HOPPER_OPERATIONS } from "../../../../src/hopper/HopperProviderCapabilities.js";
@@ -14,19 +15,6 @@ import {
   startHopperFixtureClient as startClient,
 } from "./hopperClient.fixture.js";
 
-const runtime = vi.hoisted(() => ({ limit: undefined as number | undefined }));
-vi.mock("node:buffer", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:buffer")>();
-  return {
-    ...original,
-    constants: {
-      ...original.constants,
-      get MAX_STRING_LENGTH() {
-        return runtime.limit ?? original.constants.MAX_STRING_LENGTH;
-      },
-    },
-  };
-});
 afterEach(() => {
   runtime.limit = undefined;
 });
@@ -151,15 +139,21 @@ describe("HopperClient response lifecycle", () => {
     const client = await startClient();
     runtime.limit = 1024 * 1024;
 
-    const result = await client.callTool("echo", {
+    const active = client.callTool("echo", {
       label: "x".repeat(2 * 1024 * 1024),
+    });
+    const queued = client.callTool("echo", { label: "queued" });
+    const [result, waiting] = await Promise.all([active, queued]);
+    expect(waiting).toMatchObject({
+      ok: false,
+      error: { _tag: "HopperProcessError", operation: "echo" },
     });
 
     expect(result).toMatchObject({
       ok: false,
       error: {
         _tag: "AnalysisResourceConstraintError",
-        operation: "hopper_bridge_response",
+        operation: "echo",
         resource: "memory",
         reportedLimits: {
           boundary: "hopper-bridge-response",

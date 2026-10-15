@@ -1,4 +1,4 @@
-import { constants } from "node:buffer";
+import { ProviderResponseLines } from "../process/ProviderResponseLines.js";
 
 import { ProviderResponseLineLimitError } from "../process/ProviderResponseLineLimit.js";
 import {
@@ -16,41 +16,22 @@ export interface HopperResponseStreamOptions {
 
 /** Incrementally validates Hopper NDJSON response frames. */
 export class HopperResponseStream {
-  #buffer = "";
-  #fragments: string[] = [];
-  #fragmentUnits = 0;
+  readonly #lines: ProviderResponseLines;
 
-  constructor(readonly options: HopperResponseStreamOptions) {}
+  constructor(readonly options: HopperResponseStreamOptions) {
+    this.#lines = new ProviderResponseLines(
+      "Hopper",
+      (line) => this.#acceptLine(line),
+      options.overflow,
+    );
+  }
 
   push(chunk: string): void {
-    const pending = this.#buffer.length + this.#fragmentUnits + chunk.length;
-    // Joining past the runtime string limit throws outside any error handler.
-    if (pending > constants.MAX_STRING_LENGTH) {
-      this.reset();
-      this.options.overflow(
-        new ProviderResponseLineLimitError("Hopper", pending),
-      );
-      return;
-    }
-    this.#fragments.push(chunk);
-    this.#fragmentUnits += chunk.length;
-    if (!chunk.includes("\n")) return;
-    this.#buffer += this.#fragments.join("");
-    this.#fragments = [];
-    this.#fragmentUnits = 0;
-    let newline = this.#buffer.indexOf("\n");
-    while (newline >= 0) {
-      const line = this.#buffer.slice(0, newline).trim();
-      this.#buffer = this.#buffer.slice(newline + 1);
-      if (line.length > 0 && !this.#acceptLine(line)) return;
-      newline = this.#buffer.indexOf("\n");
-    }
+    this.#lines.push(chunk);
   }
 
   reset(): void {
-    this.#buffer = "";
-    this.#fragments = [];
-    this.#fragmentUnits = 0;
+    this.#lines.reset();
   }
 
   #acceptLine(line: string): boolean {

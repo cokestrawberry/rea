@@ -196,7 +196,10 @@ export class HopperClient {
       hasQueued: (id) => this.#requests.hasQueued(id),
       nextRequestId: () => this.#nextId,
       abort: (message, cause) => this.#abortProtocol(message, cause),
-      overflow: (error) => this.#abortConnection(error),
+      overflow: (error) => {
+        this.#requests.failActiveResponse(error);
+        this.#socket?.destroy();
+      },
     });
   }
 
