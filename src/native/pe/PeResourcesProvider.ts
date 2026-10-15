@@ -28,7 +28,7 @@ export class PeResourcesProvider implements PeResourcesPort {
   }
 
   async inspect(input: InspectPeResourcesInput, options?: ExecutionOptions) {
-    let cleanupFailure: ProviderCleanupError | undefined;
+    const cleanupState: { failure?: ProviderCleanupError } = {};
     try {
       const snapshot = await this.#resources.run(() =>
         readStableArtifact(
@@ -38,7 +38,7 @@ export class PeResourcesProvider implements PeResourcesPort {
           undefined,
           this.#resources,
           (cleanup) => {
-            cleanupFailure = new ProviderCleanupError(
+            cleanupState.failure = new ProviderCleanupError(
               PE_RESOURCES_PROVIDER.id,
               cleanup.resources,
               { reason: cleanup.reason },
@@ -57,17 +57,17 @@ export class PeResourcesProvider implements PeResourcesPort {
         input,
         options?.signal,
       );
-      return cleanupFailure === undefined
+      return cleanupState.failure === undefined
         ? ok(report)
-        : err(cleanupFailure.retainPartialObservation(report));
+        : err(cleanupState.failure.retainPartialObservation(report));
     } catch (cause) {
       const primary = peResourcesFailure(cause, input, options?.signal);
       return err(
-        cleanupFailure === undefined
+        cleanupState.failure === undefined
           ? primary
           : analysisErrorWithCleanupFailure(
               primary,
-              cleanupFailure,
+              cleanupState.failure,
               "inspect_pe_resources",
             ),
       );
