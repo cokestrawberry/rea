@@ -650,12 +650,16 @@ it("bounds the payload nodes a Frida session retains across messages", async () 
   const id = await fixture.start();
   const emptyObjects = () => Array.from({ length: 150_000 }, () => ({}));
   fixture.controls.emittedPayloads = [emptyObjects(), emptyObjects()];
-  const loaded = await fixture.manager.loadScript(id, {
-    sourceKind: "inline",
-    source: "node-flood",
+  const loaded = await fixture.load(id, "node-flood");
+  expect(loaded.isError).not.toBe(true);
+  const response = await fixture.client.callTool({
+    name: "frida_session_status",
+    arguments: { session_id: id },
   });
-  expect(loaded.ok).toBe(true);
-  const status = fixture.manager.status(id);
-  expect(status?.messages.length).toBe(1);
-  expect(status?.messagesTruncated).toBe(true);
+  expect(response.isError).not.toBe(true);
+  const status = toolContract("frida_session_status").outputSchema.parse(
+    response.structuredContent,
+  );
+  expect(status.messages.length).toBe(1);
+  expect(status.messages_truncated).toBe(true);
 });

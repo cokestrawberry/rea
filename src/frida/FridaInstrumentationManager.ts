@@ -42,9 +42,10 @@ const MAX_SESSION_CAPTURE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_METADATA_BYTES = 128 * 1024;
 const MAX_MESSAGE_TYPE_BYTES = 4 * 1024;
 const MAX_MESSAGE_TEXT_BYTES = 32 * 1024;
-// Bound the retained in-memory object graph per session as well as its
-// serialized JSON byte size.
+// Bound traversal of one message payload.
 const MAX_CAPTURE_JSON_NODES = 250_000;
+// Bound cumulative retained payload nodes independently of message traversal.
+const MAX_SESSION_CAPTURE_NODES = 250_000;
 const MAX_BINARY_MESSAGE_BYTES = Math.floor(
   ((MAX_SESSION_CAPTURE_BYTES - 1024 * 1024) * 3) / 4,
 );
@@ -1034,7 +1035,7 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
     while (
       managed.messages.size > 0 &&
       (managed.capturedBytes + charge > MAX_SESSION_CAPTURE_BYTES ||
-        managed.capturedNodes + nodes > MAX_CAPTURE_JSON_NODES)
+        managed.capturedNodes + nodes > MAX_SESSION_CAPTURE_NODES)
     ) {
       const removed = managed.messages.shift();
       if (removed !== undefined) {
