@@ -13,3 +13,10 @@
     invoke-virtual {p0}, Ljava/lang/Object;->hashCode()I
     return-void
 .end method
+
+.method public static viaChildAndMissing(Lfixture/Child;Lmissing/Sub;)V
+    .registers 2
+    invoke-virtual {p0}, Lfixture/Child;->inherited()V
+    invoke-virtual {p1}, Lmissing/Sub;->inherited()V
+    return-void
+.end method

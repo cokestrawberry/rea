@@ -342,6 +342,7 @@ regressions. It needs no Gradle build, emulator, Android SDK or Ghidra.
 Direct invoke sites retain exact DEX code-unit offsets separately from each
 containing node's unknown `dex_offset`. `direct_invokes_exhaustive: false`
 means instruction rows were bounded by the local bridge frame budget or the
-node contains an invoke whose method JADX could not resolve; `null` means the
+node contains an unresolved invoke with the target method's name and descriptor;
+unrelated unresolved framework methods do not reduce coverage. `null` means the
 producer did not establish instruction coverage. Using-node totals
 and coverage do not imply complete instruction evidence.

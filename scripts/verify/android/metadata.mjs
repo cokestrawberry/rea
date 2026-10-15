@@ -79,7 +79,7 @@ export const verifyAndroidMetadata = async ({
     );
     assert.match(
       result.stdout,
-      /INHERITED_INVOKE_REGRESSION_PASS nodes=2 exhaustive=true,false/u,
+      /INHERITED_INVOKE_REGRESSION_PASS nodes=3 exhaustive=true,true,false/u,
     );
     console.log(
       "PASS real cold metadata, full generic types and stable overloaded method selection",

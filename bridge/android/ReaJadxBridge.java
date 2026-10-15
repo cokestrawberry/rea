@@ -191,7 +191,9 @@ class ReaJadxBridge {
       IMethodRef ref = insn.getIndexAsMethod();
       ref.load();
       // JADX records a use under the superclass method that a subclass-qualified ref resolves to.
-      MethodNode resolved = node.root().resolveMethod(MethodInfo.fromRef(node.root(), ref));
+      MethodInfo invoked = MethodInfo.fromRef(node.root(), ref);
+      if (!invoked.getShortId().equals(target.getMethodInfo().getShortId())) return;
+      MethodNode resolved = node.root().resolveMethod(invoked);
       if (resolved == null) {
         exhaustive[0] = false;
         return;

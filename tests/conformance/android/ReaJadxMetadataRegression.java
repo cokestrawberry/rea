@@ -116,15 +116,16 @@ public class ReaJadxMetadataRegression {
         methodArguments("fixture.Target", "mark"));
     checkDirectInvokes(crossDex, "classes2.dex");
     System.out.println("DIRECT_INVOKE_REGRESSION_PASS nodes=1 offsets=0,3 cross_dex=true");
-    System.out.println("INHERITED_INVOKE_REGRESSION_PASS nodes=2 exhaustive=true,false");
+    System.out.println("INHERITED_INVOKE_REGRESSION_PASS nodes=3 exhaustive=true,true,false");
   }
 
-  /** Subclass-qualified refs match the inherited target; an unresolvable ref in the node clears exhaustiveness. */
+  /** Only an unresolved ref with the target name and descriptor clears exhaustiveness. */
   private static void checkInheritedInvokes(JsonObject refs) {
-    require(refs.get("total").getAsInt() == 2, "JADX using-node count changed for the inherited target");
+    require(refs.get("total").getAsInt() == 3, "JADX using-node count changed for the inherited target");
     Map<String, Boolean> expectedExhaustive = Map.of(
         "fixture.InheritedCaller.viaChild", true,
-        "fixture.InheritedCaller.viaChildAndFramework", false);
+        "fixture.InheritedCaller.viaChildAndFramework", true,
+        "fixture.InheritedCaller.viaChildAndMissing", false);
     for (JsonElement entry : refs.getAsJsonArray("items")) {
       JsonObject item = entry.getAsJsonObject();
       String name = item.get("full_name").getAsString();
