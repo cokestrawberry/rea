@@ -1,3 +1,4 @@
+import { scheduleProcessDelay } from "../process/capture/ProcessTimer.js";
 import type { ProgressReporter } from "../application/ProgressReporter.js";
 import type {
   ObserveWebSessionInput,
@@ -350,8 +351,6 @@ class TimelineCapture {
   }
 }
 
-const maximumTimerDelayMs = 2_147_483_647;
-
 const waitForWindow = async (
   durationMs: number,
   capture: TimelineCapture,
@@ -359,13 +358,11 @@ const waitForWindow = async (
 ): Promise<EndReason> =>
   await new Promise<EndReason>((resolve, reject) => {
     let settled = false;
-    let remainingMs = durationMs;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let removeEnd = (): void => {};
     const finish = (reason: EndReason): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       signal?.removeEventListener("abort", onAbort);
       removeEnd();
       resolve(reason);
@@ -373,21 +370,13 @@ const waitForWindow = async (
     const onAbort = (): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       removeEnd();
       reject(new AnalysisCancelledError("observe_web_session"));
     };
-    // Node shortens timer delays above 2^31-1 ms to 1 ms, so long windows
-    // run as consecutive timers.
-    const waitNextChunk = (): void => {
-      const delayMs = Math.min(remainingMs, maximumTimerDelayMs);
-      remainingMs -= delayMs;
-      timer = setTimeout(() => {
-        if (remainingMs > 0) waitNextChunk();
-        else finish("window_elapsed");
-      }, delayMs);
-    };
-    waitNextChunk();
+    const timer = scheduleProcessDelay(durationMs, () =>
+      finish("window_elapsed"),
+    );
     removeEnd = capture.onEnd(finish);
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted === true) onAbort();
