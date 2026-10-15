@@ -22,6 +22,7 @@ interface TerminalRendererOptions {
   readonly scrollback: number;
   readonly maxBytes: number;
   readonly normalize: (value: string) => string;
+  readonly sensitiveValues?: readonly string[];
   readonly recordEvent?: RecordProcessCaptureEvent;
 }
 
@@ -118,17 +119,22 @@ export class TerminalRenderer {
   #capture(atMs: number): void {
     const buffer = this.#terminal.buffer.active;
     const lines: string[] = [];
+    let containsSensitiveValue = false;
     for (let row = 0; row < this.#terminal.rows; row += 1) {
       const line = buffer.getLine(buffer.viewportY + row);
+      const visibleText =
+        line?.translateToString(false, 0, this.#terminal.cols) ?? "";
+      if (
+        this.options.sensitiveValues?.some((value) =>
+          visibleText.includes(value),
+        )
+      )
+        containsSensitiveValue = true;
       // Trailing blank cells carry no information beyond `columns`; dropping
       // them keeps sparse screens from costing a full row per blank line.
       lines.push(
         this.options
-          .normalize(
-            (
-              line?.translateToString(false, 0, this.#terminal.cols) ?? ""
-            ).padEnd(this.#terminal.cols, " "),
-          )
+          .normalize(visibleText.padEnd(this.#terminal.cols, " "))
           .replace(TRAILING_SPACES, ""),
       );
     }
@@ -140,7 +146,13 @@ export class TerminalRenderer {
       lines.reduce((total, line) => total + Buffer.byteLength(line), 0);
     this.#observedBytes += bytes;
     this.#observedFrames += 1;
-    if (this.#capturedBytes + bytes > this.options.maxBytes) {
+    if (
+      containsSensitiveValue ||
+      this.options.sensitiveValues?.some((value) =>
+        lines.some((line) => line.includes(value)),
+      ) ||
+      this.#capturedBytes + bytes > this.options.maxBytes
+    ) {
       this.#truncated = true;
       return;
     }

@@ -28,19 +28,29 @@ export const sensitiveTerminalInput = (
   return { values: [...values], redactable };
 };
 
+/** Redacted output with the reception time of its first source chunk. */
+export interface SensitiveOutputFragment {
+  readonly data: string;
+  readonly atMs: number;
+}
+
 /** Stateful redaction of literal values across PTY chunk boundaries. */
 export interface SensitiveOutputRedactor {
   /** Redact complete values and hold back a tail that may begin a value. */
-  readonly push: (chunk: string) => string;
+  readonly push: (chunk: string, atMs: number) => SensitiveOutputFragment;
   /** Release the held tail once no later chunk can complete a value. */
-  readonly flush: () => string;
+  readonly flush: () => SensitiveOutputFragment;
 }
 
 /** Replace every literal occurrence of `values` in a chunked output stream. */
 export const createSensitiveOutputRedactor = (
   values: readonly string[],
 ): SensitiveOutputRedactor => {
-  if (values.length === 0) return { push: (chunk) => chunk, flush: () => "" };
+  if (values.length === 0)
+    return {
+      push: (data, atMs) => ({ data, atMs }),
+      flush: () => ({ data: "", atMs: 0 }),
+    };
   const matcher = new RegExp(
     [...values]
       .sort((left, right) => right.length - left.length)
@@ -54,8 +64,11 @@ export const createSensitiveOutputRedactor = (
       (value) => value.length > tail.length && value.startsWith(tail),
     );
   let held = "";
+  let heldAtMs = 0;
   return {
-    push: (chunk) => {
+    push: (chunk, atMs) => {
+      const fragmentAtMs = held === "" ? atMs : heldAtMs;
+      const previousLength = held.length;
       const pending = held + chunk;
       const matches = [...pending.matchAll(matcher)];
       // A tail that begins inside a complete match is redacted with it.
@@ -74,13 +87,17 @@ export const createSensitiveOutputRedactor = (
           end = start;
           break;
         }
+      heldAtMs = end < previousLength ? heldAtMs : atMs;
       held = pending.slice(end);
-      return pending.slice(0, end).replace(matcher, REDACTION);
+      return {
+        data: pending.slice(0, end).replace(matcher, REDACTION),
+        atMs: fragmentAtMs,
+      };
     },
     flush: () => {
       const tail = held.replace(matcher, REDACTION);
       held = "";
-      return tail;
+      return { data: tail, atMs: heldAtMs };
     },
   };
 };

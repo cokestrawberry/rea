@@ -293,7 +293,7 @@ export const buildCaptureResult = (
     (event) => event.type === "input" && event.sensitive,
   );
   const sensitiveInputUnknown =
-    "Sensitive scripted input values are redacted from process capture Evidence.";
+    "Contiguous literal sensitive scripted input values are redacted. Rendered frames containing a sensitive value are withheld; output after redaction flush is counted but not retained.";
   const terminalWithheld = !sensitiveTerminalInput(options.scenario).redactable;
   const filesystemObservationUnknown =
     "No filesystem observation paths were selected; filesystem effects remain unknown.";
@@ -417,7 +417,7 @@ const captureCoverageUnknowns = (
       scope: "terminal",
       reason: terminalWithheld
         ? "Raw PTY chunks were withheld because a sensitive scripted input contains control characters, so its echo cannot be redacted exactly; rendered states also lack those inputs. See truncation_details.raw_terminal."
-        : "Raw PTY chunks exceeded output_bytes and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
+        : "Terminal output was omitted because it exceeded output_bytes or arrived after redaction flush; rendered states also lack those inputs. See truncation_details.raw_terminal.",
     });
   if (
     details.rendered_terminal.observed_frames >
@@ -426,7 +426,7 @@ const captureCoverageUnknowns = (
     unknowns.push({
       scope: "terminal",
       reason:
-        "Cumulative rendered state and visible-line bytes exceeded output_bytes; whole rendered frames were omitted. Raw PTY coverage is reported separately. See truncation_details.rendered_terminal.",
+        "Whole rendered frames were omitted because their content exceeded output_bytes or contained a sensitive input value. Raw PTY coverage is reported separately. See truncation_details.rendered_terminal.",
     });
   for (const [name, coverage] of [
     ["before", details.filesystem_before],
@@ -1308,7 +1308,7 @@ export const cleanupReportFailure = (
 /** Raw PTY retention accounting and the release of redaction-held output. */
 export interface TerminalFrameCapture {
   readonly retention: () => TerminalRetention;
-  /** Retain output held back at a chunk boundary; call once no more can arrive. */
+  /** Close retention and release output held back at a chunk boundary. */
   readonly flush: () => void;
 }
 
@@ -1329,7 +1329,8 @@ export const captureTerminalFrames = (options: {
   let outputBytes = 0;
   let observedBytes = 0;
   let observedFrames = 0;
-  const retain = (data: string): void => {
+  let closed = false;
+  const retain = (data: string, atMs: number): void => {
     const bytes = Buffer.byteLength(data);
     observedBytes += bytes;
     observedFrames += 1;
@@ -1340,10 +1341,6 @@ export const captureTerminalFrames = (options: {
       return;
     }
     outputBytes += bytes;
-    const atMs = normalizeProcessElapsedTime(
-      monotonicProcessCaptureClock() - options.started,
-      options.scenario.normalization.time_bucket_ms,
-    );
     const normalized = options.normalizeText(data);
     const sequence = options.frames.length;
     options.frames.push({
@@ -1357,8 +1354,17 @@ export const captureTerminalFrames = (options: {
   };
   options.terminal.onData((data) => {
     options.onOutput();
-    const visible = redactor.push(data);
-    if (visible !== "") retain(visible);
+    if (closed) {
+      observedBytes += Buffer.byteLength(data);
+      observedFrames += 1;
+      return;
+    }
+    const atMs = normalizeProcessElapsedTime(
+      monotonicProcessCaptureClock() - options.started,
+      options.scenario.normalization.time_bucket_ms,
+    );
+    const visible = redactor.push(data, atMs);
+    if (visible.data !== "") retain(visible.data, visible.atMs);
   });
   return {
     retention: () => ({
@@ -1369,8 +1375,10 @@ export const captureTerminalFrames = (options: {
       retained_frames: options.frames.length,
     }),
     flush: () => {
+      if (closed) return;
+      closed = true;
       const tail = redactor.flush();
-      if (tail !== "") retain(tail);
+      if (tail.data !== "") retain(tail.data, tail.atMs);
     },
   };
 };

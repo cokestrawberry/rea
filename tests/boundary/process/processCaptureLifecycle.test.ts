@@ -1070,6 +1070,28 @@ itWithCaptureCapability(
 );
 
 itWithCaptureCapability(
+  "withholds sensitive rendered text reconstructed across ANSI sequences",
+  async () => {
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: ["-e", "process.stdout.write('sword\\x1b[31mfish')"],
+        working_directory: dirname(processFixture),
+        events: [
+          { type: "input", at_ms: 0, data: "swordfish\n", sensitive: true },
+        ],
+      }),
+    );
+    const { capture } = captureObservations(result);
+    expect(JSON.stringify(capture.rendered_frames)).not.toContain("swordfish");
+    expect(
+      capture.truncation_details?.rendered_terminal.observed_frames,
+    ).toBeGreaterThan(capture.rendered_frames.length);
+    expect(capture.limitations.join(" ")).toContain("sensitive input value");
+  },
+);
+
+itWithCaptureCapability(
   "redacts a sensitive scripted input from PTY echo and rendered terminal state",
   async () => {
     const result = await captureProcessScenario(

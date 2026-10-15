@@ -51,7 +51,7 @@ export type FilesystemCoverage = z.infer<typeof filesystemCoverageSchema>;
 /** Actual budget accounting; rendered bytes count state and visible lines, not JSON. */
 export const processCaptureTruncationDetailsSchema = z.strictObject({
   raw_terminal: byteRetentionSchema.describe(
-    "UTF-8 bytes of original PTY chunks; whole chunks are retained or omitted.",
+    "UTF-8 bytes of redacted output fragments; whole fragments are retained or omitted. Output received after flush is counted as original bytes and omitted.",
   ),
   rendered_terminal: byteRetentionSchema.describe(
     "Cumulative UTF-8 bytes of serialized state plus visible lines, evaluated from retained PTY input; whole frames are retained or omitted.",

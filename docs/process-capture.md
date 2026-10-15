@@ -217,13 +217,17 @@ resource limits, and normalization settings have defaults; see
 from launch, must be ordered, and must fall within `timeout_ms`. Inputs marked
 `sensitive` are sent to the process but persisted as a byte-count placeholder.
 Their text, without a trailing line break, is also replaced with
-`<redacted-input>` wherever it appears in terminal output, such as the PTY echo.
+`<redacted-input>` when it appears as contiguous literal terminal output, such as the PTY echo.
 Redaction precedes normalization, so `frames`, `raw_data`, and rendered frames
 all carry the placeholder. A value split across PTY chunks is matched across the
 boundary. If a sensitive input contains control characters or an inner line
 break, the PTY rewrites its echo and REA cannot match it exactly. The capture
 then withholds all terminal output and reports it as omitted, with a `terminal`
 limitation naming the cause.
+Rendered frames whose visible lines contain a sensitive value after terminal
+control-sequence handling are withheld. Once held output is flushed, retention
+is closed: later PTY chunks contribute only to observed counts. A held fragment
+keeps the reception time of the chunk where it began.
 Environment overrides are recorded in the scenario commitment; inherited
 values are not copied into Evidence.
 
@@ -390,8 +394,10 @@ exit comparison like `settlement.elapsed_ms`.
 
 Every capture requires `truncation_details`, with separate accounting for:
 
-- `raw_terminal`: original UTF-8 PTY chunk bytes and observed/retained chunk
-  counts. A chunk that does not fit `limits.output_bytes` is omitted whole;
+- `raw_terminal`: UTF-8 bytes and observed/retained counts of redacted output
+  fragments, including tails held across chunk boundaries. Chunks arriving
+  after flush are counted as original bytes and omitted. A fragment that does
+  not fit `limits.output_bytes` is omitted whole;
   a later smaller chunk can still fit.
 - `rendered_terminal`: cumulative UTF-8 serialized-state and visible-line
   bytes, plus observed/retained frame counts. This is independent of the raw

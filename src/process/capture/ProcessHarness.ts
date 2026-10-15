@@ -24,6 +24,7 @@ import { snapshotRoots } from "./FilesystemSnapshot.js";
 import { TerminalRenderer } from "./TerminalRenderer.js";
 import type { ProcessTimer } from "./ProcessTimer.js";
 import { createProcessTextNormalizer } from "./ProcessNormalization.js";
+import { sensitiveTerminalInput } from "./SensitiveTerminalInput.js";
 import { selectCapturedProcessGroupIds } from "../ProcessOwnershipProcessTree.js";
 import {
   awaitTerminalExit,
@@ -231,6 +232,7 @@ const createTerminalRenderer = (
     scrollback: scenario.terminal.scrollback,
     maxBytes: scenario.limits.output_bytes,
     normalize: normalizeText,
+    sensitiveValues: sensitiveTerminalInput(scenario).values,
     recordEvent,
   });
 

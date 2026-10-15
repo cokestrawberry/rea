@@ -558,6 +558,7 @@ it("never publishes an unverified attempt without a reason, also while it is in 
 const captureOutput = async (
   inputs: readonly { data: string; sensitive: boolean }[],
   chunks: readonly string[],
+  afterFlush: readonly string[] = [],
 ) => {
   let emit: (data: string) => void = () => undefined;
   const terminal: Pick<IPty, "onData"> = {
@@ -593,6 +594,7 @@ const captureOutput = async (
   });
   for (const chunk of chunks) emit(chunk);
   capture.flush();
+  for (const chunk of afterFlush) emit(chunk);
   const rendered = await renderer.frames();
   await renderer.dispose();
   return { frames, rendered, retention: capture.retention() };
@@ -634,5 +636,21 @@ it("withholds terminal output when a sensitive input cannot be matched in its ec
     observed_frames: 1,
     retained_frames: 0,
     retained_bytes: 0,
+  });
+});
+
+it("counts output after flush without retaining or rendering it", async () => {
+  const { frames, rendered, retention } = await captureOutput(
+    [{ data: "swordfish\r", sensitive: true }],
+    ["sword"],
+    ["fish"],
+  );
+  expect(frames.map(({ data }) => data)).toEqual(["sword"]);
+  expect(JSON.stringify(rendered)).not.toContain("fish");
+  expect(retention).toMatchObject({
+    observed_bytes: 9,
+    retained_bytes: 5,
+    observed_frames: 2,
+    retained_frames: 1,
   });
 });
