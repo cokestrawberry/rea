@@ -180,8 +180,26 @@ it("reports the NFC path that the output tree wrote for an NFD producer name", a
     result.value.normalized_result,
   );
   const written = join(fixture.output, "rootfs", "caf\u00e9");
+  expect(normalized.files[0]?.relative_path).toBe("rootfs/cafe\u0301");
   expect(normalized.files[0]?.path).toBe(written);
   expect(await readFile(written, "utf8")).toBe("firmware=true\n");
+  await assertFirmwareCleanup(fixture.launches);
+});
+
+it("reports both producer spellings before publishing colliding Unicode paths", async () => {
+  const fixture = await firmwareFixture("nfc-collision");
+  const result = await fixture.service.execute("extract_firmware", {
+    path: fixture.path,
+    output_directory: fixture.output,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("Expected a normalized path collision");
+  expect(result.error).toMatchObject({ _tag: "AnalysisOutputError" });
+  expect(result.error.message).toContain("rootfs/cafe\u0301");
+  expect(result.error.message).toContain("rootfs/caf\u00e9");
+  await expect(access(fixture.output)).rejects.toMatchObject({
+    code: "ENOENT",
+  });
   await assertFirmwareCleanup(fixture.launches);
 });
 

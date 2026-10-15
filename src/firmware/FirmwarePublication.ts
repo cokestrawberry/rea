@@ -9,6 +9,7 @@ import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { jsonValueSchema } from "../domain/jsonValue.js";
 import { firmwareResultSchemas } from "../domain/firmware/firmwareAnalysis.js";
 import { hashFirmwareFile, type FirmwareEntry } from "./FirmwareFiles.js";
+import { normalizeArtifactPath } from "../artifacts/ArtifactPaths.js";
 import type { normalizeUnblobReport } from "./FirmwareReports.js";
 import type { extractionGap } from "../domain/firmware/firmwareAnalysis.js";
 
@@ -96,6 +97,18 @@ export const publishFirmwareExtraction = async (context: {
     | z.infer<typeof firmwareResultSchemas.extract_firmware>
     | undefined;
   try {
+    const names = new Map<string, string>();
+    for (const entry of context.entries) {
+      if (entry.kind !== "file") continue;
+      const normalized = normalizeArtifactPath(entry.relativePath);
+      const previous = names.get(normalized);
+      if (previous !== undefined)
+        throw new AnalysisOutputError(
+          "extract_firmware",
+          `Unicode-normalized artifact path collision: ${JSON.stringify(previous)} and ${JSON.stringify(entry.relativePath)} both publish as ${JSON.stringify(normalized)}`,
+        );
+      names.set(normalized, entry.relativePath);
+    }
     const materialized = new Set(
       context.entries
         .filter((entry) => entry.kind === "file")
