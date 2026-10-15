@@ -64,7 +64,7 @@ it.skipIf(process.platform === "win32")(
       async () => ok({ path: fakeLldb, sha256: "0".repeat(64) }),
     );
     try {
-      await tracer.trace(request);
+      await tracer.trace(request, AbortSignal.timeout(10_000));
       await expect(readFile(observed, "utf8")).resolves.toBe("readable");
     } finally {
       await tracer.close();
