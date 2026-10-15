@@ -638,6 +638,64 @@ describe("trace_call_path requirements", () => {
       reason: null,
     }));
 
+  it("reports each direction when callers are unavailable", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: [
+            ...capabilities(["procedure_address", "procedure_callees"]),
+            {
+              operation: "procedure_callers",
+              available: false,
+              reason: "Unsupported",
+            },
+          ],
+        }),
+      ),
+    ).toMatchObject({
+      available: true,
+      default_mode_available: true,
+      modes: [
+        { name: "forward", available: true, missing_operations: [] },
+        {
+          name: "backward",
+          available: false,
+          missing_operations: ["procedure_callers"],
+        },
+      ],
+    });
+  });
+
+  it("reports an unavailable default direction when only callers are available", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities([
+            "procedure_address",
+            "procedure_callers",
+          ]),
+        }),
+      ),
+    ).toMatchObject({
+      available: true,
+      default_mode_available: false,
+      modes: [
+        {
+          name: "forward",
+          available: false,
+          missing_operations: ["procedure_callees"],
+        },
+        { name: "backward", available: true, missing_operations: [] },
+      ],
+    });
+  });
+
   it.each(["procedure_callees", "procedure_callers"])(
     "is available with procedure_address and %s",
     (direction) => {
