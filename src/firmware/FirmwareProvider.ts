@@ -1,4 +1,6 @@
 import { join, isAbsolute } from "node:path";
+import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import { z } from "zod";
 import type { FirmwareAnalysisPort } from "../application/firmware/FirmwareAnalysisPort.js";
 import {
@@ -106,6 +108,7 @@ export class FirmwareProvider implements FirmwareAnalysisPort {
   #tail: Promise<void> = Promise.resolve();
   #closed = false;
   readonly #pendingCleanup = new Map<string, PendingFirmwareCleanup>();
+  readonly #files = new ArtifactResourceScope();
   constructor(
     readonly environment: Readonly<
       Record<string, string | undefined>
@@ -158,6 +161,21 @@ export class FirmwareProvider implements FirmwareAnalysisPort {
   async #retryCleanup(): Promise<FirmwareCleanupAttempt> {
     const failures: ProviderCleanupError[] = [];
     let processUnverified = false;
+    try {
+      await this.#files.retryCleanup();
+    } catch (cause) {
+      processUnverified = true;
+      const cleanup =
+        cause instanceof ArtifactReaderFailure ? cause.cleanup : undefined;
+      failures.push(
+        new ProviderCleanupError(
+          "firmware",
+          cleanup?.resources ?? [],
+          { reason: cleanup?.reason ?? String(cause) },
+          { operation: "close_firmware", cause },
+        ),
+      );
+    }
     for (const [path, pending] of this.#pendingCleanup) {
       try {
         const stopped = await pending.supervisor?.stop();
@@ -239,10 +257,17 @@ export class FirmwareProvider implements FirmwareAnalysisPort {
         this.environment,
         engineName,
         request.operation,
+        this.#files,
+        signal,
       );
       root = await PrivateRuntimeRoot.create({ prefix: "rea-firmware-" });
       const ownedRoot = root;
-      const target = await snapshotFirmware(request, root.path, signal);
+      const target = await snapshotFirmware(
+        request,
+        root.path,
+        signal,
+        this.#files,
+      );
       const run = (
         args: readonly string[],
         outputBudget?: { root: string; bytes: number; entries: number },
@@ -309,6 +334,8 @@ export class FirmwareProvider implements FirmwareAnalysisPort {
           engine: engineName,
           operation: request.operation,
           execution: processRun,
+          resources: this.#files,
+          signal,
         });
         result = firmwareResultSchemas.inspect_firmware_regions.parse({
           engine,
@@ -358,6 +385,8 @@ export class FirmwareProvider implements FirmwareAnalysisPort {
           engine: engineName,
           operation: request.operation,
           execution: processRun,
+          resources: this.#files,
+          signal,
         });
         const normalized = normalizeUnblobReport(report, {
           inputPath: target.inputPath,
@@ -385,6 +414,7 @@ export class FirmwareProvider implements FirmwareAnalysisPort {
           maxDepth: request.input.max_depth,
           engine,
           signal,
+          resources: this.#files,
           retainCleanup: (tree) => {
             const pending: PendingFirmwareCleanup = this.#pendingCleanup.get(
               ownedRoot.path,

@@ -1,3 +1,4 @@
+import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
@@ -89,6 +90,7 @@ export const publishFirmwareExtraction = async (context: {
   maxDepth: number;
   engine: z.infer<typeof firmwareResultSchemas.extract_firmware>["engine"];
   signal: AbortSignal;
+  resources: ArtifactResourceScope;
   retainCleanup: (tree: SafeOutputTree) => void;
 }) => {
   let tree: SafeOutputTree | undefined;
@@ -122,7 +124,12 @@ export const publishFirmwareExtraction = async (context: {
       }
       const logicalPath = `$output/${entry.relativePath}`;
       const reported = context.normalized.files.get(logicalPath);
-      const sha256 = await hashFirmwareFile(entry.path, context.signal);
+      const sha256 = await hashFirmwareFile(
+        entry.path,
+        context.signal,
+        context.resources,
+        "extract_firmware",
+      );
       if (
         (reported?.sha256 !== null &&
           reported?.sha256 !== undefined &&

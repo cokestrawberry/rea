@@ -1,13 +1,6 @@
 import { createHash } from "node:crypto";
-import { constants, createReadStream, createWriteStream } from "node:fs";
-import {
-  chmod,
-  lstat,
-  opendir,
-  open,
-  readlink,
-  realpath,
-} from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { chmod, lstat, opendir, readlink, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -20,7 +13,10 @@ import type { FirmwareRequest } from "../domain/firmware/firmwareAnalysis.js";
 import {
   NonRegularFileReadError,
   openRegularFile,
+  RegularFileAdmissionFailure,
 } from "../filesystem/RegularFile.js";
+import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
 import { FIRMWARE_LIMITS } from "./FirmwareRelease.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
@@ -41,16 +37,51 @@ const throwIfFirmwareInventoryCancelled = (
   if (signal?.aborted === true) throw new AnalysisCancelledError(operation);
 };
 
+const openFirmwareRegularFile = async (
+  path: string,
+  signal: AbortSignal | undefined,
+  resources: ArtifactResourceScope,
+  operation: string,
+  resourcePath = path,
+) => {
+  return await openRegularFile(path, {
+    symlinks: "reject",
+    signal,
+  }).catch(async (cause: unknown) => {
+    if (cause instanceof RegularFileAdmissionFailure) {
+      const released = await resources.release({
+        kind: "file-handle",
+        resource: resourcePath,
+        handle: cause.owner,
+      });
+      if (released.kind === "failed")
+        throw new ProviderCleanupError(
+          "firmware",
+          [resourcePath],
+          { reason: String(released.cause) },
+          { operation, cause },
+        );
+      cause = cause.cause;
+    }
+    throw cause;
+  });
+};
+
 /** Hash a regular tool or extracted file without retaining its bytes in memory. */
 export const hashFirmwareFile = async (
   path: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  resources: ArtifactResourceScope,
+  operation: string,
 ): Promise<string> => {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await openFirmwareRegularFile(
+    path,
+    signal,
+    resources,
+    operation,
+  );
   const hash = createHash("sha256");
   try {
-    if (!(await handle.stat()).isFile())
-      throw new Error(`Not a regular file: ${path}`);
     for await (const chunk of handle.createReadStream({ autoClose: false })) {
       signal?.throwIfAborted();
       hash.update(chunk);
@@ -66,13 +97,17 @@ export const snapshotFirmware = async (
   request: FirmwareRequest,
   root: string,
   signal: AbortSignal,
+  resources: ArtifactResourceScope,
 ) => {
   const sourcePath = resolve(request.input.path);
   const source = await realpath(sourcePath);
-  const handle = await openRegularFile(source, {
-    symlinks: "reject",
+  const handle = await openFirmwareRegularFile(
+    source,
     signal,
-  }).catch((cause: unknown) => {
+    resources,
+    request.operation,
+    sourcePath,
+  ).catch((cause: unknown) => {
     if (!(cause instanceof NonRegularFileReadError)) throw cause;
     throw new AnalysisInputError(request.operation, { cause }, [
       { path: ["path"], reason: "invalid_value", message: cause.message },
@@ -145,7 +180,12 @@ export const snapshotFirmware = async (
       sha256:
         selected === undefined
           ? sha256
-          : await hashFirmwareFile(inputPath, signal),
+          : await hashFirmwareFile(
+              inputPath,
+              signal,
+              resources,
+              request.operation,
+            ),
     },
   };
 };
@@ -154,11 +194,22 @@ export const snapshotFirmware = async (
 export const readFirmwareReport = async (
   path: string,
   operation: string,
+  resources: ArtifactResourceScope,
+  signal?: AbortSignal,
 ): Promise<unknown> => {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await openFirmwareRegularFile(
+    path,
+    signal,
+    resources,
+    operation,
+  ).catch((cause: unknown) => {
+    if (cause instanceof NonRegularFileReadError)
+      throw new AnalysisOutputError(operation, "Report is not a regular file", {
+        cause,
+      });
+    throw cause;
+  });
   try {
-    if (!(await handle.stat()).isFile())
-      throw new AnalysisOutputError(operation, "Report is not a regular file");
     const bytes = await readBoundedFileBytes(
       handle,
       FIRMWARE_LIMITS.reportBytes,
