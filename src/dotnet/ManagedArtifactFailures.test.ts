@@ -3,26 +3,12 @@ import { describe, expect, it } from "vitest";
 import { inspectManagedArtifactBytes } from "./ManagedArtifactInspector.js";
 import { inspectManagedMembersBytes } from "./ManagedMemberInspector.js";
 import { inspectManagedNativeBoundariesBytes } from "./ManagedNativeBoundaryInspector.js";
-import { readManagedPeLayout } from "./ManagedPeReader.js";
 import {
   buildManagedPeFixture,
+  fixtureTablesStream,
   buildNativePeFixture,
   managedPeFixtureTarget,
 } from "./ManagedPe.fixture.js";
-
-const moduleRowCountOffset = (bytes: Buffer): number => {
-  const pe = readManagedPeLayout(bytes);
-  if (pe.cli === null) throw new Error("Fixture omitted CLI metadata");
-  const root = pe.rvaToOffset(
-    pe.cli.metadata.rva,
-    pe.cli.metadata.size,
-    "cli.metadata",
-  );
-  const versionLength = bytes.readUInt32LE(root + 12);
-  const streamHeader = ((root + 16 + versionLength + 3) & ~3) + 4;
-  // The Module table is the first valid table, so its row count opens the counts.
-  return root + bytes.readUInt32LE(streamHeader) + 24;
-};
 
 describe("managed artifact failure classification", () => {
   it("distinguishes native, malformed, and unsupported metadata", () => {
@@ -76,14 +62,18 @@ describe("managed artifact failure classification", () => {
     "classifies a declared row count of $rowCount against the 24-bit RID range",
     ({ rowCount, code, scope }) => {
       const bytes = buildManagedPeFixture();
-      const offset = moduleRowCountOffset(bytes);
+      const offset = fixtureTablesStream(bytes).tablesOffset + 24;
       bytes.writeUInt32LE(rowCount, offset);
       const result = inspectManagedArtifactBytes(
         bytes,
         managedPeFixtureTarget(bytes),
       );
       expect(result.coverage.issues).toEqual([
-        expect.objectContaining({ code, scope }),
+        expect.objectContaining({
+          code,
+          scope,
+          ...(rowCount === 0x0100_0000 ? { offset } : {}),
+        }),
       ]);
     },
   );
