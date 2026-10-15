@@ -287,6 +287,7 @@ it("keeps the private runtime root until a WABT process that failed to stop is s
     expect(blocked).toMatchObject({
       ok: false,
       error: {
+        _tag: "ProviderAdapterError",
         cleanupIncomplete: true,
         cleanupResources: expect.arrayContaining([runtimePath]),
       },

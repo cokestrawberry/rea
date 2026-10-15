@@ -8,6 +8,7 @@ import { ArtifactReaderFailure } from "./ArtifactReader.js";
 import type { SafeOutputTree } from "./SafeOutputTree.js";
 import type { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
+import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 
 /** One artifact resource and its format-specific cleanup owner. */
 export type ArtifactResourceOwner =
@@ -47,9 +48,11 @@ export type ArtifactResourceOwner =
       readonly root: Pick<PrivateRuntimeRoot, "path" | "close">;
     }
   | {
-      kind: "owned-process-root";
+      readonly kind: "owned-process-root";
       readonly resource: string;
-      readonly process: Pick<ProviderProcessSupervisor, "stop">;
+      process: Pick<ProviderProcessSupervisor, "stop"> | undefined;
+      readonly providerId: string;
+      readonly operation: string;
       readonly root: Pick<PrivateRuntimeRoot, "path" | "close">;
       /** Process and root labels reported while the process remains unstopped. */
       readonly resources: readonly string[];
@@ -68,6 +71,10 @@ export class ArtifactResourceScope {
 
   get hasPending(): boolean {
     return this.#pending.size > 0;
+  }
+
+  get pendingOwners(): readonly ArtifactResourceOwner[] {
+    return [...this.#pending];
   }
 
   /** Admit a resource operation while the scope remains open. */
@@ -146,7 +153,12 @@ export class ArtifactResourceScope {
     }
     if (failures.length === 0) return;
     const observations = failures.map(({ owner, cause }) =>
-      ArtifactReaderFailure.cleanupObservation(cause, owner.resource),
+      cause instanceof ProviderCleanupError
+        ? {
+            reason: String(cause.diagnostics?.reason ?? cause.message),
+            resources: cause.cleanupResources,
+          }
+        : ArtifactReaderFailure.cleanupObservation(cause, owner.resource),
     );
     const resources = [
       ...new Set(observations.flatMap(({ resources }) => resources)),
@@ -188,11 +200,33 @@ const cleanup = async (owner: ArtifactResourceOwner): Promise<void> => {
       return;
     case "owned-process-root": {
       // A running process may still write under the root, so remove it only after the stop.
-      const stopped = await owner.process.stop();
-      if (stopped.status === "incomplete")
-        throw new ArtifactReaderFailure("unavailable", stopped.reason, {
-          cleanup: { reason: stopped.reason, resources: owner.resources },
-        });
+      if (owner.process !== undefined) {
+        const stopped = await owner.process.stop();
+        if (stopped.status === "incomplete")
+          throw new ProviderCleanupError(
+            owner.providerId,
+            owner.resources,
+            {
+              reason: stopped.reason,
+              ...(stopped.cleanupResult?.failures === undefined
+                ? {}
+                : {
+                    failures: stopped.cleanupResult.failures.map((failure) => ({
+                      ...failure,
+                    })),
+                  }),
+              ...(stopped.cleanupResult?.unverified === undefined
+                ? {}
+                : {
+                    unverified: stopped.cleanupResult.unverified.map(
+                      (process) => ({ ...process }),
+                    ),
+                  }),
+            },
+            { operation: owner.operation },
+          );
+        owner.process = undefined;
+      }
       await owner.root.close();
       return;
     }

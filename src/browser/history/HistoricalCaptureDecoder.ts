@@ -304,6 +304,8 @@ export class HistoricalCaptureDecoder {
       )
         unstoppedRoot = {
           kind: "owned-process-root",
+          providerId: "web-network-capture",
+          operation: OPERATION,
           resource: runtime.path,
           process: cause.cleanupOwner,
           root: runtime,

@@ -87,6 +87,19 @@ export class WabtArtifactProvider implements WasmArtifactPort {
       if (
         cause instanceof ArtifactReaderFailure &&
         cause.reason === "unavailable" &&
+        cause.cleanup !== undefined
+      )
+        return err(
+          new ProviderCleanupError(
+            WABT_PROVIDER_IDENTITY.id,
+            cause.cleanup.resources,
+            { reason: cause.cleanup.reason },
+            { operation: OPERATION, cause },
+          ),
+        );
+      if (
+        cause instanceof ArtifactReaderFailure &&
+        cause.reason === "unavailable" &&
         cause.cleanup === undefined
       )
         return err(this.#closedError());
@@ -446,6 +459,8 @@ export class WabtArtifactProvider implements WasmArtifactPort {
       )
         unstoppedRoot = {
           kind: "owned-process-root",
+          providerId: WABT_PROVIDER_IDENTITY.id,
+          operation: OPERATION,
           resource: root.path,
           process: cause.cleanupOwner,
           root,
