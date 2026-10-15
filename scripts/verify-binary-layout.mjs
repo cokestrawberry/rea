@@ -1131,7 +1131,14 @@ try {
   const wideOffsetPath = join(root.path, "relr-offset-beyond-64-bits");
   await writeFile(wideOffsetPath, wideOffsetFile);
   for (const mode of ["cli", "mcp"]) {
-    await inspect(mode, wideOffsetPath, "invalid_input");
+    const error = await inspect(mode, wideOffsetPath, "invalid_input");
+    assert.deepEqual(error.details.issues, [
+      {
+        path: ["path"],
+        reason: "invalid_format",
+        message: `ELF RELR section ${packedTable.section_index} entry 1 decodes to offset 0x10000000000000000, beyond the 64-bit address range.`,
+      },
+    ]);
     assert.deepEqual(await readFile(wideOffsetPath), wideOffsetFile);
     cases++;
   }

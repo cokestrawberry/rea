@@ -27,10 +27,10 @@ def address(value):
     return hex(int(value))
 
 
-def relr_offset(value):
+def relr_offset(value, section_index, decoded_index):
     # pyelftools adds bitmap strides to the anchor without wrapping at 64 bits.
     if value > 0xFFFFFFFFFFFFFFFF:
-        raise LayoutFailure("format", f"ELF RELR entry decodes to offset {hex(value)}, beyond the 64-bit address range.")
+        raise LayoutFailure("format", f"ELF RELR section {section_index} entry {decoded_index} decodes to offset {hex(value)}, beyond the 64-bit address range.")
     return address(value)
 
 
@@ -242,7 +242,7 @@ def inspect_elf(path, cache):
                         "section_index": index,
                         "location": location(h.sh_offset, h.sh_size, length),
                         "encoded_bytes_base64": base64.b64encode(content[h.sh_offset:h.sh_offset + h.sh_size]).decode("ascii"),
-                        "entries": [{"decoded_index": decoded, "reported_offset": relr_offset(relocation.entry.r_offset)} for decoded, relocation in enumerate(section.iter_relocations())],
+                        "entries": [{"decoded_index": decoded, "reported_offset": relr_offset(relocation.entry.r_offset, index, decoded)} for decoded, relocation in enumerate(section.iter_relocations())],
                         "offset_meaning": "unknown" if image.header.e_type == "ET_REL" else "linked-virtual-address",
                         "evidence_kind": "derived", "entry_source_locations": None, "addends": None,
                     })
