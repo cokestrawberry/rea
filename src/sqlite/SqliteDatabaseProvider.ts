@@ -30,10 +30,7 @@ import {
 } from "../domain/sqlite/sqliteDatabase.js";
 import { isAbsolute } from "node:path";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
-import {
-  OwnedCommandFailure,
-  ownedCommandResources,
-} from "../process/OwnedCommand.js";
+import { ownedCommandResources } from "../process/OwnedCommand.js";
 import type {
   ProviderProcessStopResult,
   ProviderProcessSupervisor,
@@ -288,11 +285,6 @@ export class SqliteDatabaseProvider implements SqliteDatabasePort {
         );
       result = ok(createSqliteObservation(validated.data, input.path));
     } catch (cause: unknown) {
-      if (
-        cause instanceof OwnedCommandFailure &&
-        cause.cleanupOwner !== undefined
-      )
-        processOwner = cause.cleanupOwner;
       const failure = sqliteDatabaseFailure(
         cause,
         input.path,
