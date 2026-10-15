@@ -396,11 +396,14 @@ Every capture requires `truncation_details`, with separate accounting for:
   When a directory exceeds that capacity, the retained subset follows filesystem
   enumeration order and is then sorted; it is explicitly incomplete and cannot
   establish that an omitted path is absent.
-  A directory that cannot be read, or whose entries cannot be inspected (no
-  search permission, or an entry changed or disappeared during enumeration), is
-  recorded in `enumeration_omissions` with its root-aliased path and the first
-  operating-system error code observed. Entries observed before that directory
-  remain available, while descendants beneath it stay unknown. A selected root
+  A directory that cannot be read or searched, an already inspected symlink
+  that becomes unreadable or disappears, or a directory that becomes
+  unavailable during or after enumeration is recorded in
+  `enumeration_omissions` with the retained containing directory's root-aliased
+  path and the first operating-system error code observed. ENOENT on an entry's
+  initial metadata read means absence and does not create an omission.
+  An omission means the descendant list is incomplete; retained descendants
+  remain known, while unretained paths stay unknown. A selected root
   that cannot be inspected adds the `directory_unavailable` reason without an
   omission, since no retained directory identifies it.
   Each retained regular file without a digest has an aliased path, size,

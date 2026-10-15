@@ -319,27 +319,29 @@ export const snapshotRoots = async (
     let complete = true;
     const remainingEntries =
       scenario.limits.files - entries.length - pendingNames;
-    const opened = await attempt(() => opendir(path), signal);
-    if (!opened.ok) {
-      markDirectoryUnavailable(directoryAlias, opened.error);
-      return false;
-    }
-    for await (const child of opened.value) {
-      signal?.throwIfAborted();
-      if (
-        children.length >= remainingEntries ||
-        depth >= scenario.limits.filesystem_depth
-      ) {
-        truncated = true;
-        complete = false;
-        if (children.length >= remainingEntries)
-          enumerationReasons.add("files_limit");
-        if (depth >= scenario.limits.filesystem_depth)
-          enumerationReasons.add("depth_limit");
-        break;
+    const enumerated = await attempt(async () => {
+      for await (const child of await opendir(path)) {
+        signal?.throwIfAborted();
+        if (
+          children.length >= remainingEntries ||
+          depth >= scenario.limits.filesystem_depth
+        ) {
+          truncated = true;
+          complete = false;
+          if (children.length >= remainingEntries)
+            enumerationReasons.add("files_limit");
+          if (depth >= scenario.limits.filesystem_depth)
+            enumerationReasons.add("depth_limit");
+          break;
+        }
+        children.push(child.name);
+        pendingNames += 1;
       }
-      children.push(child.name);
-      pendingNames += 1;
+    }, signal);
+    if (!enumerated.ok) {
+      pendingNames -= children.length;
+      markDirectoryUnavailable(directoryAlias, enumerated.error);
+      return false;
     }
     const reread = await attempt(() => lstat(path), signal);
     if (!reread.ok) {
