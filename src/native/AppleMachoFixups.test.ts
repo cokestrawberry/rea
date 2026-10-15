@@ -988,6 +988,22 @@ describe("legacy pointer fixup streams", () => {
     );
     expect(fixups.failures).toEqual(failures);
     expect(fixups.decoded).toBe(decoded);
+    if (failures.length > 0) {
+      expect(fixups.decode(BASE + 0x4008n, 0n)).toEqual({
+        kind: "unsupported",
+        reason: failures.join("; "),
+      });
+    } else {
+      expect(fixups.decode(BASE + 0x4008n, 0n)).toMatchObject({
+        kind: "bind",
+        symbol: "_free",
+        addend: -1n,
+      });
+      expect(fixups.decode(BASE + 0x4018n, 0x99n)).toEqual({
+        kind: "rebase",
+        target: 0x99n,
+      });
+    }
   });
 });
 

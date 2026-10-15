@@ -758,7 +758,9 @@ export const parsePointerFixups = (
         }
       }
       return match === undefined
-        ? { kind: "rebase", target: raw }
+        ? failures.length > 0
+          ? { kind: "unsupported", reason: failures.join("; ") }
+          : { kind: "rebase", target: raw }
         : { kind: "bind", ...match.binding };
     },
   };
