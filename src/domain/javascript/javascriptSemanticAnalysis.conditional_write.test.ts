@@ -127,4 +127,24 @@ describe("JavaScript semantic analysis: conditionally skipped writes", () => {
       ),
     ).toEqual({ status: "literal", value: 1 });
   });
+
+  it("preserves initializers and discriminants before labeled loop and switch bodies", () => {
+    for (const source of [
+      "let value; outer: for (value = 1; again;) { if (flag) continue outer; }",
+      "outer: for (var value = 1; again;) { if (flag) continue outer; }",
+      "let value; outer: switch (value = 1) { default: break outer; }",
+    ])
+      expect(bindingValue(source, "value")).toEqual({
+        status: "literal",
+        value: 1,
+      });
+  });
+
+  it("tracks a do-while test write skipped by a break in its body", () => {
+    expect(
+      valueStatus(
+        "let value; do { if (flag) break; } while ((value = 1) && false);",
+      ),
+    ).toBe("unknown");
+  });
 });

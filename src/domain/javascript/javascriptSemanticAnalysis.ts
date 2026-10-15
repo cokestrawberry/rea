@@ -894,9 +894,18 @@ const isSkippedBranch = (parent: t.Node, child: t.Node): boolean => {
   if (t.isForStatement(parent))
     return child === parent.body || child === parent.update;
   if (t.isWhileStatement(parent)) return child === parent.body;
-  // A do-while body and a labeled statement run unless a jump leaves the body.
-  if (t.isDoWhileStatement(parent) || t.isLabeledStatement(parent))
-    return child === parent.body && bodyMayJumpOut(parent.body);
+  if (t.isDoWhileStatement(parent))
+    return (
+      (child === parent.body || child === parent.test) &&
+      bodyMayJumpOut(parent.body)
+    );
+  if (t.isLabeledStatement(parent))
+    return (
+      child === parent.body &&
+      !t.isLoop(parent.body) &&
+      !t.isSwitchStatement(parent.body) &&
+      bodyMayJumpOut(parent.body)
+    );
   if (t.isForInStatement(parent) || t.isForOfStatement(parent))
     return child === parent.left || child === parent.body;
   if (t.isLogicalExpression(parent)) return child === parent.right;
@@ -931,9 +940,8 @@ const bodyMayJumpOut = (body: t.Node): boolean => {
   if (known !== undefined) return known;
   let jumpsOut = false;
   traverseJavaScriptAst(body, {
-    skip: (node) => t.isFunction(node) || t.isStaticBlock(node),
+    skip: (node) => jumpsOut || t.isFunction(node) || t.isStaticBlock(node),
     enter: (node, _parent, readAncestors) => {
-      if (jumpsOut) return;
       if (!t.isBreakStatement(node) && !t.isContinueStatement(node)) return;
       const label = node.label;
       // A jump whose target lies inside the body leaves the rest of it intact.
