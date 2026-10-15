@@ -12,7 +12,7 @@ it.skipIf(process.platform === "win32")(
   async () => {
     const directory = await createTestTempDirectory("rea-ps-timeout-test-");
     const fakePs = join(directory, "ps");
-    await writeFile(fakePs, "#!/bin/sh\nexec sleep 60\n");
+    await writeFile(fakePs, "#!/bin/sh\ntrap '' TERM\nexec sleep 60\n");
     await chmod(fakePs, 0o755);
     const host = createSystemProcessOwnershipHost(
       "linux",

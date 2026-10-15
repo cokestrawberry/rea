@@ -268,6 +268,7 @@ export const createSystemProcessOwnershipHost = (
       {
         env: hostEnvironment,
         timeout: psTimeoutMs,
+        stopSignal: "SIGKILL",
         ...(signal === undefined ? {} : { signal }),
       },
     );
@@ -423,6 +424,7 @@ export const createSystemProcessOwnershipHost = (
         {
           env: hostEnvironment,
           timeout: psTimeoutMs,
+          stopSignal: "SIGKILL",
           ...(signal === undefined ? {} : { signal }),
         },
       );
