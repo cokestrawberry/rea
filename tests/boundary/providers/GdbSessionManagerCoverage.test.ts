@@ -2733,8 +2733,8 @@ process.stdin.on('data', (chunk) => {
 });
 
 it.each([
-  ["within one chunk", ["x".repeat(16 * 1024 * 1024 + 1) + "\n"]],
-  ["across chunks", ["x".repeat(16 * 1024 * 1024 + 1), "\n"]],
+  ["within one chunk", ["x".repeat(16 * 1024 * 1024 + 1) + '\n~"after"\n']],
+  ["across chunks", ["x".repeat(16 * 1024 * 1024 + 1), '\n~"after"\n']],
 ] as const)(
   "resumes MI parsing after an oversized line %s",
   async (_label, chunks) => {
@@ -2772,6 +2772,10 @@ it.each([
       error: { _tag: "AnalysisCapabilityUnavailableError" },
     });
 
+    expect(manager.status(started.value.session_id)).toMatchObject({
+      recent_mi_records_truncated: true,
+      recent_mi_records: expect.arrayContaining(['~"after"']),
+    });
     const closed = await manager.close(started.value.session_id);
 
     expect(closed).toMatchObject({
