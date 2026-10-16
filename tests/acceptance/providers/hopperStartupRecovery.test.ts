@@ -16,106 +16,142 @@ const statusSchema = z.object({ result: z.object({ open: z.boolean() }) });
 const test = workspaceCliTest.skipIf(process.platform !== "darwin");
 
 test(
-  "retains a denial-shaped failure when caller arguments can alter the helper's AppleScript",
+  "retains a denial-shaped failure when a loader argument can alter the helper's AppleScript",
   { timeout: 90_000 },
   async ({ workspace }) => {
-    for (const source of ["target", "loader"] as const) {
-      const target = workspace.path(
-        source === "target" ? 'quoted"target' : "loader-target",
+    const target = workspace.path("loader-target");
+    await copyFile("/usr/bin/true", target);
+    const mode = await workspace.write("loader-mode", "denied-after-handoff");
+    const receipt = workspace.path("loader-bootstrap");
+    const loaderArgs = [
+      resolve("tests/fixtures/hopperLaunchAdmission.mjs"),
+      mode,
+      receipt,
+      'caller"loader',
+    ];
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [resolve("dist/main.js")],
+      stderr: "pipe",
+      env: {
+        ...workspace.environment,
+        PATH: process.env.PATH ?? "",
+        REA_ANALYSIS_PROVIDER: "hopper",
+        HOPPER_LAUNCHER_PATH: process.execPath,
+        HOPPER_LOADER_ARGS_JSON: JSON.stringify(loaderArgs),
+        REA_LOG_LEVEL: "silent",
+      },
+    });
+    const mcp = new Client({ name: "hopper-literal-boundary", version: "1" });
+    let runtime: string | undefined;
+    try {
+      await mcp.connect(transport);
+      const call = (name: string, arguments_: Record<string, string> = {}) =>
+        mcp.callTool({ name, arguments: arguments_ });
+      expect((await call("open_binary", { path: target })).isError).not.toBe(
+        true,
       );
-      await copyFile("/usr/bin/true", target);
-      const mode = await workspace.write(
-        `${source}-mode`,
-        "denied-after-handoff",
-      );
-      const receipt = workspace.path(`${source}-bootstrap`);
-      const loaderArgs = [
-        resolve("tests/fixtures/hopperLaunchAdmission.mjs"),
-        mode,
-        receipt,
-        ...(source === "loader" ? ['caller"loader'] : []),
-      ];
-      const transport = new StdioClientTransport({
-        command: process.execPath,
-        args: [resolve("dist/main.js")],
-        stderr: "pipe",
-        env: {
-          ...workspace.environment,
-          PATH: process.env.PATH ?? "",
-          REA_ANALYSIS_PROVIDER: "hopper",
-          HOPPER_LAUNCHER_PATH: process.execPath,
-          HOPPER_LOADER_ARGS_JSON: JSON.stringify(loaderArgs),
-          REA_LOG_LEVEL: "silent",
-        },
-      });
-      const mcp = new Client({ name: "hopper-literal-boundary", version: "1" });
-      let runtime: string | undefined;
-      try {
-        await mcp.connect(transport);
-        const call = (name: string, arguments_: Record<string, string> = {}) =>
-          mcp.callTool({ name, arguments: arguments_ });
-        expect((await call("open_binary", { path: target })).isError).not.toBe(
-          true,
-        );
-        const first = parseMcpToolError(await call("current_document"));
-        runtime = dirname(await readFile(receipt, "utf8"));
-        expect(first.error).toMatchObject({
-          code: "cleanup_incomplete",
-          details: {
-            diagnostics: {
-              primary_error: {
-                code: "provider_unavailable",
-                details: {
-                  launcher: {
-                    exit_code: 2,
-                    stderr: {
-                      text: expect.stringContaining(
-                        "Not authorized to send Apple events",
-                      ),
-                    },
+      const first = parseMcpToolError(await call("current_document"));
+      runtime = dirname(await readFile(receipt, "utf8"));
+      expect(first.error).toMatchObject({
+        code: "cleanup_incomplete",
+        details: {
+          diagnostics: {
+            primary_error: {
+              code: "provider_unavailable",
+              details: {
+                launcher: {
+                  exit_code: 2,
+                  stderr: {
+                    text: expect.stringContaining(
+                      "Not authorized to send Apple events",
+                    ),
                   },
                 },
               },
             },
           },
+        },
+      });
+      await access(`${receipt}.document-created`);
+      await access(runtime);
+      expect(parseMcpToolError(await call("list_procedures"))).toEqual(first);
+      expect(parseMcpToolError(await call("close_binary")).error.code).toBe(
+        "cleanup_incomplete",
+      );
+    } finally {
+      // SDK close can return immediately after SIGKILL. Wait for its actual
+      // child-close event before recovering this process's retained lease.
+      let serverExited: Promise<void> | undefined;
+      if (transport.pid !== null) {
+        const onclose = transport.onclose;
+        serverExited = new Promise<void>((resolveExit) => {
+          transport.onclose = () => {
+            onclose?.();
+            resolveExit();
+          };
         });
-        await access(`${receipt}.document-created`);
-        await access(runtime);
-        expect(parseMcpToolError(await call("list_procedures"))).toEqual(first);
-        expect(parseMcpToolError(await call("close_binary")).error.code).toBe(
-          "cleanup_incomplete",
-        );
-      } finally {
-        // SDK close can return immediately after SIGKILL. Wait for its actual
-        // child-close event before recovering this process's retained lease.
-        let serverExited: Promise<void> | undefined;
-        if (transport.pid !== null) {
-          const onclose = transport.onclose;
-          serverExited = new Promise<void>((resolveExit) => {
-            transport.onclose = () => {
-              onclose?.();
-              resolveExit();
-            };
-          });
-        }
-        await mcp.close();
-        await transport.close();
-        await serverExited;
-        // The fixture created only this marker, never a native GUI document.
-        if (runtime !== undefined)
-          await rm(runtime, { recursive: true, force: true });
-        const acquired = await acquireHopperTargetLease({
-          targetPath: target,
-          targetKind: "executable",
-          loaderArgs,
-          runId: "literal-boundary-test-cleanup",
-        });
-        if (!acquired.acquired) throw new Error("Fixture lease remained live");
-        await acquired.lease.release();
       }
+      await mcp.close();
+      await transport.close();
+      await serverExited;
+      // The fixture created only this marker, never a native GUI document.
+      if (runtime !== undefined)
+        await rm(runtime, { recursive: true, force: true });
+      const acquired = await acquireHopperTargetLease({
+        targetPath: target,
+        targetKind: "executable",
+        loaderArgs,
+        runId: "literal-boundary-test-cleanup",
+      });
+      if (!acquired.acquired) throw new Error("Fixture lease remained live");
+      await acquired.lease.release();
     }
   },
 );
+
+test("refuses a target path that can alter the helper's AppleScript before starting the helper", async ({
+  workspace,
+}) => {
+  const target = workspace.path('quoted"target');
+  await copyFile("/usr/bin/true", target);
+  const mode = await workspace.write("mode", "denied-after-handoff");
+  const receipt = workspace.path("bootstrap-path");
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [resolve("dist/main.js")],
+    stderr: "pipe",
+    env: {
+      ...workspace.environment,
+      PATH: process.env.PATH ?? "",
+      REA_ANALYSIS_PROVIDER: "hopper",
+      HOPPER_LAUNCHER_PATH: process.execPath,
+      HOPPER_LOADER_ARGS_JSON: JSON.stringify([
+        resolve("tests/fixtures/hopperLaunchAdmission.mjs"),
+        mode,
+        receipt,
+      ]),
+      REA_LOG_LEVEL: "silent",
+    },
+  });
+  const mcp = new Client({ name: "hopper-target-literal", version: "1" });
+  onTestFinished(async () => {
+    await mcp.close();
+    await transport.close();
+  });
+  await mcp.connect(transport);
+  const call = (name: string, arguments_: Record<string, string> = {}) =>
+    mcp.callTool({ name, arguments: arguments_ });
+  const { error } = parseMcpToolError(
+    await call("open_binary", { path: target }),
+  );
+  expect(error).toMatchObject({
+    code: "unsupported_target",
+    message: expect.stringContaining("without escaping"),
+  });
+  // The fixture writes its receipt first, so no receipt means the helper never ran.
+  await expect(access(receipt)).rejects.toMatchObject({ code: "ENOENT" });
+});
 
 test("recovers a denied Hopper launch through the same stdio MCP session and CLI", async ({
   workspace,
