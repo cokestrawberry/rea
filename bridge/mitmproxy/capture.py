@@ -315,7 +315,9 @@ def project_record(state, secrets):
                     validate_omitted(item, pointer(path, key), depth + 1)
                     redactions.append({"pointer": path, "reason": "explicit-sensitive-value", "scope": "property-name"})
                     continue
-                result[key] = visit(item, pointer(path, key), depth + 1, base_scheme=base_scheme)
+                item_path = pointer(path, key)
+                # mitmproxy's proxyauth addon records the authenticated (username, password) here.
+                result[key] = visit(item, item_path, depth + 1, re.fullmatch(r"/(?:backup/)*metadata/proxyauth", item_path) is not None, base_scheme=base_scheme)
             return result
         raise CaptureFailure("decoder", "Native parser returned an unexpected value type: " + type(value).__name__ + ".", path)
 

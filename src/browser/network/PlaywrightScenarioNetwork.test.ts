@@ -323,6 +323,50 @@ it("preserves duplicate headers and binary bytes, redacting credentials and decl
   expect(JSON.stringify(events)).not.toContain("transport-secret");
 });
 
+it("removes userinfo from URL header values and drops values whose userinfo span is ambiguous", async () => {
+  const { collector, events } = harness();
+  const request = new RequestFixture("input");
+  const response = new ResponseFixture(request, "unused");
+  response.headersArray = async () => [
+    { name: "Location", value: "https://user:pass@cdn.example/next?a=1" },
+    { name: "referer", value: "//user:pass@example.test/page" },
+    { name: "Origin", value: "https://example.test" },
+    { name: "Location", value: "/relative/path" },
+    { name: "Location", value: "ht\ttps://user:pass@cdn.example/next" },
+    { name: "X-Link", value: "https://user:pass@cdn.example/ordinary" },
+  ];
+  collector.request(request);
+  collector.response(response);
+  collector.finished(request);
+  await collector.finish();
+  const content = events.find(
+    (event) => event.kind === "network-content" && event.phase === "response",
+  );
+  if (content?.kind !== "network-content") throw new Error("Missing response");
+  expect(content.headers).toEqual({
+    state: "captured",
+    items: [
+      {
+        name: "Location",
+        value: "https://cdn.example/next?a=1",
+        redacted: true,
+      },
+      { name: "referer", value: "//example.test/page", redacted: true },
+      { name: "Origin", value: "https://example.test", redacted: false },
+      { name: "Location", value: "/relative/path", redacted: false },
+      { name: "Location", value: null, redacted: true },
+      {
+        name: "X-Link",
+        value: "https://user:pass@cdn.example/ordinary",
+        redacted: false,
+      },
+    ],
+  });
+  expect(JSON.stringify(content.headers)).not.toContain(
+    "pass@cdn.example/next",
+  );
+});
+
 it("does not read unfinished streaming responses and reports the cutoff", async () => {
   const { collector, events } = harness();
   const request = new RequestFixture("stream");

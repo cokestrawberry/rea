@@ -1,3 +1,4 @@
+import { scheduleProcessDelay } from "../process/capture/ProcessTimer.js";
 import type { ProgressReporter } from "../application/ProgressReporter.js";
 import type {
   ObserveWebSessionInput,
@@ -141,6 +142,7 @@ class TimelineCapture {
   #sequence = 0;
   #pendingReload = false;
   #scopeExcluded = false;
+  readonly #mainDocumentRequestIds = new Set<string>();
   #endReason: EndReason | undefined;
   readonly #listeners = new Set<(reason: EndReason) => void>();
 
@@ -168,7 +170,7 @@ class TimelineCapture {
         this.#sameDocument(event, params);
         break;
       case "Network.requestWillBeSent":
-        this.#redirect(params);
+        this.#requestWillBeSent(params);
         break;
       case "Network.loadingFailed":
         this.#loadingFailed(params);
@@ -278,14 +280,17 @@ class TimelineCapture {
     }
   }
 
-  #redirect(params: UnknownRecord): void {
+  #requestWillBeSent(params: UnknownRecord): void {
     const resourceType = cdpStringValue(params.type);
     if (resourceType !== undefined && resourceType !== "Document") return;
-    if (
-      cdpStringValue(params.frameId) !== this.mainFrameId ||
-      recordValue(params.redirectResponse) === undefined
-    )
-      return;
+    if (cdpStringValue(params.frameId) !== this.mainFrameId) return;
+    const requestId = cdpStringValue(params.requestId);
+    if (requestId !== undefined) this.#mainDocumentRequestIds.add(requestId);
+    if (recordValue(params.redirectResponse) !== undefined)
+      this.#redirect(params);
+  }
+
+  #redirect(params: UnknownRecord): void {
     const request = recordValue(params.request);
     const rawUrl = cdpStringValue(request?.url);
     const destination = scopedUrl(rawUrl, this.allowedOrigins);
@@ -303,13 +308,20 @@ class TimelineCapture {
   }
 
   #loadingFailed(params: UnknownRecord): void {
-    const frame = cdpStringValue(params.frameId);
-    if (frame !== undefined && frame !== this.mainFrameId) return;
+    // Network.loadingFailed has no frameId; main-frame ownership is recorded
+    // from the requestWillBeSent event that announced the request.
+    const requestId = cdpStringValue(params.requestId);
+    if (
+      requestId === undefined ||
+      !this.#mainDocumentRequestIds.delete(requestId) ||
+      params.type !== "Document"
+    )
+      return;
     this.#add({
       type: "load_failed",
       params,
       rawUrl: null,
-      requestId: cdpStringValue(params.requestId) ?? null,
+      requestId,
       detail: safeNetworkError(params.errorText),
     });
   }
@@ -361,7 +373,7 @@ const waitForWindow = async (
     const finish = (reason: EndReason): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       signal?.removeEventListener("abort", onAbort);
       removeEnd();
       resolve(reason);
@@ -369,11 +381,13 @@ const waitForWindow = async (
     const onAbort = (): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       removeEnd();
       reject(new AnalysisCancelledError("observe_web_session"));
     };
-    const timer = setTimeout(() => finish("window_elapsed"), durationMs);
+    const timer = scheduleProcessDelay(durationMs, () =>
+      finish("window_elapsed"),
+    );
     removeEnd = capture.onEnd(finish);
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted === true) onAbort();

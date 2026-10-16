@@ -1,6 +1,7 @@
 """Source-owned tests for the mitmproxy adapter's record projection."""
 
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -259,6 +260,26 @@ class TransportUserinfoTests(unittest.TestCase):
     def test_non_special_schemes_keep_backslashes_in_the_authority(self):
         self.assertEqual(capture.without_userinfo("foo://a\\b@host/x"), "foo://host/x")
         self.assertEqual(capture.without_userinfo(b"//a\\b@host"), b"//a\\b@host")
+
+
+class ProxyAuthMetadataTests(unittest.TestCase):
+    def test_proxyauth_metadata_credentials_are_dropped_with_a_redaction(self):
+        record = capture.project_record({
+            "metadata": {"proxyauth": ["user", "pass"], "note": "kept"},
+            "backup": {"metadata": {"proxyauth": [b"user", b"pass"]}},
+        }, [])
+        self.assertEqual(record["reported"]["metadata"], {"proxyauth": None, "note": "kept"})
+        self.assertEqual(record["reported"]["backup"]["metadata"], {"proxyauth": None})
+        self.assertNotIn("pass", json.dumps(record))
+        self.assertEqual(record["redactions"], [
+            {"pointer": "/metadata/proxyauth", "reason": "transport-credential"},
+            {"pointer": "/backup/metadata/proxyauth", "reason": "transport-credential"},
+        ])
+
+    def test_proxyauth_keys_outside_flow_metadata_are_retained(self):
+        record = capture.project_record({"request": {"metadata": {"proxyauth": "kept"}}}, [])
+        self.assertEqual(record["reported"]["request"]["metadata"], {"proxyauth": "kept"})
+        self.assertEqual(record["redactions"], [])
 
 
 if __name__ == "__main__":
