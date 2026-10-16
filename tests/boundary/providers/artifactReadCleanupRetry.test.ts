@@ -45,22 +45,36 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { GoBinaryProvider } from "../../../src/go/GoBinaryProvider.js";
 import { PeResourcesProvider } from "../../../src/native/pe/PeResourcesProvider.js";
+import { RustBinaryProvider } from "../../../src/rust/RustBinaryProvider.js";
 import { createGoBinaryFixture } from "../../fixtures/go/image.js";
+import { createRustImage } from "../../fixtures/rust/image.js";
 import { peResourceFixture } from "../../../src/native/pe/PeResources.fixture.js";
 
-it.each(["go", "pe"] as const)(
-  "%s provider retains a failed descriptor close and retries that owner before the next read",
-  async (kind) => {
+it.each(
+  (["go", "pe", "rust"] as const).flatMap((kind) =>
+    [true, false].map((cancel) => ({ kind, cancel })),
+  ),
+)(
+  "$kind provider retains a failed descriptor close (cancel=$cancel) and retries that owner before the next read",
+  async ({ kind, cancel }) => {
     const root = await mkdtemp(join(tmpdir(), "rea-read-cleanup-"));
-    const path = join(root, kind === "go" ? "program.elf" : "program.exe");
+    const path = join(root, kind === "pe" ? "program.exe" : "program.elf");
     const bytes =
-      kind === "go" ? createGoBinaryFixture().bytes : peResourceFixture().bytes;
+      kind === "go"
+        ? createGoBinaryFixture().bytes
+        : kind === "pe"
+          ? peResourceFixture().bytes
+          : createRustImage({ format: "elf" });
     await writeFile(path, bytes);
     const provider =
-      kind === "go" ? new GoBinaryProvider() : new PeResourcesProvider();
+      kind === "go"
+        ? new GoBinaryProvider()
+        : kind === "pe"
+          ? new PeResourcesProvider()
+          : new RustBinaryProvider();
     cleanupState.failFirstClose = true;
     const controller = new AbortController();
-    cleanupState.abortController = controller;
+    cleanupState.abortController = cancel ? controller : undefined;
     cleanupState.firstHandle = undefined;
     cleanupState.firstHandleCloseAttempts = 0;
     try {
@@ -74,16 +88,31 @@ it.each(["go", "pe"] as const)(
       });
       expect(first.ok).toBe(false);
       if (first.ok) throw new Error("Injected close failure was not returned");
-      expect(projectAnalysisError(first.error)).toMatchObject({
-        code: "cleanup_incomplete",
-        details: { diagnostics: { primary_error: { code: "cancelled" } } },
-      });
-      expect(first.error.cause).toBeInstanceOf(AggregateError);
-      if (!(first.error.cause instanceof AggregateError))
-        throw first.error.cause;
-      expect(first.error.cause.errors[1]).toMatchObject({
-        cleanupResources: [path],
-      });
+      const projected = projectAnalysisError(first.error);
+      if (cancel) {
+        expect(projected).toMatchObject({
+          code: "cleanup_incomplete",
+          details: { diagnostics: { primary_error: { code: "cancelled" } } },
+        });
+        expect(first.error.cause).toBeInstanceOf(AggregateError);
+        if (!(first.error.cause instanceof AggregateError))
+          throw first.error.cause;
+        expect(first.error.cause.errors[1]).toMatchObject({
+          cleanupResources: [path],
+        });
+      } else {
+        expect(projected).toMatchObject({
+          code: "cleanup_incomplete",
+          details: {
+            resources: [path],
+            partial_observation: { artifact: { path, bytes: bytes.length } },
+          },
+        });
+        expect(projected.details?.diagnostics).not.toHaveProperty(
+          "primary_error",
+        );
+        expect(first.error.cause).not.toBeInstanceOf(AggregateError);
+      }
 
       const retry = await provider.inspect(input);
       expect(retry.ok).toBe(true);
