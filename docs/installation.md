@@ -605,14 +605,20 @@ If macOS denies Apple Events, allow the application that starts REA under
 **System Settings → Privacy & Security → Automation**, then retry. REA releases
 the target reservation when the native helper reports its complete authorization
 rejection and its arguments cannot alter the helper's generated AppleScript.
-Arguments containing quotes, backslashes, or line breaks remain unchanged but
-cannot establish that a failed handoff opened no document. Other failed handoffs
-retain ownership until document closure is confirmed. If a timed-out bridge
-becomes ready later, `close_binary` connects to that run, authenticates its
-identity, and requests document shutdown. After a connection drops, the bridge
-allows 30 seconds for an authenticated cleanup reconnect, then releases Hopper's
-Python execution thread. Expiry does not establish document closure, so REA
-retains unconfirmed ownership. Retry close while the bridge remains available.
+The helper does not escape its target path, so Hopper profile resolution rejects a
+path containing quotes, backslashes, or line breaks; rename or copy the target
+first or select another provider. `open_binary` reports `unsupported_target`
+for an explicit Hopper selection; automatic selection excludes Hopper for
+that target. FAT64 inputs prepared at a REA-owned path are not rejected based
+on the original path. Launcher or loader arguments containing those characters remain
+unchanged but cannot establish that a failed handoff opened no document. Other
+failed handoffs retain ownership until document closure is confirmed. If a
+timed-out bridge becomes ready later, `close_binary` connects to that run,
+authenticates its identity, and requests document shutdown. After a connection
+drops, the bridge allows 30 seconds for an authenticated cleanup reconnect, then
+releases Hopper's Python execution thread. Expiry does not establish document
+closure, so REA retains unconfirmed ownership. Retry close while the bridge
+remains available.
 
 If a Linux launcher exists but cannot start, inspect its shared libraries:
 

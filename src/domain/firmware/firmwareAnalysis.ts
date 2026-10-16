@@ -154,7 +154,12 @@ export const firmwareResultSchemas = {
     coverage: z.enum(["complete", "partial"]),
     files: z.array(
       z.strictObject({
-        relative_path: z.string(),
+        /** Producer spelling used to join $output lineage; path is the published location. */
+        relative_path: z
+          .string()
+          .describe(
+            "Producer-reported spelling and $output lineage join key; use path for the actual published file location.",
+          ),
         path: z.string(),
         size: bytes,
         sha256: digestSchema,

@@ -1,3 +1,4 @@
+import { runtime } from "../../../fixtures/providerResponseLimit.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -27,6 +28,7 @@ import {
 } from "../../../../src/ghidra/GhidraSessionValues.js";
 import { waitForExit as waitForChildExit } from "../../../support/process/processFixture.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
+import { createDeferred } from "../../../fixtures/binarySession.js";
 
 const fixturePath = fileURLToPath(
   new URL("../../../fixtures/fakeGhidra.mjs", import.meta.url),
@@ -150,6 +152,7 @@ const clientFor = (
 
 afterEach(async () => {
   vi.useRealTimers();
+  runtime.limit = undefined;
   await Promise.all(clients.splice(0).map((client) => client.close()));
 });
 
@@ -375,6 +378,68 @@ describe("GhidraClient captured source snapshot", () => {
   });
 });
 
+describe("GhidraClient snapshot reader", () => {
+  const privateSnapshot = async () => {
+    const root = await createTestTempDirectory("rea-ghidra-reader-");
+    const source = join(root, "overlay.exe");
+    const bytes = Buffer.alloc(512 * 1024 + 3);
+    bytes.forEach((_, index) => {
+      bytes[index] = index % 251;
+    });
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(source, bytes);
+    const client = clientFor(new FixtureLauncher(), {
+      targetPath: source,
+      targetSha256: sha256,
+    });
+    return { bytes, client };
+  };
+
+  it("serves exact ranges and bounded streams without reading the whole file", async () => {
+    const { bytes, client } = await privateSnapshot();
+    await expect(
+      client.withTargetSnapshotReader(() => Promise.resolve(null)),
+    ).resolves.toMatchObject({ ok: false, error: { kind: "protocol" } });
+    const started = await client.start();
+    if (!started.ok) throw started.error;
+    const observed = await client.withTargetSnapshotReader(async (reader) => {
+      const streamed = createHash("sha256");
+      const lengths: number[] = [];
+      for await (const chunk of reader.stream(1000)) {
+        streamed.update(chunk);
+        lengths.push(chunk.length);
+      }
+      return {
+        size: reader.size,
+        range: await reader.read(10, 20),
+        streamed: streamed.digest("hex"),
+        lengths,
+      };
+    });
+    if (!observed.ok) throw observed.error;
+    expect(observed.value.size).toBe(bytes.length);
+    expect(observed.value.range).toEqual(bytes.subarray(10, 20));
+    expect(observed.value.streamed).toBe(
+      createHash("sha256").update(bytes.subarray(1000)).digest("hex"),
+    );
+    expect(observed.value.lengths.length).toBeGreaterThan(1);
+    expect(Math.max(...observed.value.lengths)).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("stops streaming when the caller aborts", async () => {
+    const { client } = await privateSnapshot();
+    const started = await client.start();
+    if (!started.ok) throw started.error;
+    const controller = new AbortController();
+    await expect(
+      client.withTargetSnapshotReader(async (reader) => {
+        for await (const chunk of reader.stream(0))
+          if (chunk.length > 0) controller.abort();
+      }, controller.signal),
+    ).resolves.toMatchObject({ ok: false, error: { kind: "cancelled" } });
+  });
+});
+
 describe("GhidraClient", () => {
   it("completes an exact, fragmented post-analysis handshake", async () => {
     const launcher = new FixtureLauncher("fragmented");
@@ -431,6 +496,31 @@ describe("GhidraClient", () => {
     expect(value.length).toBe(64 * 1024 * 1024 + 1);
     expect(value.slice(0, 4)).toBe("xxxx");
     expect(value.slice(-4)).toBe("xxxx");
+  });
+
+  it("fails the request with a resource constraint when a result outgrows the runtime string limit", async () => {
+    const client = clientFor(new FixtureLauncher("oversized_result"));
+    const started = await client.start();
+    if (!started.ok) throw started.error;
+    runtime.limit = 1024 * 1024;
+
+    const result = await client.callTool("list_strings", { document: null });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: "protocol",
+        cause: {
+          _tag: "AnalysisResourceConstraintError",
+          operation: "ghidra_bridge_response",
+          resource: "memory",
+          reportedLimits: {
+            boundary: "ghidra-bridge-response",
+            max_string_code_units: 1024 * 1024,
+          },
+        },
+      },
+    });
   });
 
   it("completes the same authenticated handshake over loopback TCP", async () => {
@@ -538,6 +628,130 @@ describe("GhidraClient startup lifecycle", () => {
     const result = await pending;
 
     expect(result).toMatchObject({ ok: false, error: { kind: "cancelled" } });
+    await expect(access(launcher.runtimeRoots[0] ?? "")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await client.close();
+    await expect(waitForExit(process_)).resolves.toBe(true);
+  });
+
+  it("keeps the shared startup running for a joined caller when the first caller cancels", async () => {
+    const launcher = new FixtureLauncher();
+    const client = clientFor(launcher);
+    const firstCaller = new AbortController();
+    const first = client.start(firstCaller.signal);
+    const joined = client.start(new AbortController().signal);
+
+    firstCaller.abort();
+
+    await expect(first).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
+    await expect(joined).resolves.toMatchObject({ ok: true });
+    expect(launcher.processes).toHaveLength(1);
+  });
+
+  it("releases a joined caller on its own cancellation while the startup continues", async () => {
+    const launcher = new FixtureLauncher();
+    let releaseLaunch: (() => void) | undefined;
+    const launchGate = new Promise<void>((resolve) => {
+      releaseLaunch = resolve;
+    });
+    const client = clientFor(
+      {
+        async launch(session) {
+          await launchGate;
+          return launcher.launch(session);
+        },
+      },
+      { startupTimeoutMs: 30_000 },
+    );
+    const first = client.start();
+    const joinedCaller = new AbortController();
+    const joined = client.start(joinedCaller.signal);
+
+    joinedCaller.abort();
+
+    await expect(joined).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
+    releaseLaunch?.();
+    await expect(first).resolves.toMatchObject({ ok: true });
+    expect(launcher.processes).toHaveLength(1);
+  });
+
+  it("cancels a caller joining an aborted startup before cleanup completes", async () => {
+    const launcher = new FixtureLauncher("silent");
+    const cleanupEntered = createDeferred<void>();
+    const cleanupRelease = createDeferred<void>();
+    const client = clientFor({
+      async launch(session) {
+        const launched = await launcher.launch(session);
+        if (!launched.ok) return launched;
+        return ok({
+          ...launched.value,
+          cleanup: async () => {
+            cleanupEntered.resolve();
+            await cleanupRelease.promise;
+            const child = launched.value.process;
+            const running =
+              child.exitCode === null && child.signalCode === null;
+            if (running) child.kill("SIGTERM");
+            await waitForExit(child);
+            return { cleaned: true as const, signaled: running };
+          },
+        });
+      },
+    });
+    try {
+      const firstCaller = new AbortController();
+      const first = client.start(firstCaller.signal);
+      await launcher.started;
+      firstCaller.abort();
+      await cleanupEntered.promise;
+      const lateCaller = new AbortController();
+      const late = client.start(lateCaller.signal);
+      lateCaller.abort();
+      await expect(late).resolves.toMatchObject({
+        ok: false,
+        error: { kind: "cancelled" },
+      });
+      expect(launcher.processes).toHaveLength(1);
+      cleanupRelease.resolve();
+      await expect(first).resolves.toMatchObject({
+        ok: false,
+        error: { kind: "cancelled" },
+      });
+      expect(launcher.processes).toHaveLength(1);
+    } finally {
+      cleanupRelease.resolve();
+    }
+  });
+
+  it("cancels the shared startup only after every waiting caller has cancelled", async () => {
+    const launcher = new FixtureLauncher("silent");
+    const client = clientFor(launcher, { startupTimeoutMs: 10_000 });
+    const firstCaller = new AbortController();
+    const secondCaller = new AbortController();
+    const first = client.start(firstCaller.signal);
+    const second = client.start(secondCaller.signal);
+    const process_ = await launcher.started;
+
+    firstCaller.abort();
+
+    await expect(first).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
+    expect(process_.exitCode).toBeNull();
+    expect(process_.signalCode).toBeNull();
+    secondCaller.abort();
+    await expect(second).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
     await expect(access(launcher.runtimeRoots[0] ?? "")).rejects.toMatchObject({
       code: "ENOENT",
     });

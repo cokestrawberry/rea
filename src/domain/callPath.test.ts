@@ -91,6 +91,35 @@ const run = (
     ...overrides,
   });
 
+// Fixed-width hex keeps string order equal to numeric order.
+const chainAddress = (index: number) => `0x${(0x1000 + index).toString(16)}`;
+
+/** `diamonds` two-way merges from index 0, then `tail` single-callee hops. */
+const mergingChain = (diamonds: number, tail: number) => {
+  const functions: Evidence[] = [];
+  const call = (caller: number, ...callees: number[]) =>
+    functions.push(
+      observe(
+        chainAddress(caller),
+        callees.map((callee) => chainAddress(callee)),
+      ),
+    );
+  for (let stage = 0; stage < diamonds; stage += 1) {
+    const base = stage * 3;
+    call(base, base + 1, base + 2);
+    call(base + 1, base + 3);
+    call(base + 2, base + 3);
+  }
+  const join = diamonds * 3;
+  for (let index = 0; index < tail; index += 1)
+    call(join + index, join + index + 1);
+  return {
+    functions,
+    start: { address: chainAddress(0) },
+    goal: { address: chainAddress(join + tail) },
+  };
+};
+
 describe("call path reconstruction", () => {
   it("returns deterministic shortest-first cited paths", () => {
     const result = run([
@@ -175,6 +204,10 @@ describe("call path reconstruction", () => {
       "0x2000",
       "0x3000",
     ]);
+    expect(result).toMatchObject({
+      shortest_path_count: "2",
+      paths_truncated: false,
+    });
   });
 });
 
@@ -210,8 +243,58 @@ describe("call path topology and capacity", () => {
       ["0x1000", "0x3000", "0x5000", "0x4000"],
       ["0x1000", "0x3000", "0x6000", "0x4000"],
     ]);
+    expect(result).toMatchObject({
+      shortest_path_count: "4",
+      paths_truncated: false,
+    });
   });
 
+  it("counts exponentially many shortest paths and returns a deterministic bounded prefix", () => {
+    const diamonds = 120;
+    const { functions, start, goal } = mergingChain(diamonds, 0);
+    const result = run(functions, { start, goal });
+    expect(callPathResultSchema.parse(result)).toEqual(result);
+    expect(result).toMatchObject({
+      status: "found",
+      shortest_hops: diamonds * 2,
+      shortest_path_count: (1n << BigInt(diamonds)).toString(),
+      paths_truncated: true,
+    });
+    expect(result.paths.length).toBeLessThanOrEqual(100);
+    expect(result.limitations).toContainEqual(
+      expect.stringContaining("Returned only the first"),
+    );
+    const firstPath = Array.from({ length: diamonds }, (_, stage) => [
+      chainAddress(stage * 3),
+      chainAddress(stage * 3 + 1),
+    ])
+      .flat()
+      .concat(chainAddress(diamonds * 3));
+    const [first, second] = result.paths.map(({ nodes }) =>
+      nodes.map(({ address }) => address),
+    );
+    expect(first).toEqual(firstPath);
+    expect(second).toEqual(
+      firstPath.map((node, index) =>
+        index === firstPath.length - 2 ? chainAddress(diamonds * 3 - 1) : node,
+      ),
+    );
+  });
+
+  it("bounds the nodes returned across long shortest paths", () => {
+    const { functions, start, goal } = mergingChain(2, 4_000);
+    const result = run(functions, { start, goal });
+    expect(result).toMatchObject({
+      status: "found",
+      shortest_hops: 4_004,
+      shortest_path_count: "4",
+      paths_truncated: true,
+    });
+    expect(result.paths).toHaveLength(2);
+  });
+});
+
+describe("call path limitations and deep graphs", () => {
   it("keeps uncovered dead ends in search limitations when a path is found", () => {
     const result = run([
       observe("0x1000", ["0x2000", "0x5000"]),

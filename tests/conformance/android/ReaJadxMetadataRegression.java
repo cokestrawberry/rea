@@ -67,7 +67,9 @@ public class ReaJadxMetadataRegression {
     options.jobs = 1;
     options.outputDexFile = output.resolve("direct-invokes.dex").toString();
     require(Smali.assemble(options, List.of(
-        sources.resolve("Caller.smali").toString(), sources.resolve("Target.smali").toString())),
+        sources.resolve("Caller.smali").toString(), sources.resolve("Target.smali").toString(),
+        sources.resolve("Base.smali").toString(), sources.resolve("Child.smali").toString(),
+        sources.resolve("InheritedCaller.smali").toString())),
         "Direct-invoke fixture assembly failed");
     Path apk = output.resolve("direct-invokes.apk");
     try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(apk))) {
@@ -82,6 +84,8 @@ public class ReaJadxMetadataRegression {
     JsonObject refs = call(handle, constructor.newInstance(holder), "get_xrefs_to_method",
         methodArguments("fixture.Target", "mark"));
     checkDirectInvokes(refs, "classes.dex");
+    checkInheritedInvokes(call(handle, constructor.newInstance(holder), "get_xrefs_to_method",
+        methodArguments("fixture.Base", "inherited")));
 
     SmaliOptions targetOptions = new SmaliOptions();
     targetOptions.apiLevel = 28;
@@ -112,12 +116,35 @@ public class ReaJadxMetadataRegression {
         methodArguments("fixture.Target", "mark"));
     checkDirectInvokes(crossDex, "classes2.dex");
     System.out.println("DIRECT_INVOKE_REGRESSION_PASS nodes=1 offsets=0,3 cross_dex=true");
+    System.out.println("INHERITED_INVOKE_REGRESSION_PASS nodes=3 exhaustive=true,true,false");
+  }
+
+  /** Only an unresolved ref with the target name and descriptor clears exhaustiveness. */
+  private static void checkInheritedInvokes(JsonObject refs) {
+    require(refs.get("total").getAsInt() == 3, "JADX using-node count changed for the inherited target");
+    Map<String, Boolean> expectedExhaustive = Map.of(
+        "fixture.InheritedCaller.viaChild", true,
+        "fixture.InheritedCaller.viaChildAndFramework", true,
+        "fixture.InheritedCaller.viaChildAndMissing", false);
+    for (JsonElement entry : refs.getAsJsonArray("items")) {
+      JsonObject item = entry.getAsJsonObject();
+      String name = item.get("full_name").getAsString();
+      require(expectedExhaustive.containsKey(name), "Unexpected using node: " + name);
+      JsonArray sites = item.getAsJsonArray("direct_invokes");
+      require(sites.size() == 1, "Subclass-qualified invoke was not matched in " + name + ": " + sites);
+      JsonObject site = sites.get(0).getAsJsonObject();
+      require(site.get("dex_code_unit_offset").getAsInt() == 0
+          && site.get("opcode").getAsString().equals("INVOKE_VIRTUAL"), "Wrong invoke site in " + name);
+      require(item.get("direct_invokes_exhaustive").getAsBoolean() == expectedExhaustive.get(name),
+          "Wrong direct_invokes_exhaustive in " + name);
+    }
   }
 
   private static void checkDirectInvokes(JsonObject refs, String dexEntry) {
     require(refs.get("total").getAsInt() == 1, "JADX using-node count changed");
-    JsonArray sites = refs.getAsJsonArray("items").get(0).getAsJsonObject()
-        .getAsJsonArray("direct_invokes");
+    JsonObject item = refs.getAsJsonArray("items").get(0).getAsJsonObject();
+    require(item.get("direct_invokes_exhaustive").getAsBoolean(), "Fully resolved invokes must be exhaustive");
+    JsonArray sites = item.getAsJsonArray("direct_invokes");
     require(sites.size() == 2, "Raw DEX invoke count differs from the fixture: " + sites);
     for (int i = 0; i < sites.size(); i++) {
       JsonObject site = sites.get(i).getAsJsonObject();

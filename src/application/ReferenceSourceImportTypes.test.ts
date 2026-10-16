@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -40,6 +42,7 @@ describe("reference-source import error projection", () => {
           status: "read",
           kind: "file",
           path: "src/main.ts",
+          sha256: createHash("sha256").update(bytes).digest("hex"),
           bytes,
           size: bytes.length,
         },

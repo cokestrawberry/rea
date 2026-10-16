@@ -1,6 +1,6 @@
 import { z } from "incur";
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 import { resolveCliAnalysisSelector } from "./analysisSelector.js";
 import type { DirectAnalysis } from "../composition/directAnalysis.js";
@@ -233,7 +233,7 @@ const routesToJavaScriptAnalysis = async (
   (await isJavaScriptApplicationPath(path));
 
 const isJavaScriptApplicationPath = async (path: string): Promise<boolean> => {
-  const lower = path.toLowerCase();
+  const lower = basename(resolve(path)).toLowerCase();
   if (lower.endsWith(".asar")) return true;
   if (lower.endsWith(".app")) return false;
   try {

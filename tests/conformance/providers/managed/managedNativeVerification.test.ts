@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 
 import { verifyManagedNativeBoundariesEvidence } from "../../../../src/application/managed/ManagedNativeVerificationService.js";
 import { MANAGED_NATIVE_VERIFICATION_EXAMPLE } from "../../../../src/contracts/managed/managedWorkflowExamples.js";
@@ -316,6 +316,22 @@ it("retains every observed native candidate", () => {
   expect(result.pinvoke_imports[0]?.candidates).toHaveLength(2);
 });
 
+it("collects native symbols beyond the argument limit of push", () => {
+  const names = Array.from(
+    { length: 150_000 },
+    (_, index) => `symbol_${index}`,
+  );
+  const result = verifyManagedNativeBoundaries({
+    ...exampleInput(),
+    native_observations: [nativeEvidenceWithExports(names)],
+  });
+
+  expect(result.native_observations).toMatchObject({
+    accepted: 1,
+    symbols: names.length,
+  });
+}, 60_000);
+
 it("wraps verification in derived workflow Evidence", () => {
   const evidence = verifyManagedNativeBoundariesEvidence(exampleInput());
 
@@ -421,3 +437,58 @@ it("does not treat a raw Mach-O ABI name as an exact underscored C identifier", 
   });
   expect(result.pinvoke_imports[0]?.candidates).toEqual([]);
 });
+
+it.each(["unicode", "ansi"] as const)(
+  "keeps an empty %s import unresolved with decorated exports",
+  (charSet) => {
+    const input = exampleInput();
+    const managed = input.managed_boundaries;
+    const normalized = managedNativeBoundaryInspectionSchema.parse(
+      managed.normalized_result,
+    );
+    const result = verifyManagedNativeBoundaries({
+      ...input,
+      native_observations: [
+        nativeEvidenceWithExports(["_W", "_A", "_", "__", "_@0", "__@0"]),
+      ],
+      managed_boundaries: createEvidence(undefined, managed.provider, {
+        operation: managed.operation,
+        parameters: managed.parameters,
+        result: {
+          ...normalized,
+          pinvoke_imports: normalized.pinvoke_imports.map((item) => ({
+            ...item,
+            import_name: "",
+            no_mangle: false,
+            char_set: charSet,
+            call_convention: "stdcall",
+          })),
+          coverage: {
+            state: "partial",
+            issues: [
+              {
+                code: "invalid-row",
+                scope: "metadata.ImplMap:0x1c000001",
+                offset: 292,
+                detail:
+                  "ImplMap ImportName must reference a non-empty #Strings item, but it is empty",
+              },
+            ],
+          },
+        },
+        rawResult: null,
+      }),
+    });
+
+    expect(result.coverage.status).toBe("partial");
+    expect(result.pinvoke_imports).toMatchObject([
+      {
+        managed: { import_name: "" },
+        status: "unresolved",
+        basis: "no-native-candidate",
+        candidates: [],
+        matched_native: null,
+      },
+    ]);
+  },
+);

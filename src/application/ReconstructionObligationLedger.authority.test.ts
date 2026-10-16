@@ -144,6 +144,28 @@ describe("reconstruction obligation ledger", () => {
       ["dependency-missing"],
     ]);
   });
+
+  it("keeps a residual-unknown obligation unknown when its dependency is open", () => {
+    const evidence = proofEvidence("unknown-dependency");
+    const result = build(
+      request([evidence], {
+        reviewed_obligations: [
+          {
+            ...reviewedObligation("obl.unknown.a", evidence.evidence_id),
+            dependency_obligation_ids: ["obl.unknown.b"],
+            residual_unknown_ids: ["unknown.a"],
+          },
+          reviewedObligation("obl.unknown.b", evidence.evidence_id),
+        ],
+      }),
+    );
+
+    expect(result.obligations[0]?.status).toBe("unknown");
+    expect(result.obligations[0]?.diagnostics.map(({ code }) => code)).toEqual(
+      expect.arrayContaining(["dependency-open", "residual-unknown"]),
+    );
+    expect(result.status).toBe("unknown");
+  });
 });
 
 describe("reconstruction obligation ledger fail-closed behavior", () => {

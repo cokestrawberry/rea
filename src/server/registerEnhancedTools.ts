@@ -26,6 +26,7 @@ import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import type { Logger } from "pino";
 import { mcpProgressReporter } from "./mcpProgress.js";
+import type { ProgressReporter } from "../application/ProgressReporter.js";
 import { logToolExecution } from "./toolLogging.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import { executeFunctionAnalysisEvidence } from "../application/FunctionAnalysisEvidence.js";
@@ -231,6 +232,7 @@ const executeEnhancedTool = async (
         return executeFunctionTool(admittedAnalysis, registration, contract, {
           context,
           parameters,
+          progress,
         });
       const analysis: AnalysisOperationPort = {
         execute: (operation, operationParameters, executionOptions) =>
@@ -309,10 +311,10 @@ const executeFunctionTool = async (
   request: {
     readonly context: ServerContext;
     readonly parameters: Readonly<Record<string, JsonValue>>;
+    readonly progress: ProgressReporter;
   },
 ): Promise<CallToolResult> => {
-  const { context, parameters } = request;
-  const progress = mcpProgressReporter(context);
+  const { context, parameters, progress } = request;
   const result = await logToolExecution(
     registration.logger,
     "analyze_function",

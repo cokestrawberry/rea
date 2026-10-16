@@ -952,10 +952,6 @@ it.each([
     { workflows: true, code: true, package: false, website: false },
   ],
   [
-    ".github/workflows/pr-readiness.yml",
-    { workflows: true, code: true, package: false, website: false },
-  ],
-  [
     ".github/workflows/real-ghidra-windows.yml",
     { workflows: true, code: true, package: false, website: false },
   ],

@@ -3,6 +3,7 @@ import { expect, it } from "vitest";
 
 import { functionDossierSchema } from "../hopperValues.js";
 import { ghidraFunctionDossier } from "../ghidraValues.fixture.js";
+import type { RelationshipCoverage } from "../relationshipCoverage.js";
 import { JAVASCRIPT_APPLICATION_EVIDENCE_EXAMPLE } from "../../contracts/javascript/javascriptRuntimeReconciliationExample.js";
 import {
   analysisViewBindJavaScriptGraphs,
@@ -1000,4 +1001,43 @@ it("preserves selected native facet unavailability instead of an exhausted empty
       unknowns: expect.arrayContaining([reason]),
     });
   }
+});
+
+it("reports parent relationship coverage on callers and callees views only", () => {
+  const partialLimitation =
+    "Caller inventory omits sources of 1 call reference(s).";
+  const unknownReason = "No call inventory was examined.";
+  const partial: RelationshipCoverage = {
+    status: "partial",
+    limitations: [partialLimitation],
+    limited_directions: ["callers"],
+  };
+  const unknown: RelationshipCoverage = {
+    status: "unknown",
+    reason: unknownReason,
+  };
+  const limitations = (
+    facet: "callers" | "callees" | "assembly",
+    coverage?: RelationshipCoverage,
+  ) => {
+    const view = projectAnalysisView(
+      {
+        ...nativeParent(),
+        ...(coverage === undefined ? {} : { relationshipCoverage: coverage }),
+      },
+      { kind: "native", facet, offset: 0, limit: 8 },
+    );
+    if (!view.ok) throw view.error;
+    return view.value.limitations;
+  };
+  const baseline = limitations("assembly");
+  for (const facet of ["callers", "callees"] as const) {
+    expect(limitations(facet, partial)).toContain(partialLimitation);
+    expect(limitations(facet, unknown)).toContain(unknownReason);
+    expect(limitations(facet)).toContain(
+      "Provider did not report relationship coverage.",
+    );
+    expect(limitations(facet, { status: "complete" })).toEqual(baseline);
+  }
+  expect(limitations("assembly", partial)).toEqual(baseline);
 });

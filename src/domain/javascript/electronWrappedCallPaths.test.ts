@@ -20,6 +20,28 @@ const bundle = (entry: string) => `(() => {
  load(9);
 })();`;
 
+it.each(["||=", "&&=", "??="])(
+  "preserves a logical-assignment guard for %s",
+  (operator) => {
+    const result = analyzeJavaScriptStaticSource(`
+    const e = require("electron");
+    function send() { e.ipcRenderer.send("app:init"); }
+    ready ${operator} send();
+    other ${operator} e.ipcRenderer.send("app:direct");
+  `);
+    for (const [entry, expression] of [
+      ["app:init", "ready"],
+      ["app:direct", "other"],
+    ])
+      expect(result.electron.call_paths).toContainEqual(
+        expect.objectContaining({
+          entry,
+          conditions: [expect.objectContaining({ expression })],
+        }),
+      );
+  },
+);
+
 describe("wrapped Electron control-flow alternatives", () => {
   it.each(["flag ? copy : cut", "flag ? copy : unknownHandler", "choose()"])(
     "does not select one IPC handler from %s",
@@ -351,6 +373,16 @@ it("retains distinct wrapper invocation ranges for one IPC API source", () => {
   expect(findings[1]?.invocation_location).toBeDefined();
   expect(findings[0]?.invocation_location).not.toEqual(
     findings[1]?.invocation_location,
+  );
+});
+it("does not assign a wrapper parameter after an unresolved spread argument", () => {
+  const result = analyzeJavaScriptStaticSource(`
+      const e=require("electron");
+      function register(first,second,channel){e.ipcMain.on(channel,()=>{});}
+      register("ui",...extra,"app:quit");
+    `);
+  expect(result.electron.ipc).not.toContainEqual(
+    expect.objectContaining({ channel: "app:quit" }),
   );
 });
 it("keeps a directly observed renderer operation singular when tracing its exposed callback", () => {

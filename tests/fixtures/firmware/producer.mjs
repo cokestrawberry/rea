@@ -66,7 +66,13 @@ if (args.includes("--version")) {
     const child =
       mode === "reserved-name"
         ? join(output, "$input")
-        : join(output, "rootfs", "config");
+        : join(
+            output,
+            "rootfs",
+            mode === "nfd-name" || mode === "nfc-collision"
+              ? "cafe\u0301"
+              : "config",
+          );
     await mkdir(join(output, "rootfs"));
     const content = Buffer.from("firmware=true\n");
     if (
@@ -76,6 +82,8 @@ if (args.includes("--version")) {
     )
       await writeFile(child, mode === "budget" ? Buffer.alloc(10000) : content);
     if (mode === "link") await symlink("/etc/passwd", join(output, "escape"));
+    if (mode === "nfc-collision")
+      await writeFile(join(output, "rootfs", "caf\u00e9"), content);
     const childHash = createHash("sha256").update(content).digest("hex");
     const depth =
       mode === "depth" || mode === "depth-reentry" || mode === "depth-orphan"

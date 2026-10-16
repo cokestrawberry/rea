@@ -1,5 +1,9 @@
 import {
   Client,
+  ProtocolError,
+  SdkError,
+  SdkErrorCode,
+  SdkHttpError,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 import { z } from "zod";
@@ -7,7 +11,11 @@ import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
 import {
   AnalysisCancelledError,
   AnalysisProtocolError,
+  AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
+
+/** Explicit per-call deadline so the SDK's default request timeout never decides a call's outcome. */
+export const JEB_CALL_TIMEOUT_MS = 120_000;
 
 /** Injectable MCP boundary used by the provider and conformance tests. */
 export interface JebMcpConnection {
@@ -66,6 +74,23 @@ const isJebFailureEnvelope = (value: JsonValue): boolean =>
   value !== null &&
   !Array.isArray(value) &&
   value.success === false;
+
+/** Type a failure of the connected endpoint; anything else stays raw so unreachability remains distinct. */
+export const classifyJebCallFailure = (
+  tool: string,
+  cause: unknown,
+): unknown => {
+  if (cause instanceof SdkError && cause.code === SdkErrorCode.RequestTimeout)
+    return new AnalysisTimeoutError(`jeb_mcp:${tool}`, JEB_CALL_TIMEOUT_MS, {
+      cause,
+    });
+  if (cause instanceof ProtocolError || cause instanceof SdkHttpError)
+    return new AnalysisProtocolError(
+      `JEB MCP tool ${tool} failed: ${cause.message}`,
+      { cause },
+    );
+  return cause;
+};
 
 export type JebMcpConnectionFactory = (endpoint: URL) => JebMcpConnection;
 
@@ -208,10 +233,17 @@ export const createStreamableHttpJebMcpConnection: JebMcpConnectionFactory = (
       const owner = state;
       if (owner === undefined || owner.tools === undefined)
         throw new AnalysisProtocolError("JEB MCP client failed to connect");
-      const result = await owner.client.callTool(
-        { name, arguments: args },
-        signal === undefined ? {} : { signal },
-      );
+      const result = await owner.client
+        .callTool(
+          { name, arguments: args },
+          {
+            timeout: JEB_CALL_TIMEOUT_MS,
+            ...(signal === undefined ? {} : { signal }),
+          },
+        )
+        .catch((cause: unknown) => {
+          throw classifyJebCallFailure(name, cause);
+        });
       return decodeJebToolResult(result);
     },
     async close() {

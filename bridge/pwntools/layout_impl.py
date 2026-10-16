@@ -27,6 +27,13 @@ def address(value):
     return hex(int(value))
 
 
+def relr_offset(value, section_index, decoded_index):
+    # pyelftools adds bitmap strides to the anchor without wrapping at 64 bits.
+    if value > 0xFFFFFFFFFFFFFFFF:
+        raise LayoutFailure("format", f"ELF RELR section {section_index} entry {decoded_index} decodes to offset {hex(value)}, beyond the 64-bit address range.")
+    return address(value)
+
+
 def file_range(offset, size, length):
     return 0 <= offset <= length and 0 <= size <= length - offset
 
@@ -59,24 +66,36 @@ def name_in_table(display, table_start, table_size, offset, content):
             "location": location(start, len(raw) + 1, len(content)), "unknown_reason": None}
 
 
-def dynamic_name_reference(tags, offset, image, content):
+def dynamic_table_file_offset(starts, sizes, image):
+    offsets = set()
+    for segment in image.iter_segments_by_type("PT_LOAD"):
+        h = segment.header
+        if starts[0] >= h.p_vaddr and starts[0] + sizes[0] <= h.p_vaddr + h.p_filesz:
+            offsets.add(h.p_offset + starts[0] - h.p_vaddr)
+    if len(offsets) != 1:
+        raise LayoutFailure("unsupported-target", "Dynamic string table lacks a unique file-backed mapping: " + repr({"DT_STRTAB": starts, "DT_STRSZ": sizes, "candidate_file_offsets": sorted(offsets)}))
+    return offsets.pop()
+
+
+def dynamic_name_references(tags, image, content):
+    needed = [tag.d_val for tag in tags if tag.d_tag == "DT_NEEDED"]
+    if not needed:
+        return []
     starts = [tag.d_val for tag in tags if tag.d_tag == "DT_STRTAB"]
     sizes = [tag.d_val for tag in tags if tag.d_tag == "DT_STRSZ"]
     if not starts or not sizes:
         raise LayoutFailure("format", "ELF dependency requires DT_STRTAB and DT_STRSZ.")
     if len(starts) != 1 or len(sizes) != 1:
         raise LayoutFailure("unsupported-target", "ELF dependency string-table tags are ambiguous: " + repr({"DT_STRTAB": starts, "DT_STRSZ": sizes}))
-    if not 0 <= offset < sizes[0]:
-        raise LayoutFailure("format", f"ELF dependency name offset {offset} lies outside declared DT_STRSZ {sizes[0]}.")
-    offsets = set()
-    if len(starts) == 1 and len(sizes) == 1:
-        for segment in image.iter_segments_by_type("PT_LOAD"):
-            h = segment.header
-            if starts[0] >= h.p_vaddr and starts[0] + sizes[0] <= h.p_vaddr + h.p_filesz:
-                offsets.add(h.p_offset + starts[0] - h.p_vaddr)
-    if len(offsets) != 1:
-        raise LayoutFailure("unsupported-target", "Dynamic string table lacks a unique file-backed mapping: " + repr({"DT_STRTAB": starts, "DT_STRSZ": sizes, "candidate_file_offsets": sorted(offsets)}))
-    return name_in_table(None, offsets.pop(), sizes[0], offset, content)
+    table_offset = None
+    references = []
+    for offset in needed:
+        if not 0 <= offset < sizes[0]:
+            raise LayoutFailure("format", f"ELF dependency name offset {offset} lies outside declared DT_STRSZ {sizes[0]}.")
+        if table_offset is None:
+            table_offset = dynamic_table_file_offset(starts, sizes, image)
+        references.append(name_in_table(None, table_offset, sizes[0], offset, content))
+    return references
 
 
 def symbol_value_meaning(raw, image_type, sections):
@@ -235,7 +254,7 @@ def inspect_elf(path, cache):
                         "section_index": index,
                         "location": location(h.sh_offset, h.sh_size, length),
                         "encoded_bytes_base64": base64.b64encode(content[h.sh_offset:h.sh_offset + h.sh_size]).decode("ascii"),
-                        "entries": [{"decoded_index": decoded, "reported_offset": address(relocation.entry.r_offset)} for decoded, relocation in enumerate(section.iter_relocations())],
+                        "entries": [{"decoded_index": decoded, "reported_offset": relr_offset(relocation.entry.r_offset, index, decoded)} for decoded, relocation in enumerate(section.iter_relocations())],
                         "offset_meaning": "unknown" if image.header.e_type == "ET_REL" else "linked-virtual-address",
                         "evidence_kind": "derived", "entry_source_locations": None, "addends": None,
                     })
@@ -264,9 +283,7 @@ def inspect_elf(path, cache):
                             break
                     else:
                         raise LayoutFailure("format", f"ELF dynamic segment {index} has no complete DT_NULL terminator within its reported file range.")
-                    for tag in tags:
-                        if tag.d_tag == "DT_NEEDED":
-                            needed.append(dynamic_name_reference(tags, tag.d_val, image, content))
+                    needed.extend(dynamic_name_references(tags, image, content))
                 if h.p_type == "PT_INTERP":
                     raw = content[h.p_offset:h.p_offset + h.p_filesz]
                     end = raw.find(b"\0")

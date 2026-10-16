@@ -4,6 +4,7 @@ import type { AnalysisError } from "../analysisErrorBase.js";
 import { uniqueSorted } from "../canonicalOrdering.js";
 import type { FunctionDossier } from "../hopperValues.js";
 import { jsonValueSchema } from "../jsonValue.js";
+import { relationshipCoverageLimitations } from "../relationshipCoverage.js";
 import { err, ok, type Result } from "../result.js";
 import type {
   AnalysisViewParent,
@@ -110,6 +111,11 @@ export const projectNativeFunctionView = (
       ]),
     );
   const common = parentFields(parent, dossier, artifact);
+  if (view.facet === "callers" || view.facet === "callees")
+    common.limitations = uniqueSorted([
+      ...common.limitations,
+      ...relationshipCoverageLimitations(parent.relationshipCoverage),
+    ]);
   const availabilityKeys: Readonly<Record<string, string>> = {
     incoming_references: "references",
     outgoing_references: "references",

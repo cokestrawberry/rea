@@ -1,3 +1,4 @@
+import { constants } from "node:buffer";
 import type { BigIntStats, Dir, Dirent } from "node:fs";
 import { opendir, readlink, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -256,12 +257,21 @@ const processEntry = async (
   return { ok: true, value: undefined };
 };
 
+// A UTF-8 file decodes to at most one UTF-16 code unit per byte, so a file
+// within the V8 string limit always decodes into one string.
+const RETAINED_FILE_BYTES = BigInt(constants.MAX_STRING_LENGTH);
+const RETAINED_TOTAL_BYTES = 2n * RETAINED_FILE_BYTES;
+
 const processFileEntry = async (
   state: TraversalState,
   absolute: string,
   path: string,
   metadata: BigIntStats,
 ): Promise<ReferenceSourceResult<undefined>> => {
+  const retainBytes =
+    state.shouldRetainBytes?.(path) === true &&
+    metadata.size <= RETAINED_FILE_BYTES &&
+    BigInt(state.retainedBytes) + metadata.size <= RETAINED_TOTAL_BYTES;
   const result = await readStableFile({
     resources: state.resources,
     root: state.root,
@@ -269,11 +279,14 @@ const processFileEntry = async (
     absolute,
     path,
     expected: metadata,
+    retainBytes,
     ...(state.signal === undefined ? {} : { signal: state.signal }),
   });
   const { entry } = result;
-  if (entry.status === "read" && entry.kind === "file")
-    state.bytesRead += entry.bytes.byteLength;
+  if (entry.status === "read" && entry.kind === "file") {
+    state.bytesRead += entry.size;
+    state.retainedBytes += entry.bytes?.byteLength ?? 0;
+  }
   state.entries.push(entry);
   if (result.cleanup !== undefined)
     return err({

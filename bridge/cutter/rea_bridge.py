@@ -623,8 +623,10 @@ class _BridgeServer(threading.Thread):
     def _receive_frame(connection: socket.socket) -> dict[str, Any]:
         data = bytearray()
         deadline = time.monotonic() + AUTH_FRAME_TIMEOUT_SECONDS
-        while b"\n" not in data:
-            if len(data) >= MAX_FRAME_BYTES:
+        part = b""
+        while b"\n" not in part:
+            # A frame of exactly MAX_FRAME_BYTES is valid; its newline is the next byte.
+            if len(data) > MAX_FRAME_BYTES:
                 raise ValueError("frame-limit-exceeded")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -712,7 +714,7 @@ class _BridgeServer(threading.Thread):
                 "message": "The command completed or may have completed, but its result exceeded the bridge response limit. Do not retry automatically.",
             }
         parts: list[bytes] = []
-        encoded_size = 0
+        encoded_size = 1
         for part in json.JSONEncoder(ensure_ascii=False).iterencode(value):
             encoded_part = part.encode("utf-8")
             encoded_size += len(encoded_part)

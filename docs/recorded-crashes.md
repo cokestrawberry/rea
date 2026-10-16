@@ -68,7 +68,12 @@ exposed. The exact observed GDB/plugin version strings are retained.
 Mapping names are producer display metadata, with unknown current file identity.
 Map permissions are derived from reported flags; zero/unfamiliar flags leave
 permissions unknown. These maps do not establish page contents or an executable
-match. Core source bytes remain available independently of this enrichment.
+match. The debugger's PID is reported only when the exact Linux CORE
+NT_PRPSINFO notes record one unambiguous, nonzero PID equal to it; otherwise it
+is null. It does not require a PRSTATUS record for the thread-group leader.
+Each interpreted PRPSINFO note retains its PID in process_info together with
+its original descriptor bytes and source location. Core source bytes remain available
+independently of this enrichment.
 An Evidence envelope containing these maps is `derived`; inspection without
 debugger context is `observed`.
 

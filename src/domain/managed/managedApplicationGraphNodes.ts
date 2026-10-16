@@ -410,7 +410,7 @@ const pinvokeNode = (
     ),
     observations: [
       {
-        label: pinvoke.import_name,
+        label: pinvoke.import_name === "" ? null : pinvoke.import_name,
         properties: {
           token: pinvoke.token,
           member_token: pinvoke.member_token,

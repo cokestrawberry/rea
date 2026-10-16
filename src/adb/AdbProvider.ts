@@ -131,6 +131,13 @@ const hashAdbFile = async (
   }
 };
 
+/**
+ * Classifies a push destination the way `adb push` treats it: a directory
+ * receives the file under its basename, and a dangling symlink is replaced.
+ */
+const DEVICE_PUSH_TARGET_PROBE =
+  'if [ -d "$1" ]; then echo directory; elif [ -e "$1" ] || [ -L "$1" ]; then echo exists; else echo absent; fi';
+
 /** adb joins shell operands into a remote POSIX command; quote at that boundary. */
 const quoteShellOperand = (value: string): string =>
   /^[A-Za-z0-9_./:=@+,-]+$/u.test(value)
@@ -765,7 +772,11 @@ export class AdbProvider {
           );
         return ok(
           createAnalysisExecution(
-            { client, devices, may_have_started_adb_server: daemonStarted },
+            {
+              client,
+              devices,
+              may_have_started_adb_server: daemonStarted,
+            },
             provider,
             {
               limitations: [
@@ -1324,7 +1335,27 @@ export class AdbProvider {
       },
       signal,
     );
-    if (!paths.ok) return paths;
+    const notInstalled = (cause?: AnalysisError) =>
+      err(
+        new AnalysisUnsupportedTargetError(
+          operation,
+          serial,
+          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
+          cause === undefined ? undefined : { cause },
+        ),
+      );
+    if (!paths.ok) {
+      // Android 7+ `pm path` exits 1 with no output for an unknown package.
+      const failure =
+        paths.error instanceof AnalysisProtocolError
+          ? execFileOutputFailure(paths.error.cause)
+          : undefined;
+      return failure?.code === 1 &&
+        failure.stdout.trim() === "" &&
+        failure.stderr.trim() === ""
+        ? notInstalled(paths.error)
+        : paths;
+    }
     const parsed = parsePmPathOutput(paths.value.stdout);
     const capturedOutput = {
       stdout: paths.value.stdout,
@@ -1353,13 +1384,7 @@ export class AdbProvider {
       );
     }
     if (parsed.paths.length === 0 && parsed.unparsedLines.length === 0)
-      return err(
-        new AnalysisUnsupportedTargetError(
-          operation,
-          serial,
-          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
-        ),
-      );
+      return notInstalled();
     if (parsed.unparsedLines.length > 0)
       return err(
         new AnalysisProtocolError(
@@ -1632,6 +1657,37 @@ export class AdbProvider {
           },
         ]),
       );
+    const regularFile = await runAdb(
+      operation,
+      input.serial,
+      selection.binary,
+      adbArguments(input.serial, ["shell", "test", "-f", input.device_path]),
+      { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
+      signal,
+    );
+    if (!regularFile.ok) {
+      // `test -f` exits 1 without output for any path it cannot confirm as a
+      // regular file. Any other failure leaves the path's type unknown.
+      const failure =
+        regularFile.error instanceof AnalysisProtocolError
+          ? execFileOutputFailure(regularFile.error.cause)
+          : undefined;
+      if (
+        failure?.code !== 1 ||
+        failure.stdout !== "" ||
+        failure.stderr !== ""
+      )
+        return regularFile;
+      return err(
+        new AnalysisInputError(operation, undefined, [
+          {
+            path: ["device_path"],
+            reason: "invalid_value",
+            message: `The device path ${JSON.stringify(input.device_path)} is not reported as a regular file by the device shell (it may be absent, a directory, or hidden from the shell user); pull_adb_file copies one regular file.`,
+          },
+        ]),
+      );
+    }
     const directory = await prepareOutputDirectory(
       operation,
       input.output_directory,
@@ -1640,6 +1696,19 @@ export class AdbProvider {
     const localPath = join(directory.value, derived.fileName);
     const existing = await refuseExistingTarget(operation, localPath);
     if (existing !== undefined) return err(existing);
+    // adb creates localPath itself, so a file found there after a failure
+    // belongs to this pull and is reported rather than removed.
+    const retained: AdbAcquiredFilePartialObservation = {
+      provider_id: "adb",
+      operation,
+      result: {
+        client,
+        serial: input.serial,
+        local_path: localPath,
+        device_path: input.device_path,
+        digest_status: "unknown",
+      },
+    };
     const pulled = await runAdb(
       operation,
       input.serial,
@@ -1648,7 +1717,15 @@ export class AdbProvider {
       { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
       signal,
     );
-    if (!pulled.ok) return pulled;
+    if (!pulled.ok) {
+      const left = await lstat(localPath).then(
+        () => true,
+        (cause: unknown) =>
+          !(cause instanceof Error && Reflect.get(cause, "code") === "ENOENT"),
+      );
+      if (left) pulled.error.retainPartialObservation(retained);
+      return pulled;
+    }
     try {
       const digest = await hashAdbFile(localPath, operation, signal);
       return ok(
@@ -1671,24 +1748,14 @@ export class AdbProvider {
       );
     } catch (cause) {
       if (cause instanceof AnalysisCancelledError) {
-        cause.retainPartialObservation({
-          provider_id: "adb",
-          operation,
-          result: {
-            client,
-            serial: input.serial,
-            local_path: localPath,
-            device_path: input.device_path,
-            digest_status: "unknown",
-          },
-        });
+        cause.retainPartialObservation(retained);
         return err(cause);
       }
       return err(
         new AnalysisOutputError(
           operation,
           `The pulled file could not be read back after pulling: ${localPath}`,
-          { cause },
+          { cause, partialObservation: retained },
         ),
       );
     }
@@ -1725,23 +1792,43 @@ export class AdbProvider {
       if (cause instanceof AnalysisCancelledError) return err(cause);
       throw cause;
     }
-    const existsProbe = await runAdb(
+    const targetProbe = await runAdb(
       operation,
       input.device_path,
       selection.binary,
-      adbArguments(input.serial, ["shell", "test", "-e", input.device_path]),
+      adbArguments(input.serial, [
+        "shell",
+        "sh",
+        "-c",
+        DEVICE_PUSH_TARGET_PROBE,
+        "sh",
+        input.device_path,
+      ]),
       { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
       signal,
     );
-    // `test -e` exits nonzero with no adb diagnosis when the path is absent.
-    // Any other probe failure leaves existence unknown, so it is reported as
-    // is rather than read as an existing path or followed by a push.
-    if (
-      !existsProbe.ok &&
-      !(existsProbe.error instanceof AnalysisProtocolError)
-    )
-      return existsProbe;
-    const deviceExists = existsProbe.ok;
+    // The probe reports absence on stdout, so any failure or unrecognized
+    // answer leaves the target unknown and no push follows.
+    if (!targetProbe.ok) return targetProbe;
+    const target = targetProbe.value.stdout.trim();
+    if (target === "directory")
+      return err(
+        new AnalysisInputError(operation, undefined, [
+          {
+            path: ["device_path"],
+            reason: "invalid_value",
+            message: `The device path ${JSON.stringify(input.device_path)} is a directory, so adb push would write the file inside it under the local file name; pass the full destination file path.`,
+          },
+        ]),
+      );
+    if (target !== "exists" && target !== "absent")
+      return err(
+        new AnalysisOutputError(
+          operation,
+          `The device path probe returned an unrecognized answer: ${JSON.stringify(target)}`,
+        ),
+      );
+    const deviceExists = target === "exists";
     if (deviceExists && !input.overwrite)
       return err(
         new AnalysisOutputError(
