@@ -54,7 +54,7 @@ export const processCaptureTruncationDetailsSchema = z.strictObject({
     "UTF-8 bytes of original PTY chunks; whole chunks are retained or omitted.",
   ),
   rendered_terminal: byteRetentionSchema.describe(
-    "Cumulative UTF-8 bytes of serialized state plus visible lines, evaluated from retained PTY input; whole frames are retained or omitted.",
+    "Cumulative UTF-8 bytes of serialized state plus visible lines from retained PTY input. When normalization stops before allocation, observed bytes count completed lines and the calculated first rejected stage; the remaining state is unexamined. Whole frames are retained or omitted.",
   ),
   filesystem_before: filesystemCoverageSchema,
   filesystem_after: filesystemCoverageSchema,

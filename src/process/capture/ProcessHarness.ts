@@ -222,7 +222,11 @@ const cleanupFailedStartup = async (options: {
 
 const createTerminalRenderer = (
   scenario: ProcessScenario,
-  normalizeText: (value: string) => string,
+  normalizeText: (
+    value: string,
+    maxBytes: number,
+    onOmitted?: (bytes: number) => void,
+  ) => string | undefined,
   recordEvent: RecordProcessCaptureEvent,
 ): TerminalRenderer =>
   new TerminalRenderer({

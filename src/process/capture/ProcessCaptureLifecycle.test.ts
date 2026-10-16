@@ -2,9 +2,17 @@ import { expect, it } from "vitest";
 import type { IPty } from "@lydell/node-pty";
 
 import { parseProcessScenario } from "../../domain/process/processScenario.js";
-import type { ProcessCaptureFinalization } from "../../domain/process/processCapture.js";
-import { awaitTerminalExit } from "./ProcessCaptureLifecycle.js";
+import type {
+  ProcessCaptureFinalization,
+  TerminalFrame,
+} from "../../domain/process/processCapture.js";
+import {
+  awaitTerminalExit,
+  captureTerminalFrames,
+} from "./ProcessCaptureLifecycle.js";
+import { createProcessTextNormalizer } from "./ProcessNormalization.js";
 import type { ProcessTimer } from "./ProcessTimer.js";
+import type { TerminalRenderer } from "./TerminalRenderer.js";
 import { monotonicProcessCaptureClock } from "./ProcessCaptureClock.js";
 
 type Delivery = ProcessCaptureFinalization["signals"][number]["delivery"];
@@ -546,4 +554,93 @@ it("never publishes an unverified attempt without a reason, also while it is in 
     result.finalization?.signals[0]?.reason?.length,
     "the in-flight attempt is never published without a reason",
   ).toBeGreaterThan(0);
+});
+
+const captureChunks = (
+  chunks: readonly string[],
+  outputBytes: number,
+  pattern: { readonly pattern: string; readonly replacement: string },
+) => {
+  const scenario = parseProcessScenario({
+    executable: "unused",
+    limits: { output_bytes: outputBytes },
+    normalization: { pids: false, ports: false, patterns: [pattern] },
+  });
+  let emit: (data: string) => void = () => undefined;
+  const terminal = {
+    onData: (listener: (data: string) => void) => {
+      emit = listener;
+      return { dispose: () => undefined };
+    },
+  } as unknown as IPty;
+  const frames: TerminalFrame[] = [];
+  const retention = captureTerminalFrames({
+    terminal,
+    scenario,
+    frames,
+    started: monotonicProcessCaptureClock(),
+    onOutput: () => undefined,
+    renderer: { write: () => undefined } as unknown as TerminalRenderer,
+    normalizeText: createProcessTextNormalizer(scenario, "<temporary-root>", 1),
+    recordEvent: () => undefined,
+  });
+  for (const chunk of chunks) emit(chunk);
+  return {
+    frames: frames.map(({ sequence, data, raw_data }) => ({
+      sequence,
+      data,
+      raw_data,
+    })),
+    retention: retention(),
+  };
+};
+
+it("omits a chunk whose normalized expansion does not fit output_bytes", () => {
+  const { frames, retention } = captureChunks(["x", "a", "y"], 3, {
+    pattern: "a",
+    replacement: "b".repeat(50),
+  });
+
+  expect(
+    frames,
+    "the one-byte chunk that expands to 50 bytes is omitted whole",
+  ).toEqual([
+    { sequence: 0, data: "x", raw_data: undefined },
+    { sequence: 1, data: "y", raw_data: undefined },
+  ]);
+  expect(retention).toEqual({
+    budget_bytes: 3,
+    observed_bytes: 3,
+    retained_bytes: 2,
+    observed_frames: 3,
+    retained_frames: 2,
+  });
+});
+
+it("charges a normalized chunk for both its normalized and original text", () => {
+  const { frames, retention } = captureChunks(["a", "a", "x"], 4, {
+    pattern: "a",
+    replacement: "bb",
+  });
+
+  expect(
+    frames,
+    "the second changed chunk would retain 3 more bytes of the 1 left",
+  ).toEqual([
+    { sequence: 0, data: "bb", raw_data: "a" },
+    { sequence: 1, data: "x", raw_data: undefined },
+  ]);
+  expect(
+    frames.reduce(
+      (total, { data, raw_data }) =>
+        total + Buffer.byteLength(data) + Buffer.byteLength(raw_data ?? ""),
+      0,
+    ),
+    "retained text stays within output_bytes",
+  ).toBeLessThanOrEqual(4);
+  expect(retention).toMatchObject({
+    retained_bytes: 2,
+    observed_frames: 3,
+    retained_frames: 2,
+  });
 });
