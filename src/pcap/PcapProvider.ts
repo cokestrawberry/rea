@@ -16,7 +16,10 @@ import {
   AnalysisCapabilityUnavailableError,
   AnalysisProtocolError,
 } from "../domain/analysisErrorCore.js";
-import { AnalysisError } from "../domain/analysisErrorBase.js";
+import {
+  AnalysisError,
+  type AnalysisPartialObservation,
+} from "../domain/analysisErrorBase.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import { err, ok, type Result } from "../domain/result.js";
@@ -97,7 +100,7 @@ const pcapCommandCleanupError = (
   operation: PcapOperation,
   snapshotPath: string | undefined,
   cleanup: PcapCommandCleanup,
-  partialObservation?: ReturnType<typeof pcapPartialEvidence>,
+  partialObservation?: AnalysisPartialObservation,
   previousError?: AnalysisError,
 ) => {
   const failureOutput = previousError?.capturedOutput;
