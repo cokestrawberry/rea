@@ -641,6 +641,8 @@ const registrationCurrent = (
 const REGISTRATION_STATE_FIELDS: ReadonlySet<string> = new Set([
   "type",
   "transport",
+  "httpUrl",
+  "url",
   "enabled",
   "disabled",
   "enable",

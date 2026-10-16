@@ -201,6 +201,39 @@ describe("client configuration filesystem lifecycle", () => {
     });
   });
 
+  it.each(["httpUrl", "url"] as const)(
+    "replaces a Gemini %s connection with local stdio while preserving user settings",
+    async (addressKey) => {
+      const home = await createTestTempDirectory("rea-gemini-");
+      roots.push(home);
+      const configPath = join(home, ".gemini/settings.json");
+      await mkdir(dirname(configPath), { recursive: true });
+      const original = JSON.stringify({
+        mcpServers: {
+          rea: {
+            [addressKey]: "https://remote.example.test/mcp",
+            timeout: 600_000,
+          },
+        },
+      });
+      await writeFile(configPath, original);
+      const client = { name: "gemini_cli", configPath, format: "json" } as const;
+
+      expect(
+        await configureClientConfiguration(client, {}, ["rea", "mcp"]),
+      ).toMatchObject({ status: "configured" });
+      expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({
+        mcpServers: {
+          rea: { command: "rea", args: ["mcp"], timeout: 600_000 },
+        },
+      });
+      expect(await readFile(`${configPath}.rea.backup`, "utf8")).toBe(original);
+      expect(
+        await configureClientConfiguration(client, {}, ["rea", "mcp"]),
+      ).toEqual({ status: "unchanged" });
+    },
+  );
+
   it("updates a symlink target without replacing the TOML config symlink", async () => {
     const home = await createTestTempDirectory("rea-toml-symlink-");
     roots.push(home);
