@@ -1,29 +1,57 @@
 import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 import { dosMz } from "../domain/binaryTarget.fixture.js";
 import type { NativeLoadImageObservation } from "../domain/native/nativeLoadImage.js";
+import type { GhidraSnapshotReader } from "./GhidraSnapshotReader.js";
 
 const hash = (bytes: Buffer): string =>
   createHash("sha256").update(bytes).digest("hex");
 
+/** In-memory snapshot reader that records positional reads and streams in small chunks. */
+const snapshotReader = (
+  bytes: Buffer,
+): { reader: GhidraSnapshotReader; reads: [number, number][] } => {
+  const reads: [number, number][] = [];
+  return {
+    reads,
+    reader: {
+      size: bytes.length,
+      read: (start, end) => {
+        reads.push([start, end]);
+        return Promise.resolve(Buffer.from(bytes.subarray(start, end)));
+      },
+      stream: (start) =>
+        Readable.from(
+          (function* () {
+            for (let offset = start; offset < bytes.length; offset += 4096)
+              yield bytes.subarray(offset, offset + 4096);
+          })(),
+        ),
+    },
+  };
+};
+
 /** Source-owned MZ with one relocated word, overlay and uninitialized allocation. */
-export const fixtureDosLoadImage = (): {
+export const fixtureDosLoadImage = (
+  overlay = Buffer.from("private-overlay-fixture"),
+): {
   bytes: Buffer;
   sha256: string;
   observation: NativeLoadImageObservation;
+  reader: GhidraSnapshotReader;
+  reads: [number, number][];
 } => {
   const original = dosMz();
   original.writeUInt16LE(1, 6);
   original.writeUInt16LE(9, 28);
   original.writeUInt16LE(0, 30);
   original.writeUInt16LE(4, 41);
-  const bytes = Buffer.concat([
-    original,
-    Buffer.from("private-overlay-fixture"),
-  ]);
+  const bytes = Buffer.concat([original, overlay]);
   const modified = Buffer.from(bytes);
   modified.writeUInt16LE(0x1004, 41);
   return {
     bytes,
+    ...snapshotReader(bytes),
     sha256: hash(bytes),
     observation: {
       executable_format: "Old-style DOS Executable (MZ)",

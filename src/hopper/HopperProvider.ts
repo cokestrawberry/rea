@@ -174,6 +174,7 @@ export class HopperProvider implements AnalysisProviderCandidate {
       launcherPath: this.config.hopperLauncherPath,
       loaderArgsOverride: this.config.hopperLoaderArgs,
       provider: HOPPER_PROVIDER_IDENTITY,
+      platform: this.platform,
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }

@@ -316,6 +316,74 @@ describe("trace_call_path MCP outcome semantics", () => {
   });
 });
 
+describe("cancelled composed workflows", () => {
+  it("propagates name lookup cancellation while the caller signal remains active", async () => {
+    const controller = new AbortController();
+    const cancelled = new AnalysisCancelledError("address_name");
+    const tools = new EnhancedTools({
+      execute: async (name, input) => {
+        if (name === "procedure_address") return ok(String(input.procedure));
+        if (name === "address_name") return err(cancelled);
+        return ok("pseudo");
+      },
+    });
+    const result = await tools.execute(
+      "batch_decompile",
+      { addresses: ["0x1"] },
+      controller.signal,
+    );
+    expect(controller.signal.aborted).toBe(false);
+    expect(result).toEqual({ ok: false, error: cancelled });
+  });
+
+  it("returns cancellation instead of recording a cancelled call-graph node", async () => {
+    const controller = new AbortController();
+    const tools = new EnhancedTools({
+      execute: async (name, arguments_) => {
+        if (name === "procedure_address")
+          return ok(String(arguments_.procedure));
+        controller.abort();
+        return relationshipExecution(["0x2"]);
+      },
+    });
+
+    const result = await tools.execute(
+      "get_call_graph",
+      { address: "0x1", direction: "forward" },
+      controller.signal,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisCancelledError" },
+    });
+  });
+
+  it("returns cancellation instead of recording cancelled batch items", async () => {
+    const controller = new AbortController();
+    const tools = new EnhancedTools({
+      execute: async (name, arguments_) => {
+        if (name === "procedure_address")
+          return ok(String(arguments_.procedure));
+        if (name === "address_name") return ok(null);
+        controller.abort();
+        return ok("pseudo");
+      },
+    });
+
+    const result = await tools.execute(
+      "batch_decompile",
+      { addresses: ["0x1", "0x2"] },
+      controller.signal,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisCancelledError" },
+    });
+  });
+});
+
 describe("enhanced MCP batch cancellation", () => {
   it.each([
     {

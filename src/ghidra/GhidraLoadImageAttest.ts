@@ -19,7 +19,10 @@ import type { GhidraClient } from "./GhidraClient.js";
 import type { GhidraSessionError } from "./GhidraSessionError.js";
 
 type LoadImageSnapshotClient = Partial<
-  Pick<GhidraClient, "hashTargetSnapshot" | "readTargetSnapshot">
+  Pick<
+    GhidraClient,
+    "hashTargetSnapshot" | "readTargetSnapshot" | "withTargetSnapshotReader"
+  >
 >;
 
 type NativeLoadImageAttestationInput = {
@@ -142,6 +145,30 @@ export const attestGhidraNativeLoadImage = async (
           }),
         );
   }
+  if (target.format === "dos-mz") {
+    if (client.withTargetSnapshotReader === undefined)
+      return err(
+        new ProviderAdapterError("ghidra", operation, {
+          diagnostics: {
+            reason:
+              "The Ghidra client does not expose its immutable target snapshot for independent load-image verification.",
+          },
+        }),
+      );
+    const verified = await client.withTargetSnapshotReader(
+      (reader) =>
+        attestGhidraDosLoadImage(reader, target.sha256 ?? "", observations),
+      signal,
+    );
+    if (!verified.ok) return err(mapSessionError(verified.error));
+    return verified.value.ok
+      ? ok(jsonValueSchema.parse(verified.value.value))
+      : err(
+          new ProviderAdapterError("ghidra", operation, {
+            diagnostics: { reason: verified.value.error },
+          }),
+        );
+  }
   if (client.readTargetSnapshot === undefined)
     return err(
       new ProviderAdapterError("ghidra", operation, {
@@ -162,11 +189,11 @@ export const attestGhidraNativeLoadImage = async (
         },
       }),
     );
-  const attested = (
-    target.format === "dos-com"
-      ? attestGhidraDosComLoadImage
-      : attestGhidraDosLoadImage
-  )(snapshot.value.bytes, target.sha256 ?? "", observations);
+  const attested = attestGhidraDosComLoadImage(
+    snapshot.value.bytes,
+    target.sha256 ?? "",
+    observations,
+  );
   if (!attested.ok)
     return err(
       new ProviderAdapterError("ghidra", operation, {

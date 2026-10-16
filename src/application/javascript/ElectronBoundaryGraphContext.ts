@@ -121,7 +121,8 @@ export const electronRangeContains = (
   comparePoint(outer.start, inner.start) <= 0 &&
   comparePoint(outer.end, inner.end) >= 0;
 
-const comparePoint = (
+/** Order two source points by line, then column. */
+export const comparePoint = (
   left: JavaScriptSourceRange["start"],
   right: JavaScriptSourceRange["start"],
 ): number =>

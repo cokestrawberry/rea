@@ -1,6 +1,7 @@
+import { runtime } from "../../../fixtures/providerResponseLimit.js";
 import { once } from "node:events";
 
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { HopperProcessError } from "../../../../src/domain/hopperErrors.js";
 import { HOPPER_OPERATIONS } from "../../../../src/hopper/HopperProviderCapabilities.js";
@@ -13,6 +14,10 @@ import {
   HopperFixtureLauncher as FixtureLauncher,
   startHopperFixtureClient as startClient,
 } from "./hopperClient.fixture.js";
+
+afterEach(() => {
+  runtime.limit = undefined;
+});
 
 describe("HopperClient protocol", () => {
   it("does not start cold and preserves normal dispatch once ready", async () => {
@@ -128,6 +133,38 @@ describe("HopperClient response lifecycle", () => {
     const result = await client.callTool("echo", { label });
 
     expect(result).toEqual({ ok: true, value: { label } });
+  });
+
+  it("fails the request with a resource constraint when a reply outgrows the runtime string limit", async () => {
+    const client = await startClient();
+    runtime.limit = 1024 * 1024;
+
+    const active = client.callTool("echo", {
+      label: "x".repeat(2 * 1024 * 1024),
+    });
+    const queued = client.callTool("echo", { label: "queued" });
+    const [result, waiting] = await Promise.all([active, queued]);
+    expect(waiting).toMatchObject({
+      ok: false,
+      error: { _tag: "HopperProcessError", operation: "echo" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisResourceConstraintError",
+        operation: "echo",
+        resource: "memory",
+        reportedLimits: {
+          boundary: "hopper-bridge-response",
+          max_string_code_units: 1024 * 1024,
+        },
+      },
+    });
+    if (!result.ok)
+      expect(projectAnalysisError(result.error)).toMatchObject({
+        code: "resource_constraint",
+      });
   });
 
   it("clears a partial reply when closing and restarting the owned session", async () => {

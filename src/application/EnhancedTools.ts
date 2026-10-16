@@ -330,6 +330,8 @@ export class EnhancedTools {
       if (!decompilation.ok) return err(decompilation.error);
       items.push(decompilation.value);
     }
+    if (isAborted(signal))
+      return err(new AnalysisCancelledError("batch_decompile"));
     const succeeded = items.filter(({ status }) => status === "ok").length;
     return ok({
       items,
@@ -548,6 +550,8 @@ export class EnhancedTools {
         }
       }
     }
+    if (isAborted(signal))
+      return err(new AnalysisCancelledError("get_call_graph"));
     return ok({
       graph,
       limitations: [...limitations].sort(compareUnicodeCodePoints),
