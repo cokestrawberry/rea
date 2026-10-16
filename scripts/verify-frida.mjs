@@ -41,7 +41,10 @@ try {
       mode: "spawn",
       deviceId: "local",
       program: process.execPath,
-      argv: ["-e", "setTimeout(() => {}, 1500)"],
+      argv: [
+        "-e",
+        "process.stdout.write('rea-target-stdout\\n'); process.stderr.write('rea-target-stderr\\n'); setTimeout(() => {}, 1500)",
+      ],
       source: {
         sourceKind: "inline",
         source: "send({ rea_frida_verification: 'ok', pid: Process.id });",
