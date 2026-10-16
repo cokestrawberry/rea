@@ -63,9 +63,13 @@ describe("managed declaring type ownership", () => {
         ["fields", fields, "field_list"],
         ["methods", methods, "method_list"],
       ] as const) {
-        const declaring = members[table].map((member) => member.declaring_type_token);
+        const declaring = members[table].map(
+          (member) => member.declaring_type_token,
+        );
         expect(members.types.map((type) => type[list].count)).toEqual(
-          members.types.map((type) => declaring.filter((token) => token === type.token).length),
+          members.types.map(
+            (type) => declaring.filter((token) => token === type.token).length,
+          ),
         );
         // The fixture's pointers reorder physical rows 1,2 to list positions 2,1.
         const expected = [2, 1].map((position) => {
