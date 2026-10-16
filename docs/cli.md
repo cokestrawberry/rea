@@ -261,7 +261,9 @@ from observations of the current app. For a directory inside a Git checkout,
 it records the HEAD of the nearest enclosing repository; whether the working
 tree matches that commit remains unknown. It honors the source tree's `.gitignore`
 and applies default exclusions for common generated and dependency paths such
-as `node_modules/`, `dist/`, and `*.log`. Pattern-based exclusions record the
+as `node_modules/`, `dist/`, and `*.log`. A root `.gitignore` that is a symbolic
+link or not a regular file is not read, and the import records a limitation.
+Pattern-based exclusions record the
 matched pattern and whether it came from project, default, caller, or sensitive
 path policy. Links into excluded paths retain their internal target metadata;
 the exclusion explains why the target has no inventory entry, and the inventory
