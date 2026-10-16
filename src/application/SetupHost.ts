@@ -183,9 +183,11 @@ export const systemSetupHost = (
         doctor: diagnosis,
       };
     },
-    installHopper: async (replaceExisting) => {
+    installHopper: async (replaceExisting, signal) => {
+      const cancellation: { readonly signal?: AbortSignal } =
+        signal === undefined ? {} : { signal };
       if (platform === "linux") {
-        const result = await installLinuxHopper(linuxHopperHost);
+        const result = await installLinuxHopper(linuxHopperHost, cancellation);
         if (result.cleanupFailure !== undefined)
           pendingLinuxHopperCleanup.retain(result.cleanupFailure);
         return result.status === "installed"
@@ -194,7 +196,10 @@ export const systemSetupHost = (
       }
       if (macHopperHost === undefined)
         return setupInstallFailure("unsupported_host");
-      const result = await installMacHopper({ replaceExisting }, macHopperHost);
+      const result = await installMacHopper(
+        { replaceExisting, ...cancellation },
+        macHopperHost,
+      );
       if (result.status === "installed")
         return {
           status: "installed",

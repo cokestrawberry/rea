@@ -154,6 +154,53 @@ describe("client configuration filesystem lifecycle", () => {
     ).rejects.toThrow();
   });
 
+  it("leaves an aligned Codex registration with a user-added field unchanged", async () => {
+    const home = await createTestTempDirectory("rea-toml-");
+    roots.push(home);
+    const configPath = join(home, ".codex/config.toml");
+    await mkdir(dirname(configPath), { recursive: true });
+    const original = `[mcp_servers.rea]\ncommand = "rea"\nargs = ["mcp"]\nstartup_timeout_sec = 30\ntool_timeout_sec = 600\n`;
+    await writeFile(configPath, original);
+
+    expect(
+      await configureClientConfiguration(
+        { name: "codex", configPath, format: "toml" },
+        {},
+        ["rea", "mcp"],
+      ),
+    ).toEqual({ status: "unchanged" });
+    expect(await readFile(configPath, "utf8")).toBe(original);
+  });
+
+  it("keeps user-added Codex fields while rewriting the registration fields REA owns", async () => {
+    const home = await createTestTempDirectory("rea-toml-");
+    roots.push(home);
+    const configPath = join(home, ".codex/config.toml");
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(
+      configPath,
+      `[mcp_servers.rea]\ncommand = "old"\nargs = ["old", "mcp"]\nstartup_timeout_sec = 10\ntool_timeout_sec = 600\nenabled = false\n`,
+    );
+
+    expect(
+      await configureClientConfiguration(
+        { name: "codex", configPath, format: "toml" },
+        {},
+        ["rea", "mcp"],
+      ),
+    ).toMatchObject({ status: "configured" });
+    expect(parseToml(await readFile(configPath, "utf8"))).toEqual({
+      mcp_servers: {
+        rea: {
+          command: "rea",
+          args: ["mcp"],
+          startup_timeout_sec: 30,
+          tool_timeout_sec: 600,
+        },
+      },
+    });
+  });
+
   it("updates a symlink target without replacing the TOML config symlink", async () => {
     const home = await createTestTempDirectory("rea-toml-symlink-");
     roots.push(home);
