@@ -1,3 +1,4 @@
+import { ArtifactResourceScope } from "../../../src/artifacts/ArtifactResourceScope.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -27,7 +28,11 @@ it.each([
       ]),
     );
     await expect(
-      readFirmwareReport(path, "inspect_firmware_regions"),
+      readFirmwareReport(
+        path,
+        "inspect_firmware_regions",
+        new ArtifactResourceScope(),
+      ),
     ).rejects.toMatchObject({
       _tag: "AnalysisOutputError",
       reason: "Tool report is not valid complete JSON",
@@ -40,9 +45,13 @@ it("preserves valid Unicode and a literal replacement character in producer JSON
   const path = join(root, "report.json");
   const report = { description: "固件 🧩 \ufffd", path: "/输入/firmware.bin" };
   await writeFile(path, JSON.stringify(report));
-  expect(await readFirmwareReport(path, "inspect_firmware_regions")).toEqual(
-    report,
-  );
+  expect(
+    await readFirmwareReport(
+      path,
+      "inspect_firmware_regions",
+      new ArtifactResourceScope(),
+    ),
+  ).toEqual(report);
 });
 
 it("orders extracted firmware paths by code point independently of host locale", async () => {

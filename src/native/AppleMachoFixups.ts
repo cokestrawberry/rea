@@ -530,7 +530,9 @@ const sleb = (bytes: Buffer, cursor: { at: number }, end: number): bigint => {
     byte = bytes[cursor.at++] ?? 0;
     value |= BigInt(byte & 0x7f) << shift;
     shift += 7n;
-  } while ((byte & 0x80) !== 0 && shift <= 63n);
+    if ((byte & 0x80) !== 0 && shift > 63n)
+      throw new RangeError("Oversized bind opcode operand");
+  } while ((byte & 0x80) !== 0);
   return (byte & 0x40) !== 0 ? value - (1n << shift) : value;
 };
 
@@ -756,7 +758,9 @@ export const parsePointerFixups = (
         }
       }
       return match === undefined
-        ? { kind: "rebase", target: raw }
+        ? failures.length > 0
+          ? { kind: "unsupported", reason: failures.join("; ") }
+          : { kind: "rebase", target: raw }
         : { kind: "bind", ...match.binding };
     },
   };

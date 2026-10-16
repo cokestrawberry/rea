@@ -5,6 +5,7 @@ import { inspectManagedMembersBytes } from "./ManagedMemberInspector.js";
 import { inspectManagedNativeBoundariesBytes } from "./ManagedNativeBoundaryInspector.js";
 import {
   buildManagedPeFixture,
+  fixtureTablesStream,
   buildNativePeFixture,
   managedPeFixtureTarget,
 } from "./ManagedPe.fixture.js";
@@ -45,6 +46,37 @@ describe("managed artifact failure classification", () => {
       expect.objectContaining({ code: "invalid-tables" }),
     ]);
   });
+
+  it.each([
+    {
+      rowCount: 0x0100_0000,
+      code: "invalid-tables",
+      scope: "metadata.table-row-count",
+    },
+    {
+      rowCount: 0x00ff_ffff,
+      code: "invalid-metadata-root",
+      scope: "metadata.table-data",
+    },
+  ])(
+    "classifies a declared row count of $rowCount against the 24-bit RID range",
+    ({ rowCount, code, scope }) => {
+      const bytes = buildManagedPeFixture();
+      const offset = fixtureTablesStream(bytes).tablesOffset + 24;
+      bytes.writeUInt32LE(rowCount, offset);
+      const result = inspectManagedArtifactBytes(
+        bytes,
+        managedPeFixtureTarget(bytes),
+      );
+      expect(result.coverage.issues).toEqual([
+        expect.objectContaining({
+          code,
+          scope,
+          ...(rowCount === 0x0100_0000 ? { offset } : {}),
+        }),
+      ]);
+    },
+  );
 
   it("rejects a ReadyToRun OS-override machine without a CLI directory", () => {
     const bytes = buildNativePeFixture();

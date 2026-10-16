@@ -234,6 +234,40 @@ describe("reference source symlink import", () => {
       expect.objectContaining({ path: "target.js", kind: "file" }),
     );
   });
+
+  it.each(["external-file", "dangling-link", "directory"] as const)(
+    "does not read a non-regular root .gitignore (%s) and records a limitation",
+    async (shape) => {
+      const root = await createTestTempDirectory("rea-reference-policy-kind-");
+      const outside = await createTestTempDirectory(
+        "rea-reference-policy-outside-",
+      );
+      const policy = join(outside, "policy");
+      await writeFile(join(root, "source.ts"), "export const value = 1;\n");
+      if (shape === "directory") await mkdir(join(root, ".gitignore"));
+      else {
+        if (shape === "external-file") await writeFile(policy, "source.ts\n");
+        await symlink(policy, join(root, ".gitignore"));
+      }
+
+      const imported = await importTree(root);
+
+      if (!imported.ok) throw imported.error;
+      expect(imported.value.limitations).toContainEqual(
+        expect.stringContaining(".gitignore"),
+      );
+      expect(imported.value.exclusions).not.toContainEqual(
+        expect.objectContaining({ reason: "project-ignored" }),
+      );
+      expect(imported.value.entries).toContainEqual(
+        expect.objectContaining({
+          path: "source.ts",
+          kind: "file",
+          content_state: "hashed",
+        }),
+      );
+    },
+  );
 });
 
 describe("reference source manifest inventory", () => {
