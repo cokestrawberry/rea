@@ -1,3 +1,4 @@
+import type { ScenarioSignalDeliveries } from "./ProcessCaptureJournal.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, statSync, type BigIntStats } from "node:fs";
 import { open, mkdtemp, rm, stat } from "node:fs/promises";
@@ -86,6 +87,7 @@ interface TerminalExitOptions {
   readonly dispatchedEventIndexes: ReadonlySet<number>;
   readonly recordEvent: RecordProcessCaptureEvent;
   readonly onLiveProgress?: () => void;
+  readonly scenarioSignals: ScenarioSignalDeliveries;
 }
 
 type FinalizationSignal =
@@ -760,6 +762,7 @@ export const awaitTerminalExit = async ({
   dispatchedEventIndexes,
   recordEvent,
   onLiveProgress,
+  scenarioSignals,
 }: TerminalExitOptions): Promise<TerminalExitResult> =>
   new Promise((resolveExit) => {
     // The kill caused by a deadline is observed later as an ordinary PTY exit.
@@ -795,6 +798,7 @@ export const awaitTerminalExit = async ({
     const unobservedExit = (): void => {
       if (settled || exitObserved) return;
       settled = true;
+      scenarioSignals.finish();
       for (const timer of timers) timer.cancel();
       timers.clear();
       resolveExit({
@@ -861,6 +865,7 @@ export const awaitTerminalExit = async ({
       pendingDeliveries.push(
         deliver(finalizationSignal).then(
           ({ delivery, reason: deliveryReason }) => {
+            if (settled) return;
             record.delivery = delivery;
             if (deliveryReason !== undefined) record.reason = deliveryReason;
             else delete record.reason;
@@ -932,6 +937,7 @@ export const awaitTerminalExit = async ({
       const finish = (): void => {
         if (settled) return;
         settled = true;
+        scenarioSignals.finish();
         resolveExit({
           ...exit,
           reason,
@@ -947,6 +953,7 @@ export const awaitTerminalExit = async ({
               }),
         });
       };
+      pendingDeliveries.push(...scenarioSignals.pending);
       if (pendingDeliveries.length === 0) {
         finish();
         return;

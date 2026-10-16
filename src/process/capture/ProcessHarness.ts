@@ -83,6 +83,7 @@ interface StartedCaptureRuntime {
   readonly rawTerminalRetention: () => TerminalRetention;
   readonly stopSampler: ReturnType<typeof startProcessSampler>;
   readonly signalRoot: RootSignaller;
+  readonly scenarioSignals: ReturnType<typeof scheduleScenarioInteractions>;
 }
 
 /** Identity observation and signalling used for every signal to the root; injectable for tests. */
@@ -296,7 +297,7 @@ const startCaptureRuntime = async (
       renderer,
       normalizeText,
     });
-    scheduleScenarioInteractions({
+    const scenarioSignals = scheduleScenarioInteractions({
       ...options,
       getTerminal: () => terminal,
       signalRoot,
@@ -321,6 +322,7 @@ const startCaptureRuntime = async (
       rawTerminalRetention,
       stopSampler,
       signalRoot,
+      scenarioSignals,
     };
   } catch (cause: unknown) {
     return cleanupFailedStartup({
@@ -384,6 +386,7 @@ const finishProcessRun = async (options: {
     options.resourceScope === undefined
       ? await releaseProcessResources(cleanupOptions)
       : await options.resourceScope.release(cleanupOptions);
+  options.runtime?.scenarioSignals.finish();
   const observedExit =
     options.observations?.exit.state === "available"
       ? options.observations.exit.value.reason
@@ -704,6 +707,7 @@ const runProcessScenario = async (
       lastOutput: runtime.lastOutput,
       signal,
       signalTarget: runtime.signalRoot,
+      scenarioSignals: runtime.scenarioSignals,
       recordFinalization: (finalization) => {
         observations.finalization = { state: "available", value: finalization };
       },

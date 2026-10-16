@@ -47,7 +47,7 @@ const scheduleSignalEvent = (
     maxBytes: 1_000,
     normalize: (value) => value,
   });
-  scheduleScenarioInteractions({
+  const deliveries = scheduleScenarioInteractions({
     scenario: parseProcessScenario({
       executable: "unused",
       events: [{ type: "signal", at_ms: 0, signal }],
@@ -63,7 +63,7 @@ const scheduleSignalEvent = (
     dispatchedEventIndexes: new Set<number>(),
     recordEvent: journal.recordEvent,
   });
-  return { interactions, journal, renderer };
+  return { interactions, journal, renderer, deliveries };
 };
 
 it.each([
@@ -136,4 +136,31 @@ it("records a failed outcome when the signaller rejects", async () => {
   await renderer.dispose();
 
   expect(interactions).toMatchObject([{ type: "signal", outcome: "failed" }]);
+});
+
+it("records unsettled signals once and ignores delivery after capture ends", async () => {
+  let release: () => void = () => undefined;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { interactions, journal, renderer, deliveries } = scheduleSignalEvent(
+    "SIGTERM",
+    async () => {
+      await hold;
+      return { delivery: "signaled" };
+    },
+  );
+  await waitFor(() => deliveries.pending.size === 1);
+  const pending = [...deliveries.pending];
+  deliveries.finish();
+  expect(interactions).toMatchObject([
+    { outcome: "failed", signal_delivery: { delivery: "unverified" } },
+  ]);
+  const snapshot = JSON.stringify({ interactions, entries: journal.entries });
+  release();
+  await Promise.all(pending);
+  expect(JSON.stringify({ interactions, entries: journal.entries })).toBe(
+    snapshot,
+  );
+  await renderer.dispose();
 });

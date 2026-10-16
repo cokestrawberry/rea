@@ -6,6 +6,7 @@ import type { ProcessCaptureFinalization } from "../../domain/process/processCap
 import { awaitTerminalExit } from "./ProcessCaptureLifecycle.js";
 import type { ProcessTimer } from "./ProcessTimer.js";
 import { monotonicProcessCaptureClock } from "./ProcessCaptureClock.js";
+import type { ScenarioSignalDeliveries } from "./ProcessCaptureJournal.js";
 
 type Delivery = ProcessCaptureFinalization["signals"][number]["delivery"];
 
@@ -69,6 +70,10 @@ const start = (
   fake: ReturnType<typeof fakeTerminal>,
   scenario: Readonly<Record<string, unknown>>,
   signal?: AbortSignal,
+  scenarioSignals: ScenarioSignalDeliveries = {
+    pending: new Set(),
+    finish: () => undefined,
+  },
 ) =>
   awaitTerminalExit({
     terminal: fake.terminal,
@@ -81,6 +86,7 @@ const start = (
     lastOutput: monotonicProcessCaptureClock,
     signal,
     signalTarget: fake.signalTarget,
+    scenarioSignals,
     recordFinalization: (snapshot) => {
       snapshots.push(snapshot);
     },
@@ -89,6 +95,27 @@ const start = (
     dispatchedEventIndexes: new Set<number>(),
     recordEvent: () => undefined,
   });
+
+it("waits for a pending scenario signal before publishing an observed exit", async () => {
+  let release: () => void = () => undefined;
+  const delivery = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let finished = false;
+  const fake = fakeTerminal();
+  const pending = start(fake, { timeout_ms: 10_000 }, undefined, {
+    pending: new Set([delivery]),
+    finish: () => {
+      finished = true;
+    },
+  });
+  fake.deliverExit({ exitCode: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(finished).toBe(false);
+  release();
+  expect(observed(await pending).exitCode).toBe(0);
+  expect(finished).toBe(true);
+});
 
 it("records attempts when a self-exit notification arrives after escalation", async () => {
   const fake = fakeTerminal();

@@ -57,10 +57,16 @@ const signalOutcome = (
       ? "target_exited"
       : "failed";
 
+export interface ScenarioSignalDeliveries {
+  readonly pending: ReadonlySet<Promise<void>>;
+  readonly finish: () => void;
+}
+
 /** Schedule scenario interactions and record each observed dispatch atomically. */
 export const scheduleScenarioInteractions = (
   options: ScenarioInteractionOptions,
-): void => {
+): ScenarioSignalDeliveries => {
+  const pending = new Map<Promise<void>, () => void>();
   const { scenario, getTerminal, timers, interactions, renderer, started } =
     options;
   const elapsedMs = (): number =>
@@ -69,6 +75,7 @@ export const scheduleScenarioInteractions = (
     const record = (
       outcome: InteractionEvent["outcome"],
       dispatchedAt: number,
+      signalDelivery?: InteractionEvent["signal_delivery"],
     ): void => {
       const sequence = interactions.length;
       interactions.push({
@@ -90,17 +97,35 @@ export const scheduleScenarioInteractions = (
               ? `${String(event.columns)}x${String(event.rows)}`
               : event.signal,
         outcome,
+        ...(signalDelivery === undefined
+          ? {}
+          : { signal_delivery: signalDelivery }),
       });
       options.recordEvent("interaction_events", sequence);
     };
     const timer = scheduleProcessDelay(event.at_ms, () => {
       options.dispatchedEventIndexes.add(eventIndex);
       if (event.type === "signal") {
-        // The delivery is identity-checked, so the event is recorded when it
-        // settles; recording at dispatch time would precede the signal.
-        void options.signalRoot(event.signal).then(
-          ({ delivery }) => record(signalOutcome(delivery), elapsedMs()),
-          () => record("failed", elapsedMs()),
+        let recorded = false;
+        const settle = (result: Awaited<ReturnType<RootSignaller>>): void => {
+          if (recorded) return;
+          recorded = true;
+          record(signalOutcome(result.delivery), elapsedMs(), result);
+        };
+        const delivery = options
+          .signalRoot(event.signal)
+          .then(settle, () =>
+            settle({
+              delivery: "unverified",
+              reason: "signal delivery failed",
+            }),
+          )
+          .finally(() => pending.delete(delivery));
+        pending.set(delivery, () =>
+          settle({
+            delivery: "unverified",
+            reason: "signal delivery had not settled when capture ended",
+          }),
         );
         return;
       }
@@ -132,4 +157,13 @@ export const scheduleScenarioInteractions = (
     });
     timers.add(timer);
   }
+  return {
+    get pending() {
+      return new Set(pending.keys());
+    },
+    finish: () => {
+      for (const settle of pending.values()) settle();
+      pending.clear();
+    },
+  };
 };
