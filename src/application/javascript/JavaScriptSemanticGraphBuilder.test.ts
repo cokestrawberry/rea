@@ -22,6 +22,7 @@ import {
 } from "../../domain/javascript/javascriptSemanticAnalysis.js";
 import { parseJavaScriptSource } from "../../domain/javascript/javascriptSourceParser.js";
 import { semanticCoverageResourceLimits } from "../../domain/javascript/javascriptSemanticCoverage.js";
+import { getterExpansionSource } from "../../../tests/fixtures/javascriptGetterExpansion.js";
 
 const SHA256 = "a".repeat(64);
 
@@ -177,13 +178,15 @@ it("preserves primitive candidate budget unknowns in semantic graph coverage", (
     status: "partial",
     resourceLimits: ["primitive-candidates"],
   });
-  expect(graph.unknowns).toContainEqual(
+  expect(
+    graph.unknowns.filter(({ reason }) => reason === "resource-limit"),
+  ).toEqual([
     expect.objectContaining({
       family: "data-flow",
       reason: "resource-limit",
       detail: expect.stringMatching(/primitive candidate budget exceeded/i),
     }),
-  );
+  ]);
 });
 
 it("preserves derived string-byte limit reasons in semantic graph unknowns", () => {
@@ -242,12 +245,14 @@ it("preserves deep expression resource reasons through graph projection", () => 
   expect(semanticCoverageResourceLimits(ir.coverage)).toEqual([
     "expression-depth",
   ]);
-  expect(graph.unknowns).toContainEqual(
+  expect(
+    graph.unknowns.filter(({ reason }) => reason === "resource-limit"),
+  ).toEqual([
     expect.objectContaining({
       reason: "resource-limit",
       detail: expect.stringMatching(/expression depth budget exceeded/i),
     }),
-  );
+  ]);
 });
 
 it("keeps ambiguous interprocedural flow out of the default traversal", () => {
@@ -421,6 +426,33 @@ it("keeps duplicate function fingerprints ambiguous", () => {
   expect(query.summary.total_seed_matches).toBe(2);
 });
 
+it("selects analyzer-produced boundaries by their method field", () => {
+  const graph = graphFor("const port = Number(process.env.PORT);");
+  const boundary = graph.nodes.find(({ kind }) => kind === "boundary");
+  if (boundary === undefined) throw new Error("Expected a boundary node");
+
+  expect(boundary.properties).toMatchObject({
+    boundary_kind: "coerce",
+    field: "Number",
+    method: "Number",
+  });
+  expect(
+    queryJavaScriptSemanticGraph(graph, {
+      seed: { kind: "boundary-field", field: "Number" },
+      direction: "forward-influence",
+    }),
+  ).toMatchObject({
+    seed_node_ids: [boundary.node_id],
+    summary: { total_seed_matches: 1 },
+  });
+  expect(
+    queryJavaScriptSemanticGraph(graph, {
+      seed: { kind: "boundary-field", field: "missing-field" },
+      direction: "forward-influence",
+    }).summary.total_seed_matches,
+  ).toBe(0);
+});
+
 const semanticNodeFor = (roleKey: string) => {
   const file: JavaScriptArtifactFile = {
     path: "budget.js",
@@ -445,6 +477,26 @@ const semanticNodeFor = (roleKey: string) => {
     state,
   );
 };
+
+it("preserves getter expansion limits in semantic graph coverage", () => {
+  const source = getterExpansionSource();
+  const graph = graphFor(source, analyzeJavaScriptSemantics(source));
+  const module = graph.nodes.find(({ kind }) => kind === "module");
+  if (module === undefined) throw new Error("Expected module node");
+  expect(
+    graph.unknowns.filter(({ reason }) => reason === "resource-limit"),
+  ).toEqual([
+    expect.objectContaining({
+      node_id: module.node_id,
+      family: "data-flow",
+      reason: "resource-limit",
+      detail: expect.stringMatching(
+        /getter expansion was conservatively bounded/i,
+      ),
+    }),
+  ]);
+  expect(graph.coverage.status).toBe("unknown");
+});
 
 it.each([
   "const value = consume(Promise.resolve(1));",

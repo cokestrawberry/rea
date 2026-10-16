@@ -1,4 +1,6 @@
 import { chmod, lstat, readFile, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { basename, dirname } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 
@@ -44,12 +46,63 @@ it("validates device serials before contacting any device", async () => {
   });
 });
 
+it.each(["string:key", ":", "string"])(
+  "classifies malformed activity extra %j before contacting adb",
+  async (extra) => {
+    const result = await serve(
+      [
+        "start-adb-activity",
+        "emulator-5554",
+        "android.intent.action.VIEW",
+        "--extra",
+        extra,
+        "--format",
+        "json",
+      ],
+      { REA_ADB_PATH: "/path/that/does/not/exist" },
+    );
+
+    const error = JSON.parse(result.stdout);
+    expect(error).toMatchObject({
+      code: "invalid_request",
+      category: "invalid_input",
+      retryable: true,
+      remediation: { action: expect.any(String) },
+    });
+    expect(error.remediation.action).not.toBe("");
+    expect(error.message).not.toBe("");
+  },
+);
+
+it.each([
+  ["bogus:key:value", "invalid_request"],
+  ["string:key:value", "capability_unavailable"],
+] as const)(
+  "preserves downstream validation for well-delimited activity extra %j",
+  async (extra, code) => {
+    const result = await serve(
+      [
+        "start-adb-activity",
+        "emulator-5554",
+        "android.intent.action.VIEW",
+        "--extra",
+        extra,
+        "--format",
+        "json",
+      ],
+      { REA_ADB_PATH: "/path/that/does/not/exist" },
+    );
+
+    expect(JSON.parse(result.stdout)).toMatchObject({ code });
+  },
+);
+
 it.skipIf(process.platform === "win32")(
   "preserves requested reinstall mode without claiming prior package state",
   async () => {
     const workspace = await createTestWorkspace("rea-adb-install-state-");
     onTestFinished(() => removeTestWorkspace(workspace.root));
-    const apk = await workspace.write("app.apk", "apk");
+    const apk = await workspace.write("app with spaces.apk", "apk");
     const adb = await workspace.write(
       "adb",
       `#!/bin/sh
@@ -60,6 +113,9 @@ if [ "$1" = version ]; then
   exit 0
 fi
 if [ "$1" = -s ] && [ "$3" = install ]; then
+  if [ "$4" = -r ]; then selected="$5"; else selected="$4"; fi
+  cmp "$selected" "$root/app with spaces.apk" || exit 1
+  printf '%s\\n' "$selected" >> "$root/snapshots"
   if [ -f "$root/installed" ]; then
     if [ "$4" != -r ]; then
       printf 'Failure [INSTALL_FAILED_ALREADY_EXISTS]\\n'
@@ -133,14 +189,33 @@ exit 1
     expect(await readFile(workspace.path("events"), "utf8")).toBe(
       "fresh-install\nreplacement\nfresh-install\n",
     );
+    const snapshots = (await readFile(workspace.path("snapshots"), "utf8"))
+      .trim()
+      .split("\n");
+    expect(snapshots).toHaveLength(3);
+    expect(new Set(snapshots).size).toBe(3);
+    for (const snapshot of snapshots) {
+      expect(snapshot).not.toBe(apk);
+      expect(basename(snapshot)).toBe(basename(apk));
+      await expect(lstat(dirname(snapshot))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }
+    expect(await readFile(apk, "utf8")).toBe("apk");
+    for (const receipt of [freshReplace, existingReplace, freshDefault])
+      expect(receipt.data.normalized_result).toMatchObject({
+        apk_path: apk,
+        bytes: 3,
+        sha256: createHash("sha256").update("apk").digest("hex"),
+      });
     const calls = await readFile(workspace.path("calls"), "utf8");
     expect(calls.split("\n").filter((line) => line !== "")).toEqual([
       "version",
-      `-s emulator-5554 install -r ${apk}`,
+      `-s emulator-5554 install -r ${snapshots[0]}`,
       "version",
-      `-s emulator-5554 install -r ${apk}`,
+      `-s emulator-5554 install -r ${snapshots[1]}`,
       "version",
-      `-s emulator-5554 install ${apk}`,
+      `-s emulator-5554 install ${snapshots[2]}`,
     ]);
   },
 );

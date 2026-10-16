@@ -72,33 +72,65 @@ export const normalizeCfg = (
   return graph;
 };
 
+/**
+ * An unnamed endpoint is identified only by its address, which names one
+ * location only within one artifact; across artifacts it stays unknown (null).
+ */
 const referenceEndpoint = (
   snapshot: FunctionSnapshot,
   endpoint: FunctionSnapshot["dossier"]["incoming_references"][number]["source_procedure"],
+  address: string,
+  sameArtifact: boolean,
 ) =>
   endpoint === null
-    ? null
+    ? sameArtifact
+      ? { address }
+      : null
     : relativeAddress(endpoint.address, snapshot.dossier.procedure.address) ===
         "0"
       ? { self: true }
       : endpoint.name;
 
-export const referenceProjection = (snapshot: FunctionSnapshot) =>
+export const referenceProjection = (
+  snapshot: FunctionSnapshot,
+  sameArtifact: boolean,
+) =>
   sorted([
     ...snapshot.dossier.incoming_references.map((item) => ({
       direction: "in",
-      source: referenceEndpoint(snapshot, item.source_procedure),
-      target: referenceEndpoint(snapshot, item.target_procedure),
+      source: referenceEndpoint(
+        snapshot,
+        item.source_procedure,
+        item.source_address,
+        sameArtifact,
+      ),
+      target: referenceEndpoint(
+        snapshot,
+        item.target_procedure,
+        item.target_address,
+        sameArtifact,
+      ),
     })),
     ...snapshot.dossier.outgoing_references.map((item) => ({
       direction: "out",
-      source: referenceEndpoint(snapshot, item.source_procedure),
-      target: referenceEndpoint(snapshot, item.target_procedure),
+      source: referenceEndpoint(
+        snapshot,
+        item.source_procedure,
+        item.source_address,
+        sameArtifact,
+      ),
+      target: referenceEndpoint(
+        snapshot,
+        item.target_procedure,
+        item.target_address,
+        sameArtifact,
+      ),
     })),
   ]);
 
 export const referenceKindProjection = (
   snapshot: FunctionSnapshot,
+  sameArtifact: boolean,
 ): readonly unknown[] | null => {
   const edges = [
     ...snapshot.dossier.incoming_references.map((edge) => ({
@@ -119,8 +151,18 @@ export const referenceKindProjection = (
         );
       return {
         direction,
-        source: referenceEndpoint(snapshot, edge.source_procedure),
-        target: referenceEndpoint(snapshot, edge.target_procedure),
+        source: referenceEndpoint(
+          snapshot,
+          edge.source_procedure,
+          edge.source_address,
+          sameArtifact,
+        ),
+        target: referenceEndpoint(
+          snapshot,
+          edge.target_procedure,
+          edge.target_address,
+          sameArtifact,
+        ),
         type: edge.kind.type,
         flow: edge.kind.flow,
         call: edge.kind.call,

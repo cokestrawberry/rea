@@ -75,6 +75,7 @@ export class FakeSetupHost implements SetupHost {
     ...(this.hopperLauncherConfigured
       ? { hopperLauncherConfigured: true }
       : {}),
+    providerConfigured: this.hopper !== undefined || this.ghidra !== undefined,
     providerEnvironment: {
       ...(this.hopper === undefined
         ? {}

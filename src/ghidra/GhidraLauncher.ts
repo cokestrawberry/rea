@@ -1,12 +1,11 @@
-import { parseGhidraJavaProperties } from "./GhidraJavaProperties.js";
+import { GHIDRA_BRIDGE_SOURCES } from "./GhidraBridgeSources.js";
 import {
-  GHIDRA_SEED_SCRIPT,
   snapshotGhidraAnalysisSeeds,
   type GhidraSeedCommitment,
 } from "./GhidraAnalysisSeeds.js";
 import type { GhidraLanguageOverride } from "../config/ghidraLanguageOverride.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
-import { mkdir, readFile, realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, join, posix, win32 } from "node:path";
 
 import writeFileAtomic from "write-file-atomic";
@@ -65,6 +64,8 @@ export type GhidraLaunch = ProviderProcessLaunch & {
   readonly projectRoot: string;
   readonly ghidraLogPath: string;
   readonly scriptLogPath: string;
+  /** Value supplied to the JVM as -Xmx, not a measurement of effective memory. */
+  readonly configuredMaxHeap?: string;
   readonly launchSupport?: readonly GhidraLaunchSupportDiagnostic[];
 };
 
@@ -147,6 +148,8 @@ const ghidraLaunchCommandOutput = (
 export interface GhidraHeadlessLauncherOptions {
   readonly environment: Readonly<NodeJS.ProcessEnv>;
   readonly analyzeHeadlessPath: string;
+  /** Release coordinate owned by installation inspection; null must not be guessed. */
+  readonly configurationDirectoryName: string | null;
   readonly javaHome?: string;
   readonly javaVmName?: string;
   readonly bridgeScriptPath: string;
@@ -195,8 +198,13 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
     const paths = ghidraRuntimePaths(session.runtimeRoot);
     const platform = this.options.platform ?? process.platform;
     let started: SpawnedOwnedProviderProcess | undefined;
+    let configuredMaxHeap: string | undefined;
     const launchSupport: GhidraLaunchSupportDiagnostic[] = [];
     try {
+      if (this.options.configurationDirectoryName === null)
+        throw new GhidraLaunchError(
+          "Ghidra configuration directory identity is unresolved; restore application.version and application.release.name in the selected installation's application.properties.",
+        );
       const psp = this.options.pspExtension;
       if (psp !== undefined) {
         const installedRoot = await realpath(
@@ -225,7 +233,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
       await createGhidraRuntimeDirectories(
         paths,
         platform,
-        await ghidraConfigReleaseDirectory(this.options.analyzeHeadlessPath),
+        this.options.configurationDirectoryName,
       );
       const seedPath =
         this.options.analysisSeeds === undefined
@@ -341,6 +349,11 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
         },
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
+      // Windows starts the script wrapper rather than this inspected JVM command.
+      configuredMaxHeap =
+        platform === "win32"
+          ? undefined
+          : inspectedJavaLaunch.configuredMaxHeap;
       const command =
         platform === "win32"
           ? { ...scriptCommand, environment }
@@ -363,6 +376,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
         paths,
         platform,
         launchSupport,
+        configuredMaxHeap,
       );
       await writeGhidraRuntimeFile(
         paths.ownershipPath,
@@ -416,6 +430,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
           paths,
           platform,
           launchSupport,
+          configuredMaxHeap,
         );
         const primaryMessage = isAborted(options.signal)
           ? primary.message
@@ -446,11 +461,13 @@ const ownedGhidraLaunch = (
   paths: ReturnType<typeof ghidraRuntimePaths>,
   platform: NodeJS.Platform,
   launchSupport: readonly GhidraLaunchSupportDiagnostic[],
+  configuredMaxHeap?: string,
 ): GhidraLaunch => ({
   ...ownedGhidraProcess(spawned, platform),
   projectRoot: paths.projectRoot,
   ghidraLogPath: paths.ghidraLogPath,
   scriptLogPath: paths.scriptLogPath,
+  ...(configuredMaxHeap === undefined ? {} : { configuredMaxHeap }),
   ...(launchSupport.length === 0 ? {} : { launchSupport: [...launchSupport] }),
 });
 
@@ -668,14 +685,14 @@ export const ghidraHeadlessArguments = (
     ...(options.dosCom === true
       ? [
           "-preScript",
-          scriptPath.join(bridgeDirectory, "ReaGhidraPrepareCom.java"),
+          scriptPath.join(bridgeDirectory, GHIDRA_BRIDGE_SOURCES.prepareCom),
         ]
       : []),
     ...(rawBinary === undefined
       ? []
       : [
           "-preScript",
-          scriptPath.join(bridgeDirectory, "ReaGhidraPrepareRaw.java"),
+          scriptPath.join(bridgeDirectory, GHIDRA_BRIDGE_SOURCES.prepareRaw),
           rawBinary.languageId,
           rawBinary.baseAddr,
         ]),
@@ -684,7 +701,7 @@ export const ghidraHeadlessArguments = (
       ? []
       : [
           "-preScript",
-          scriptPath.join(bridgeDirectory, GHIDRA_SEED_SCRIPT),
+          scriptPath.join(bridgeDirectory, GHIDRA_BRIDGE_SOURCES.applySeeds),
           options.seedPath,
         ]),
     // Analyzer options must apply before default auto-analysis and before the
@@ -694,20 +711,23 @@ export const ghidraHeadlessArguments = (
       ? []
       : [
           "-preScript",
-          scriptPath.join(bridgeDirectory, "ReaGhidraAnalysisOptions.java"),
+          scriptPath.join(
+            bridgeDirectory,
+            GHIDRA_BRIDGE_SOURCES.analysisOptions,
+          ),
           options.disabledAnalyzers.join(","),
         ]),
     ...((options.platform ?? process.platform) === "win32"
       ? []
       : [
           "-postScript",
-          scriptPath.join(bridgeDirectory, "ReaGhidraNoReturnFix.java"),
+          scriptPath.join(bridgeDirectory, GHIDRA_BRIDGE_SOURCES.noReturnFix),
         ]),
     // After analysis and the no-return refit, before the bridge serves results.
     ...(options.mipsSoftFloat === true
       ? [
           "-postScript",
-          scriptPath.join(bridgeDirectory, "ReaGhidraMipsSoftFloat.java"),
+          scriptPath.join(bridgeDirectory, GHIDRA_BRIDGE_SOURCES.mipsSoftFloat),
         ]
       : []),
     "-postScript",
@@ -739,32 +759,6 @@ const ghidraRuntimePaths = (runtimeRoot: string) => ({
  * that no supported JDK was found. Create the release directory while this
  * process still owns the runtime, leaving Ghidra only a file write inside it.
  */
-const ghidraConfigReleaseDirectory = async (
-  analyzeHeadlessPath: string,
-): Promise<string> => {
-  const installRoot = dirname(dirname(analyzeHeadlessPath));
-  try {
-    const properties = await readFile(
-      join(installRoot, "Ghidra", "application.properties"),
-      "latin1",
-    );
-    const parsed = parseGhidraJavaProperties(properties);
-    if (!parsed.ok) return basename(installRoot);
-    const version = parsed.value.get("application.version");
-    const release = parsed.value.get("application.release.name");
-    return version === undefined ||
-      release === undefined ||
-      release.length === 0
-      ? basename(installRoot)
-      : `ghidra_${version}_${release}`;
-  } catch (cause: unknown) {
-    // An unreadable properties file leaves the release coordinate unknown; the
-    // conventional extraction directory carries the same name.
-    void cause;
-    return basename(installRoot);
-  }
-};
-
 const createGhidraRuntimeDirectories = async (
   paths: ReturnType<typeof ghidraRuntimePaths>,
   platform: NodeJS.Platform,

@@ -14,6 +14,7 @@ import { parseJavaScriptSource } from "../domain/javascript/javascriptSourcePars
 import {
   isTypeOnlyExportDeclaration,
   isTypeOnlyImportDeclaration,
+  semanticImportEqualsSpecifier,
 } from "../domain/javascript/javascriptModuleDeclaration.js";
 import { stringValue } from "../domain/javascript/javascriptStaticAnalysisHelpers.js";
 import type {
@@ -81,6 +82,14 @@ export const fetchWebSourceMaps = async (
   signal?: AbortSignal,
   host: SourceMapFetchHost = { fetch: globalThis.fetch },
 ): Promise<SourceMaps> => {
+  throwIfAborted(signal);
+  if (requests.length === 0)
+    return webSourceMapsSchema.parse({
+      status: "not_requested",
+      requested: 0,
+      processed: 0,
+      items: [],
+    });
   const items: SourceMapItem[] = [];
   const operationController = new AbortController();
   const timeout = setTimeout(
@@ -168,6 +177,10 @@ export const fetchWebSourceMaps = async (
     items,
     ...(limitation === undefined ? {} : { limitation }),
   });
+};
+
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted === true) throw signal.reason;
 };
 
 const sourceMapOutputLimitation = (unprocessed: number): string =>
@@ -1088,16 +1101,11 @@ const originalDependency = (
       : { kind: "require", specifier, requireCallee: node.callee };
   }
   // `import x = require("m")` is only legal at module top level and always
-  // refers to the host loader, so it needs no unbound-`require` check. The
-  // `moduleReference` is an entity name for a local alias instead, which
-  // declares no dependency.
-  if (
-    t.isTSImportEqualsDeclaration(node) &&
-    t.isTSExternalModuleReference(node.moduleReference)
-  )
-    return {
-      kind: "require",
-      specifier: node.moduleReference.expression.value,
-    };
+  // refers to the host loader, so it needs no unbound-`require` check. An
+  // entity-name alias or an erased `import type` declares no dependency.
+  if (t.isTSImportEqualsDeclaration(node)) {
+    const specifier = semanticImportEqualsSpecifier(node);
+    return specifier === null ? null : { kind: "require", specifier };
+  }
   return null;
 };

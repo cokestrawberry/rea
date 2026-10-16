@@ -16,6 +16,7 @@ export const runtimeFunctionParameters = (
  */
 export const unwrapJavaScriptExpression = (
   node: t.Node,
+  options?: { readonly stopAtParentheses: boolean },
 ): { readonly node: t.Node; readonly depth: number } => {
   let current = node;
   let depth = 0;
@@ -28,6 +29,14 @@ export const unwrapJavaScriptExpression = (
     t.isTSInstantiationExpression(current) ||
     t.isTypeCastExpression(current)
   ) {
+    // Optional-chain grouping affects execution even when expression identity
+    // is transparent. Keep every grouping boundary available to that consumer.
+    if (
+      options?.stopAtParentheses === true &&
+      (t.isParenthesizedExpression(current) ||
+        current.extra?.parenthesized === true)
+    )
+      break;
     current = current.expression;
     depth += 1;
   }
@@ -96,6 +105,30 @@ export const semanticStaticPropertyKey = (
     return cooked === null || cooked === undefined ? null : cooked;
   }
   return !computed && t.isIdentifier(property) ? property.name : null;
+};
+
+/** Later properties own a key; an intervening dynamic write leaves it unknown. */
+export const semanticFinalObjectProperty = (
+  node: t.ObjectExpression,
+  key: string,
+): t.Node | undefined => {
+  for (let index = node.properties.length - 1; index >= 0; index -= 1) {
+    const property = node.properties[index];
+    if (property === undefined || t.isSpreadElement(property)) return undefined;
+    const name = semanticStaticPropertyKey(property.key, property.computed);
+    if (name === null) return undefined;
+    if (name === key)
+      return t.isObjectProperty(property) ? property.value : undefined;
+  }
+  return undefined;
+};
+
+export const semanticFinalObjectStringProperty = (
+  node: t.ObjectExpression,
+  key: string,
+): string | undefined => {
+  const value = semanticFinalObjectProperty(node, key);
+  return t.isStringLiteral(value) ? value.value : undefined;
 };
 
 /** Read exact consumed object-pattern keys, leaving dynamic keys unknown. */

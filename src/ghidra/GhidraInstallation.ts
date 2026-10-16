@@ -28,14 +28,16 @@ import {
   ghidraJavaMajorAccepted,
   ghidraJavaRangeLabel,
   ghidraJavaRequirement,
+  type GhidraApplicationProperties,
+  type GhidraJavaRequirement,
+} from "./GhidraInstallationPolicy.js";
+import {
   ghidraReleaseAccepted,
   ghidraReleaseCompatibility,
   ghidraReleaseLine,
   ghidraVersionDetail,
   SUPPORTED_GHIDRA_VERSION,
-  type GhidraApplicationProperties,
-  type GhidraJavaRequirement,
-} from "./GhidraInstallationPolicy.js";
+} from "./GhidraReleasePolicy.js";
 
 const NATIVE_PLATFORMS: Readonly<
   Partial<
@@ -200,6 +202,8 @@ interface GhidraInstallationObservation {
   readonly platform: NodeJS.Platform;
   readonly architecture: NodeJS.Architecture;
   readonly applicationPropertiesPath: string | null;
+  /** Parsed release identity, never inferred from the installation directory name. */
+  readonly configurationDirectoryName: string | null;
   readonly nativeDecompilerPath: string | null;
   readonly javaCommand: string;
   /** Observed java.vm.name; omitted when the probe cannot establish VM identity. */
@@ -349,6 +353,8 @@ export const inspectGhidraInstallation = (
     platform,
     architecture,
     applicationPropertiesPath: coordinates.applicationPropertiesPath,
+    configurationDirectoryName:
+      coordinates.properties?.configurationDirectoryName ?? null,
     nativeDecompilerPath: coordinates.nativeDecompilerPath,
     javaCommand: coordinates.javaCommand,
     ...(coordinates.java?.vmName === undefined

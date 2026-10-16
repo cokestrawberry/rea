@@ -21,6 +21,7 @@ export const symbolicLogicalRight = (
   operator: t.LogicalExpression["operator"],
   left: SymbolicValue,
 ): boolean | undefined => {
+  if (left.kind === "namespace" && left.runtimeValueUnknown) return undefined;
   if (left.kind === "union") {
     const choices = left.values.map((value) =>
       symbolicLogicalRight(operator, value),
@@ -40,6 +41,8 @@ export const symbolicLogicalRight = (
       "array",
       "record",
       "loader",
+      "promise",
+      "iterator",
     ].includes(left.kind)
       ? false
       : undefined;

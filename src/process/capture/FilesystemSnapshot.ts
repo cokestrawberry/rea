@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, opendir, readlink } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, relative } from "node:path";
 import { err, ok, type Result } from "../../domain/result.js";
 import type { FileHandle } from "node:fs/promises";
 import type { ProcessScenario } from "../../domain/process/processScenario.js";
@@ -255,7 +255,8 @@ export const snapshotRoots = async (
     if (stats.isSymbolicLink()) {
       const read = await attempt(
         async () => ({
-          target: resolve(dirname(path), await readlink(path)),
+          // Keep the target as stored: lexical resolution can merge distinct targets.
+          target: await readlink(path),
           afterRead: await lstat(path),
         }),
         signal,

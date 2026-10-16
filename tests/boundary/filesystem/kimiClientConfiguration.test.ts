@@ -38,11 +38,15 @@ const exists = async (path: string): Promise<boolean> => {
   }
 };
 
-const expectedRegistration = (launcher: readonly string[]) => ({
+const expectedRegistration = (
+  launcher: readonly string[],
+  profile = "compact",
+) => ({
   command: launcher[0],
   args: launcher.slice(1),
+  env: { REA_MCP_INPUT_SCHEMA_PROFILE: profile },
   startupTimeoutMs: MCP_STARTUP_POLICY.kimiStartupTimeoutMs,
-  toolTimeoutMs: MCP_STARTUP_POLICY.kimiToolTimeoutMs,
+  toolTimeoutMs: 450_000,
 });
 
 describe("Kimi Code configuration paths and skills", () => {
@@ -107,6 +111,61 @@ describe("Kimi Code registration lifecycle", () => {
     ).toBe("unchanged");
   });
 
+  it("rewrites the timeout values REA owns through refresh and keeps backups idempotent", async () => {
+    const { home, client } = await kimiClient();
+    const original = JSON.stringify({
+      mcpServers: {
+        rea: {
+          ...expectedRegistration(["old-rea", "mcp"]),
+          startupTimeoutMs: 90_000,
+          toolTimeoutMs: 300_000,
+        },
+      },
+    });
+    await writeFile(client.configPath, original);
+
+    expect(
+      await configureClientConfiguration(client, {}, command),
+    ).toMatchObject({
+      status: "configured",
+      backupPath: `${client.configPath}.rea.backup`,
+    });
+    expect(
+      JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea,
+    ).toEqual(expectedRegistration(command));
+    expect(await readFile(`${client.configPath}.rea.backup`, "utf8")).toBe(
+      original,
+    );
+    expect(await configureClientConfiguration(client, {}, command)).toEqual({
+      status: "unchanged",
+    });
+    expect(
+      (
+        await readClientRegistrationStatuses(home, undefined, {
+          environment: {},
+        })
+      ).find(({ client: name }) => name === "kimi"),
+    ).toMatchObject({ state: "aligned", command });
+  });
+
+  it("derives a client deadline beyond Node's timer ceiling for an alternative provider selector", async () => {
+    const { client } = await kimiClient();
+    expect(
+      await configureClientConfiguration(
+        client,
+        {
+          REA_ANALYSIS_PROVIDER: "ida",
+          REA_GHIDRA_STARTUP_TIMEOUT_MS: "2147483647",
+        },
+        command,
+      ),
+    ).toMatchObject({ status: "configured" });
+    expect(
+      JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea
+        .toolTimeoutMs,
+    ).toBe(2_147_603_647);
+  });
+
   it("registers without type, preserves unrelated settings, backs up, and is idempotent", async () => {
     const { home, client } = await kimiClient();
     const original = `{
@@ -156,6 +215,132 @@ describe("Kimi Code registration lifecycle", () => {
         other: { command: "other-server", startupTimeoutMs: 5000 },
       },
     });
+  });
+});
+
+describe("Kimi Code input-schema profile selection", () => {
+  const kimiClient = async () => {
+    const home = await createTestTempDirectory("rea-kimi-schema-profile-");
+    const client = kimiPath(home, process.platform, {});
+    if (client?.markerPath === undefined)
+      throw new Error("missing Kimi Code client");
+    await mkdir(client.markerPath, { recursive: true });
+    return { home, client };
+  };
+
+  it("preserves an explicitly stored full profile", async () => {
+    const { home, client } = await kimiClient();
+    await writeFile(
+      client.configPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: "old-rea",
+            args: ["mcp"],
+            env: { REA_MCP_INPUT_SCHEMA_PROFILE: "full" },
+          },
+        },
+      }),
+    );
+
+    expect(
+      (await configureClientConfiguration(client, {}, command)).status,
+    ).toBe("configured");
+    expect(
+      JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea,
+    ).toEqual(expectedRegistration(command, "full"));
+    expect(
+      (
+        await readClientRegistrationStatuses(home, undefined, {
+          environment: {},
+        })
+      ).find(({ client: name }) => name === "kimi"),
+    ).toMatchObject({ state: "aligned", command });
+  });
+
+  it.each(["full", "compact"] as const)(
+    "uses the caller's explicit %s profile",
+    async (profile) => {
+      const { client } = await kimiClient();
+      expect(
+        (
+          await configureClientConfiguration(
+            client,
+            { REA_MCP_INPUT_SCHEMA_PROFILE: profile },
+            command,
+          )
+        ).status,
+      ).toBe("configured");
+      expect(
+        JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea,
+      ).toEqual(expectedRegistration(command, profile));
+    },
+  );
+
+  it.each([
+    ["full", "compact"],
+    ["compact", "full"],
+  ] as const)(
+    "lets explicit setup %s replace stored %s",
+    async (overrideProfile, storedProfile) => {
+      const { client } = await kimiClient();
+      await writeFile(
+        client.configPath,
+        JSON.stringify({
+          mcpServers: {
+            rea: {
+              command: "old-rea",
+              args: ["mcp"],
+              env: { REA_MCP_INPUT_SCHEMA_PROFILE: storedProfile },
+            },
+          },
+        }),
+      );
+
+      expect(
+        (
+          await configureClientConfiguration(
+            client,
+            { REA_MCP_INPUT_SCHEMA_PROFILE: overrideProfile },
+            command,
+          )
+        ).status,
+      ).toBe("configured");
+      expect(
+        JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea,
+      ).toEqual(expectedRegistration(command, overrideProfile));
+    },
+  );
+
+  it("reports an omitted-profile registration stale until setup adds compact", async () => {
+    const { home, client } = await kimiClient();
+    await writeFile(
+      client.configPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: command[0],
+            args: command.slice(1),
+            startupTimeoutMs: MCP_STARTUP_POLICY.kimiStartupTimeoutMs,
+            toolTimeoutMs: 450_000,
+          },
+        },
+      }),
+    );
+
+    expect(
+      (
+        await readClientRegistrationStatuses(home, undefined, {
+          environment: {},
+        })
+      ).find(({ client: name }) => name === "kimi"),
+    ).toMatchObject({ state: "stale", command });
+    expect(
+      (await configureClientConfiguration(client, {}, command)).status,
+    ).toBe("configured");
+    expect(
+      JSON.parse(await readFile(client.configPath, "utf8")).mcpServers.rea,
+    ).toEqual(expectedRegistration(command));
   });
 });
 

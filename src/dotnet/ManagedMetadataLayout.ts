@@ -119,8 +119,10 @@ const SUPPORTED_TABLE_MASK = (1n << BigInt(METADATA_TABLE_NAMES.length)) - 1n;
 // ECMA-335 metadata tokens hold a 24-bit RID below the table byte.
 const MAX_TABLE_ROW_COUNT = 0x00ff_ffff;
 
+/** Check a range within `bytes`, which start at artifact file offset `base`. */
 const requireRange = (
   bytes: Buffer,
+  base: number,
   offset: number,
   length: number,
   scope: string,
@@ -136,14 +138,16 @@ const requireRange = (
       "invalid-metadata-root",
       scope,
       `${scope} leaves the metadata byte range`,
-      Number.isSafeInteger(offset) && offset >= 0 ? offset : null,
+      Number.isSafeInteger(base + offset) && offset >= 0 ? base + offset : null,
     );
 };
 
 const align4 = (value: number): number => Math.ceil(value / 4) * 4;
 
+/** Read within the metadata root; report failures at artifact file offsets. */
 const readStreamName = (
   bytes: Buffer,
+  rootOffset: number,
   offset: number,
 ): { readonly name: string; readonly next: number } => {
   const endLimit = Math.min(bytes.length, offset + 32);
@@ -154,7 +158,7 @@ const readStreamName = (
       "invalid-stream",
       "metadata.stream-name",
       "Metadata stream name is missing a bounded terminator",
-      offset,
+      rootOffset + offset,
     );
   const nameBytes = bytes.subarray(offset, end);
   if (nameBytes.some((byte) => byte < 0x20 || byte > 0x7e))
@@ -162,7 +166,7 @@ const readStreamName = (
       "invalid-stream",
       "metadata.stream-name",
       "Metadata stream name is not printable ASCII",
-      offset,
+      rootOffset + offset,
     );
   return {
     name: nameBytes.toString("ascii"),
@@ -227,7 +231,7 @@ const readMetadataStreams = (
       rootOffset,
     );
   const versionLength = bytes.readUInt32LE(12);
-  requireRange(bytes, 16, versionLength, "metadata.version");
+  requireRange(bytes, rootOffset, 16, versionLength, "metadata.version");
   const versionBytes = bytes.subarray(16, 16 + versionLength);
   const zero = versionBytes.indexOf(0);
   const decodedVersionLength = zero < 0 ? versionBytes.length : zero;
@@ -236,7 +240,7 @@ const readMetadataStreams = (
     .subarray(0, decodedVersionLength)
     .toString("utf8");
   let cursor = align4(16 + versionLength);
-  requireRange(bytes, cursor, 4, "metadata.stream-count");
+  requireRange(bytes, rootOffset, cursor, 4, "metadata.stream-count");
   const streamCount = bytes.readUInt16LE(cursor + 2);
   if (streamCount === 0 || streamCount > 64)
     throw managedFailure(
@@ -248,10 +252,10 @@ const readMetadataStreams = (
   cursor += 4;
   const streams = new Map<string, MetadataStream>();
   for (let index = 0; index < streamCount; index += 1) {
-    requireRange(bytes, cursor, 8, "metadata.stream-header");
+    requireRange(bytes, rootOffset, cursor, 8, "metadata.stream-header");
     const relativeOffset = bytes.readUInt32LE(cursor);
     const streamSize = bytes.readUInt32LE(cursor + 4);
-    const named = readStreamName(bytes, cursor + 8);
+    const named = readStreamName(bytes, rootOffset, cursor + 8);
     if (streams.has(named.name))
       throw managedFailure(
         "invalid-stream",
@@ -259,7 +263,13 @@ const readMetadataStreams = (
         `Duplicate metadata stream ${named.name}`,
         rootOffset + cursor,
       );
-    requireRange(bytes, relativeOffset, streamSize, `metadata.${named.name}`);
+    requireRange(
+      bytes,
+      rootOffset,
+      relativeOffset,
+      streamSize,
+      `metadata.${named.name}`,
+    );
     streams.set(named.name, {
       name: named.name,
       offset: rootOffset + relativeOffset,
@@ -298,7 +308,13 @@ const readTablesHeader = (
     tablesStream.offset,
     tablesStream.offset + tablesStream.size,
   );
-  requireRange(tableBytes, 0, 24, "metadata.tables-header");
+  requireRange(
+    tableBytes,
+    tablesStream.offset,
+    0,
+    24,
+    "metadata.tables-header",
+  );
   const heapSizes = tableBytes[6] ?? 0;
   const heaps = {
     string: (heapSizes & 0x01) === 0 ? (2 as const) : (4 as const),
@@ -325,7 +341,13 @@ const readRowCounts = (
   let tableCursor = 24;
   for (let index = 0; index < METADATA_TABLE_NAMES.length; index += 1) {
     if ((valid & (1n << BigInt(index))) === 0n) continue;
-    requireRange(tableBytes, tableCursor, 4, "metadata.table-row-count");
+    requireRange(
+      tableBytes,
+      tablesOffset,
+      tableCursor,
+      4,
+      "metadata.table-row-count",
+    );
     const count = tableBytes.readUInt32LE(tableCursor);
     if (count > MAX_TABLE_ROW_COUNT)
       throw managedFailure(
@@ -395,7 +417,13 @@ const buildMetadataTables = ({
         "Metadata table byte size overflowed",
         tablesOffset + tableCursor,
       );
-    requireRange(tableBytes, tableCursor, byteLength, "metadata.table-data");
+    requireRange(
+      tableBytes,
+      tablesOffset,
+      tableCursor,
+      byteLength,
+      "metadata.table-data",
+    );
     tables.set(index, {
       index,
       name: METADATA_TABLE_NAMES[index] ?? `Table${String(index)}`,

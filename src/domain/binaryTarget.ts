@@ -3,6 +3,7 @@ import type {
   ElfFamilyMetadata,
   HeaderArchitecture,
   MipsElfMetadata,
+  RawOnlyArchitecture,
   PeCodeViewRecord,
   RiscvElfMetadata,
   PowerPcElfMetadata,
@@ -51,6 +52,8 @@ export type ExecutableMetadata =
     }
   | {
       readonly format: "pe";
+      /** Original unsigned COFF machine, before CPU-family normalization. */
+      readonly peMachine: number;
       readonly architecture: HeaderArchitecture;
       readonly availableArchitectures: readonly HeaderArchitecture[];
       readonly executableRole:
@@ -318,6 +321,7 @@ export const parsePeRecord = (
   const characteristics = record.readUInt16LE(22);
   return ok({
     format: "pe",
+    peMachine: machineType,
     architecture,
     availableArchitectures: [architecture],
     executableRole:
@@ -542,7 +546,7 @@ const machArchitecture = (cpu: number): HeaderArchitecture | undefined => {
 
 const elfArchitecture = (
   machine: number,
-): Exclude<BinaryArchitecture, "6502"> | undefined => {
+): Exclude<BinaryArchitecture, RawOnlyArchitecture> | undefined => {
   switch (machine) {
     case 3:
       return "x86";

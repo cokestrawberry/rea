@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { createDoctorHostFixture } from "./application/Doctor.fixture.js";
+import * as macHopperInstaller from "./application/MacHopper.js";
 import { runSetup } from "./application/Setup.js";
+import { discoverSetupState } from "./application/SetupPlan.js";
 import { options } from "./application/Setup.fixture.js";
 import { systemSetupHost } from "./application/SetupHost.js";
 import { systemUninstallHost } from "./application/Uninstall.js";
@@ -92,6 +94,35 @@ it("composes provider diagnostics from selected configuration rather than ambien
   expect(JSON.stringify(inspections)).not.toContain("/ambient/");
 });
 
+it("includes the macOS Hopper installer diagnostic in setup remediation", async () => {
+  const install = vi
+    .spyOn(macHopperInstaller, "installMacHopper")
+    .mockResolvedValue({
+      status: "failed",
+      reason: "mount",
+      diagnostic: "hdiutil attach exited 1:\n\u001b[31mresource busy\u001b[0m",
+    });
+  const host = systemSetupHost(
+    createDoctorHostFixture({ platform: "darwin" }),
+    { HOME: "/fixture/home", USERPROFILE: "/fixture/home" },
+  );
+  try {
+    const result = await host.installHopper(false);
+    expect(result).toMatchObject({
+      status: "failed",
+      code: "mount_failed",
+      remediation: expect.stringContaining(
+        "Installer detail: hdiutil attach exited 1: resource busy",
+      ),
+    });
+    if (result.status !== "failed") throw new Error("expected setup failure");
+    expect(result.remediation).not.toContain("\u001b");
+  } finally {
+    await host.close?.();
+    install.mockRestore();
+  }
+});
+
 it("preserves a validated selected JEB endpoint in setup registrations without claiming live readiness", async () => {
   const root = await mkdtemp(join(tmpdir(), "rea-jeb-setup-"));
   const endpoint = "http://127.0.0.1:8425/mcp/";
@@ -146,6 +177,60 @@ it("preserves a validated selected JEB endpoint in setup registrations without c
   }
 });
 
+it.each([
+  {
+    name: "registration-only settings",
+    environment: {
+      REA_ANALYSIS_PROVIDER: "auto",
+      REA_GHIDRA_STARTUP_TIMEOUT_MS: "2700000",
+      REA_MCP_INPUT_SCHEMA_PROFILE: "full",
+    },
+    providerConfigured: false,
+    installHopper: true,
+  },
+  {
+    name: "an explicit unready provider selection",
+    environment: { REA_ANALYSIS_PROVIDER: "ghidra" },
+    providerConfigured: true,
+    installHopper: false,
+  },
+])(
+  "derives Hopper proposal behavior from setup-host facts for $name",
+  async ({ environment, providerConfigured, installHopper }) => {
+    const doctorHost = createDoctorHostFixture({
+      platform: "darwin",
+      validTarget: () => Promise.resolve(false),
+      executable: () => Promise.resolve(false),
+    });
+    const setupHost = systemSetupHost(doctorHost, {
+      HOME: "/fixture/home",
+      USERPROFILE: "/fixture/home",
+      ...environment,
+    });
+    try {
+      const initial = await setupHost.initialSetupState();
+      expect(initial.providerConfigured).toBe(providerConfigured);
+      if ("REA_MCP_INPUT_SCHEMA_PROFILE" in environment) {
+        expect(initial.providerEnvironment).toMatchObject({
+          REA_ANALYSIS_PROVIDER: "auto",
+          REA_GHIDRA_STARTUP_TIMEOUT_MS: "2700000",
+          REA_MCP_INPUT_SCHEMA_PROFILE: "full",
+        });
+      }
+      const discovery = await discoverSetupState({
+        host: setupHost,
+        providerConfigured: initial.providerConfigured,
+        forceHopperInstall: false,
+        proposeHopper: true,
+        initialDoctor: initial.doctor,
+      });
+      expect(discovery.installHopper).toBe(installHopper);
+    } finally {
+      await setupHost.close?.();
+    }
+  },
+);
+
 it("passes only selected environment to updater subprocesses and drops npm invocation identity", async () => {
   vi.stubEnv("REA_UPDATE_MARKER", "ambient");
   const result = await runUpdateCommand(
@@ -182,3 +267,31 @@ it.each([
     });
   },
 );
+
+it("registers the selected Windows package runner after canonicalizing environment aliases", async () => {
+  const environment = snapshotEnvironment(
+    {
+      NPM_COMMAND: "run",
+      npm_command: "exec",
+      NPM_CONFIG_USER_AGENT: "npm/10.9.0 node/v24.11.0 win32 x64",
+    },
+    "win32",
+  );
+  expect(environment).toEqual({
+    NPM_COMMAND: "exec",
+    NPM_CONFIG_USER_AGENT: "npm/10.9.0 node/v24.11.0 win32 x64",
+  });
+  expect(invokingPackageRunner(environment, "win32")).toBe("npx");
+
+  const host = systemSetupHost(
+    createDoctorHostFixture({ platform: "win32" }),
+    environment,
+  );
+  try {
+    expect(host.registrationCommand).toEqual(
+      packageRunnerRegistrationCommand("npx", "win32"),
+    );
+  } finally {
+    await host.close?.();
+  }
+});

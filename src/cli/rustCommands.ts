@@ -1,11 +1,11 @@
 import { z } from "incur";
-import { resolve } from "node:path";
 import { createRustBinaryService } from "../composition/rust.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
 import { logCliCommand } from "../cliLogging.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
+import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
 
 /** Resolve caller paths and inspect embedded Rust dependencies through the shared workflow. */
@@ -27,7 +27,11 @@ export const registerRustCommands = (
           CLI_COMMANDS.inspectRustBinary,
           async () =>
             finishAnalysisCommand(
-              () => service.inspect({ path: resolve(args.path) }, { signal }),
+              () =>
+                service.inspect(
+                  { path: absoluteCallerPath(args.path) },
+                  { signal },
+                ),
               service,
               "rust-auditable",
               "inspect_rust_binary",

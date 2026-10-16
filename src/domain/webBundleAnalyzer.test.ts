@@ -8,6 +8,20 @@ import { createWebTextArtifact } from "./webContentArtifact.js";
 
 const origin = "https://app.example.test";
 
+it("retains standalone GraphQL Source operations in captured scripts", () => {
+  const result = analyzeCapturedWebBundle(
+    inspection(`
+    const source = {
+      body: "query GetUser { user { id } }",
+      locationOffset: { line: 1, column: 1 },
+    };
+  `),
+  );
+  expect(result.observations.endpoints).toEqual([
+    expect.objectContaining({ value: "GetUser", mechanism: "graphql:query" }),
+  ]);
+});
+
 it.each([
   {
     kind: "recovered",
@@ -161,7 +175,9 @@ describe("web bundle analyzer", () => {
       trust: "page-declared-untrusted",
     });
   });
+});
 
+describe("web bundle source-map coverage", () => {
   it("reports unavailable source maps as partial without dropping requested maps", () => {
     const analysis = analyzeCapturedWebBundle(inspection("export {};"), {
       status: "unavailable",
@@ -189,6 +205,18 @@ describe("web bundle analyzer", () => {
         "One or more requested source maps were unavailable or incomplete",
       affected_script_keys: [`scr_${"1".repeat(64)}`],
     });
+  });
+
+  it("keeps map-less captured source complete when no maps were requested", () => {
+    const analysis = analyzeCapturedWebBundle(inspection("export {};"), {
+      status: "not_requested",
+      requested: 0,
+      processed: 0,
+      items: [],
+    });
+
+    expect(analysis.completeness.status).toBe("complete");
+    expect(analysis.unknowns).toEqual([]);
   });
 
   it("rejects inconsistent source-map coverage counts", () => {
@@ -1006,6 +1034,47 @@ describe("web metadata key semantics", () => {
       expect.objectContaining({ name: "valid" }),
     ]);
   });
+
+  it("projects only exact input schema property names", () => {
+    const result = analyzeCapturedWebBundle(
+      inspection(`
+      document.modelContext.registerTool({
+        name: "literal",
+        inputSchema: {
+          type: "object",
+          properties: { type: {}, properties: {}, "": {}, [dynamicKey]: {}, ...dynamicProperties }
+        }
+      });
+      document.modelContext.registerTool({ name: "missing properties", inputSchema: { type: "object" } });
+      document.modelContext.registerTool({ name: "dynamic properties", inputSchema: { properties: dynamicProperties } });
+      document.modelContext.registerTool({ name: "null properties", inputSchema: { properties: null } });
+      document.modelContext.registerTool({ name: "missing schema" });
+      document.modelContext.registerTool({ name: "dynamic schema", inputSchema: schema });
+      document.modelContext.registerTool({ name: "null schema", inputSchema: null });
+      document.modelContext.registerTool({ name: "spread schema", inputSchema: { ...schema } });
+      document.modelContext.registerTool({
+        name: "computed literal keys",
+        ["inputSchema"]: { ["properties"]: { [""]: {}, ["literal"]: {}, [dynamicKey]: {} } }
+      });
+    `),
+    );
+
+    expect(
+      result.observations.webmcp_declarations.map(
+        ({ name, schema_property_names }) => ({ name, schema_property_names }),
+      ),
+    ).toEqual([
+      { name: "literal", schema_property_names: ["", "properties", "type"] },
+      { name: "missing properties", schema_property_names: [] },
+      { name: "dynamic properties", schema_property_names: [] },
+      { name: "null properties", schema_property_names: [] },
+      { name: "missing schema", schema_property_names: [] },
+      { name: "dynamic schema", schema_property_names: [] },
+      { name: "null schema", schema_property_names: [] },
+      { name: "spread schema", schema_property_names: [] },
+      { name: "computed literal keys", schema_property_names: ["", "literal"] },
+    ]);
+  });
 });
 
 it("retains WebMCP declarations through optional member and call chaining", () => {
@@ -1089,6 +1158,27 @@ it("retains direct and literal computed call names", () => {
   ).toEqual(["./direct.js", "./literal.js"]);
   expect(result.observations.webmcp_declarations).toEqual([
     expect.objectContaining({ name: "literal-tool" }),
+  ]);
+});
+
+it("requires WebMCP receiver and method names to occupy exact member segments", () => {
+  const result = analyzeCapturedWebBundle(
+    inspection(`
+      navigator.modelContext.registerTool({ name: "navigator" });
+      local.modelContext.registerTool({ name: "exact nested" });
+      const appmodelContext = { registerTool() {} };
+      appmodelContext.registerTool({ name: "receiver suffix" });
+      const app = { analyticsmodelContext: { registerTool() {} } };
+      app.analyticsmodelContext.registerTool({ name: "nested suffix" });
+      window["modelContext.registerTool"]({ name: "dotted property" });
+      window["modelContext"].registerTool({ name: "computed receiver" });
+    `),
+  );
+
+  expect(result.observations.webmcp_declarations).toEqual([
+    expect.objectContaining({ name: "navigator" }),
+    expect.objectContaining({ name: "exact nested" }),
+    expect.objectContaining({ name: "computed receiver" }),
   ]);
 });
 
