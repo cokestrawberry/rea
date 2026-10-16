@@ -740,6 +740,51 @@ describe("CutterBridgeClient: scenario group 4", () => {
     });
   });
 
+  it("keeps integers beyond the safe range exact in recorded command output", async () => {
+    directory = await mkdtemp(join(tmpdir(), "rea-cutter-exact-integers-"));
+    const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
+    const token = "synthetic-cutter-bridge-token-for-test";
+    server = authenticatedServer(token, sessionId, (request, respond) =>
+      request.kind === "ack"
+        ? respond({ ok: true, acknowledged: true })
+        : respond(
+            '{"ok":true,"output":[{"offset":18446744073709551615,"low":-9007199254740993,"safe":9007199254740991,"ratio":1.5,"huge":1e300,"meta":{"__proto__":{"a":1},"constructor":"ordinary"}}]}',
+            { raw: true },
+          ),
+    );
+    const port = await listen(server);
+    await writeDescriptor(directory, sessionId, port, token);
+    const service = new CutterBridgeService(
+      createClient({ REA_CUTTER_BRIDGE_DIR: directory }),
+    );
+    const result = await service.execute({
+      session_id: sessionId,
+      expected_generation: 0,
+      command: "aflj",
+      json: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw result.error;
+    const output = [
+      {
+        offset: "18446744073709551615",
+        low: "-9007199254740993",
+        safe: 9007199254740991,
+        ratio: 1.5,
+        huge: 1e300,
+        meta: JSON.parse('{"__proto__":{"a":1},"constructor":"ordinary"}'),
+      },
+    ];
+    expect(result.value.normalized_result).toMatchObject({ output });
+    expect(result.value.raw_result).toEqual(output);
+    expect(
+      Object.hasOwn(
+        (result.value.raw_result as typeof output)[0]!.meta,
+        "__proto__",
+      ),
+    ).toBe(true);
+  });
+
   it("returns unknown completion for invalid JSON and rejects a pre-aborted request", async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-malformed-response-"));
     const sessionId = "27d3e3f1-f1e5-49ae-91ec-95af1f343a5a";
