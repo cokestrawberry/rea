@@ -8,6 +8,7 @@ import { createApplicationMcpHarness } from "../../fixtures/applicationMcpHarnes
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { createEvidenceBundle } from "../../../src/domain/evidenceBundle.js";
 import { compareFunctions } from "../../../src/domain/functionComparison.js";
+import { functionDossierSchema } from "../../../src/domain/hopperValues.js";
 import { jsonValueSchema } from "../../../src/domain/jsonValue.js";
 
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
@@ -435,3 +436,75 @@ it.each([
     await harness.client.ping();
   },
 );
+
+it("keeps references unknown when only address-derived endpoint names differ", async () => {
+  const template = FUNCTION_COMPARISON_EXAMPLE.left;
+  const procedure = (address: string, name: string) => ({
+    address,
+    name,
+    classification: null,
+    body: {
+      available: false,
+      reason: "The fixture omits function-body extent observations.",
+    },
+  });
+  const observe = (digit: string, callerName: string) =>
+    createEvidence(
+      {
+        path: `/fixture/function-${digit}`,
+        sha256: digit.repeat(64),
+        format: "mach-o",
+      },
+      template.provider,
+      {
+        operation: template.operation,
+        parameters: template.parameters,
+        result: jsonValueSchema.parse({
+          ...functionDossierSchema.parse(template.normalized_result),
+          incoming_references: [
+            {
+              source_address: "0x2000",
+              target_address: "0x1000",
+              source_procedure: procedure("0x2000", callerName),
+              target_procedure: procedure("0x1000", "main"),
+              kind: { available: false, reason: "The fixture omits kinds." },
+            },
+          ],
+        }),
+        confidence: template.confidence,
+        authority: template.authority,
+        relationshipCoverage: { status: "complete" },
+      },
+    );
+  const session = createTestBinarySession(() => {
+    throw new Error("Function comparison must not launch a provider");
+  });
+  const harness = await createApplicationMcpHarness({ session });
+  onTestFinished(harness.close);
+  const compared = await harness.client.callTool({
+    name: "compare_functions",
+    arguments: {
+      left: observe("2", "sub_1000"),
+      right: observe("3", "sub_1040"),
+    },
+  });
+  expect(compared.isError, JSON.stringify(compared.structuredContent)).not.toBe(
+    true,
+  );
+  expect(
+    parseEvidence(compared.structuredContent).normalized_result,
+  ).toMatchObject({
+    dimensions: expect.arrayContaining([
+      expect.objectContaining({
+        dimension: "references",
+        status: "unknown",
+        conclusion_kind: "unresolved_branch",
+        left_count: 1,
+        right_count: 1,
+        limitations: [
+          "Address-derived reference endpoint names cannot be matched safely.",
+        ],
+      }),
+    ]),
+  });
+});
