@@ -6,10 +6,14 @@ import {
   AnalysisInputError,
   AnalysisUnsupportedTargetError,
 } from "../../domain/analysisErrorCore.js";
-import { projectPlistValue } from "../../domain/apple/plistValue.js";
+import {
+  projectPlistValue,
+  unknownDateLimitation,
+} from "../../domain/apple/plistValue.js";
 import { createPlistNumberProjection } from "../../domain/apple/plistNumbers.js";
 import {
-  binaryPlistNumberLiterals,
+  decodeBinaryPlistNumbers,
+  scanBinaryPlistNumberLiterals,
   xmlPlistNumberLiterals,
 } from "./PlistNumberLiterals.js";
 import {
@@ -64,24 +68,32 @@ export const decodeKeyedArchiveBytes = (
               )
             : new RangeError(message),
         bounds: "decoder",
+        numberProjection: true,
       })
+    : undefined;
+  const binaryNumberMetadata = binary
+    ? scanBinaryPlistNumberLiterals(bytes)
     : undefined;
   const parsed =
     binaryExpansion !== undefined
       ? {
-          value: parseBinary(bytes),
+          value: parseBinary(
+            decodeBinaryPlistNumbers(bytes, binaryNumberMetadata!),
+          ),
           omittedPrototypeKeys: binaryExpansion.binaryPrototypeKeyObserved
             ? null
             : 0,
         }
       : parseXmlPropertyList(xmlText ?? "");
-  const { value: plistValue, unknownRealCount } = projectPlistValue(
-    parsed.value,
-  );
+  const {
+    value: plistValue,
+    unknownRealCount,
+    unknownDateCount,
+  } = projectPlistValue(parsed.value);
   const graph = projectKeyedArchive(plistValue, selection);
   const numbers = createPlistNumberProjection(
     binary
-      ? binaryPlistNumberLiterals(bytes)
+      ? binaryNumberMetadata!.literals
       : xmlPlistNumberLiterals(xmlText ?? ""),
   );
   // Classify the serialized graph before projecting values to typed decimals.
@@ -112,6 +124,9 @@ export const decodeKeyedArchiveBytes = (
         : [
             `${String(unknownRealCount)} non-finite real value(s) are reported as { "$plist_type": "real", "value": null } because JSON evidence cannot preserve NaN vs infinity.`,
           ]),
+      ...(unknownDateCount === 0
+        ? []
+        : [unknownDateLimitation(unknownDateCount)]),
     ],
   };
 };

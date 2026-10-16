@@ -66,14 +66,25 @@ Electron `file://` pages use a separate provider and target boundary; see [elect
 
 ## Provider authorities
 
-CDP page capture, V8 Inspector observation, and Playwright scenarios stay
-separate providers because their authorities differ: CDP and V8 attach to an
-already-running target and never launch, drive, evaluate, or mutate it, while
-Playwright providers own and drive the runtime (launch browsers, run actions,
-capture step snapshots). Merging them would mix attach-only and owned-process
-lifecycles in one contract. What they share instead is one exclusion
-vocabulary (`BrowserExclusionReason`): every denial reason in every stack maps
-onto it, even where a wire schema keeps a narrower historical bucket.
+CDP page capture and V8 Inspector observation attach to an already-running
+target without launching it, driving actions, or evaluating target code.
+Playwright scenarios drive actions and capture step snapshots in either a
+provider-owned browser or a caller-selected external browser. Separate providers
+preserve these authority and lifecycle differences. They share one exclusion
+vocabulary (`BrowserExclusionReason`): every denial reason maps onto it, even
+where a wire schema keeps a narrower historical bucket.
+
+CDP attachment is not a guarantee that the browser preserves all state.
+Chromium can clear another client's `navigator.platform` emulation when REA's
+page session disconnects, even if that session sent no emulation commands.
+This affects page inspection, bundle capture, session observation, screenshots,
+WebMCP discovery, and Electron page inspection; target listing alone does not
+attach a page session. REA cannot read the other client's complete
+user-agent/client-hint configuration and does not replay guessed settings.
+Use a disposable browser when preserving externally configured emulation is
+required, or have the owning client reapply its complete configuration afterward.
+See [the reproduction and Chromium ownership limitation](https://github.com/morluto/rea/issues/4089).
+
 Existing static application Evidence and passive web/Electron captures can be
 combined later through
 [JavaScript static/runtime reconciliation](javascript-runtime-reconciliation.md).
@@ -281,6 +292,32 @@ REA retains local observation data and removes only URL userinfo credentials, ex
 - Accessibility structure and roles are retained by default, while names and descriptions require `include_accessibility_text: true`.
 - Network observations retain method, status, MIME type, size, type, initiator stack location, and complete URLs with userinfo credentials removed. Redirects reported by CDP are attached as ordered `redirects` on the one request ID, with the prior request URL, CDP response URL, method/type, response status/MIME/encoded length, request timestamp, and the next `requestWillBeSent` event timestamp. CDP delivers `redirectResponse` with that next request event, so the latter is an event boundary rather than an exact response timestamp. Redirect response headers and bodies are discarded; hops outside the selected origins are discarded with the request chain. Headers are discarded after an allowlisted projection of length/encoding, structured CSP/Link/policy fields, and untrusted agent hints. Cookies and authorization headers are never retained.
 - Request/response bodies are not requested or parsed by default. When selected, only allowed-origin JSON media types are read, converted immediately to complete value-free typed paths, types and observation counts, and discarded. Each path segment is either `{ "kind": "property", "name": "raw property name" }` or `{ "kind": "array-element" }`; array-element types include primitives and nested arrays. Literal `*` properties remain distinct from array elements. `Network.getResponseBody` is never sent unless JSON body shape capture is selected. Comparison uses body shapes only when both captures selected them, and compares request/response shapes only where both observations provide those facts. Unavailable or truncated selected coverage makes equivalence unknown; observed differences still report changed.
+  For normalized passive inputs with complete request inventories on both sides,
+  request additions and removals remain observable even when selected body shapes,
+  response metadata, or WebSocket coverage are unavailable. HTTP request and
+  WebSocket inventory coverage are evaluated separately; complete HTTP coverage
+  cannot prove a missing WebSocket connection. Limited request inventory still
+  prevents request-absence claims. This comparison rule does not make live CDP's
+  attach-limited inventory complete or establish body-shape equality.
+  An unavailable HTTP resource type also leaves request identity incomplete:
+  observations with the same method and URL remain possible matches across types,
+  and identical unknown types cannot establish complete equality. Ambiguous type
+  groups cannot prove membership or content changes either: a missing type may
+  redistribute repeated requests between buckets without changing the requests.
+  Their comparison remains unknown, while independently identified groups retain
+  proven changes. Different methods/URLs and complete empty peer inventories still
+  support absence claims.
+  Relevant dropped-event counts also limit inventory completeness even when no
+  section is listed as truncated: HTTP uses `network_requests`, while WebSocket
+  uses `websocket_connections` and `websocket_frames`. Drops in other event kinds
+  and the aggregate total do not by themselves limit HTTP inventory. Proven
+  modifications remain reportable despite incomplete inventory.
+  Repeated identical HTTP content samples establish multiplicity changes only
+  with complete request inventories; limited inventories retain known content
+  comparisons without interpreting duplicate sample counts as changes.
+  WebSocket stream inventories and connection counts likewise require complete
+  WebSocket coverage. Redirect resource types use only shared known metadata:
+  an omitted type leaves equality unknown rather than proving a modification.
 - Console observations with a stack source retain call type, argument types, timestamp, and source location. When console text capture is selected, already-delivered primitive values are retained verbatim; objects, getters, and remote properties are never expanded.
 - WebSocket observations retain direction, opcode, and payload byte length. When shape capture is selected, text frames are classified as text or complete value-free JSON shape; binary bytes, hashes, prefixes, and raw frames are never retained.
 - Storage observations always redact values. Key names, IndexedDB names, and cache names require `include_storage_keys`; stable content fingerprints require the additional `include_storage_fingerprints` selection. Cookie fingerprints cover cookies applicable to the current main-frame URL, including its path, rather than every cookie path on that origin. Other storage remains scoped to the origin. Cache bodies above 64 KiB and partial IndexedDB remote objects make fingerprint coverage incomplete, so identical observations remain `unknown`.
@@ -317,8 +354,10 @@ an invalid supplied size remains unknown with incomplete resource coverage while
 the resource's other facts are retained. Zero and nonnegative fractional sizes
 are preserved.
 
-CDP discovery, connection, and commands wait for the peer or caller cancellation;
-a stalled peer can leave an operation waiting. WebSocket messages remain subject
+CDP discovery has a 10-second deadline. Each WebSocket handshake and command
+response has its own 20-second deadline, separate from the caller-selected
+observation window. A stalled handshake or command reports `provider_timeout`;
+caller cancellation still reports cancellation. WebSocket messages remain subject
 to the [64 MiB limit](#request-boundary). REA does not impose a message-count or
 pending-command quota. On cancellation, it closes only its own WebSocket,
 waiting up to one second before terminating it. Malformed unsolicited events

@@ -51,7 +51,7 @@ describe("client registration status", () => {
     ]);
     await writeFile(
       join(home, ".codex/config.toml"),
-      `[mcp_servers.rea]\ncommand = "npx"\nargs = ["-y", "${PRODUCT_IDENTITY.registrationPackageSpecifier}", "mcp"]\nstartup_timeout_sec = 30\n`,
+      `[mcp_servers.rea]\ncommand = "npx"\nargs = ["-y", "${PRODUCT_IDENTITY.registrationPackageSpecifier}", "mcp"]\nstartup_timeout_sec = 30\ntool_timeout_sec = 450\n`,
     );
     await writeFile(
       join(home, ".cursor/mcp.json"),
@@ -316,7 +316,7 @@ describe("Node-wrapped registration policy", () => {
       const entry = resolve("scripts/rea.mjs");
       await writeFile(
         join(home, ".codex/config.toml"),
-        `[mcp_servers.rea]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(entry)}, "mcp"]\nstartup_timeout_sec = ${String(timeout)}\n`,
+        `[mcp_servers.rea]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(entry)}, "mcp"]\nstartup_timeout_sec = ${String(timeout)}\ntool_timeout_sec = 450\n`,
       );
       const statuses = await readClientRegistrationStatuses(home, entry, {
         environment: {},
@@ -329,6 +329,24 @@ describe("Node-wrapped registration policy", () => {
       ]);
     },
   );
+
+  it("keeps a short positive Codex tool timeout aligned and reports an advisory", async () => {
+    const home = await createTestTempDirectory("rea-codex-short-tool-timeout-");
+    await mkdir(join(home, ".codex"));
+    const entry = resolve("scripts/rea.mjs");
+    await writeFile(
+      join(home, ".codex/config.toml"),
+      `[mcp_servers.rea]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(entry)}, "mcp"]\nstartup_timeout_sec = 30\ntool_timeout_sec = 10\n`,
+    );
+    const [status] = await readClientRegistrationStatuses(home, entry, {
+      environment: {},
+    });
+    expect(status).toMatchObject({
+      client: "codex",
+      state: "aligned",
+      advisory: expect.stringContaining("tool_timeout_sec = 450 seconds"),
+    });
+  });
 
   it.each([1, 30])(
     "checks Grok Build startup timeout %d independently of launcher",

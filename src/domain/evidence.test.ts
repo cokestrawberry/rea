@@ -2,7 +2,10 @@ import { fc, it } from "@fast-check/vitest";
 import { describe, expect } from "vitest";
 
 import { createAnalysisProfile } from "./analysisProfile.js";
-import type { BinaryTarget } from "./binaryTargetTypes.js";
+import {
+  RAW_ONLY_ARCHITECTURES,
+  type BinaryTarget,
+} from "./binaryTargetTypes.js";
 import { createEvidence, evidenceSchema, parseEvidence } from "./evidence.js";
 import { MAX_JSON_DEPTH, type JsonValue } from "./jsonValue.js";
 import { createEvidenceBundle } from "./evidenceBundle.js";
@@ -19,32 +22,35 @@ const TARGET: BinaryTarget = {
 const PROVIDER = { id: "fixture", name: "Fixture provider", version: "1" };
 const PROFILE = createAnalysisProfile(PROVIDER, { loader: "default" });
 
-it("rejects a detected Evidence subject with the raw-only 6502 architecture", () => {
-  const selected = {
-    path: TARGET.path,
-    sha256: TARGET.sha256,
-    format: "raw-binary" as const,
-    architecture: "6502" as const,
-  };
-  expect(
-    createEvidence(selected, PROVIDER, {
-      operation: "inspect",
-      parameters: {},
-      result: null,
-    }).subject,
-  ).toMatchObject({ format: "raw-binary", architecture: "6502" });
-  const malformed = {
-    ...selected,
-    format: "pe" as const,
-  };
-  expect(() =>
-    createEvidence(malformed, PROVIDER, {
-      operation: "inspect",
-      parameters: {},
-      result: null,
-    }),
-  ).toThrow();
-});
+it.each(RAW_ONLY_ARCHITECTURES)(
+  "rejects a detected Evidence subject with the raw-only %s architecture",
+  (architecture) => {
+    const selected = {
+      path: TARGET.path,
+      sha256: TARGET.sha256,
+      format: "raw-binary" as const,
+      architecture,
+    };
+    expect(
+      createEvidence(selected, PROVIDER, {
+        operation: "inspect",
+        parameters: {},
+        result: null,
+      }).subject,
+    ).toMatchObject({ format: "raw-binary", architecture });
+    const malformed = {
+      ...selected,
+      format: "pe" as const,
+    };
+    expect(() =>
+      createEvidence(malformed, PROVIDER, {
+        operation: "inspect",
+        parameters: {},
+        result: null,
+      }),
+    ).toThrow();
+  },
+);
 
 it("preserves omitted relationship diagnostics and authenticates reported diagnostics", () => {
   const observation = {
@@ -77,6 +83,21 @@ it("preserves omitted relationship diagnostics and authenticates reported diagno
       relationship_coverage: diagnosed.relationship_coverage,
     }),
   ).toThrow("semantic identifier");
+});
+
+it("requires explicit coverage in serialized Evidence while producers encode omission as unknown", () => {
+  const evidence = createEvidence(TARGET, PROVIDER, {
+    operation: "procedure_callees",
+    parameters: { procedure: "0x1000" },
+    result: ["0x2000"],
+  });
+
+  expect(evidence.relationship_coverage).toBeNull();
+  expect(parseEvidence(JSON.parse(JSON.stringify(evidence)))).toEqual(evidence);
+  const oldEnvelope = { ...evidence } as Record<string, unknown>;
+  delete oldEnvelope.relationship_coverage;
+  expect(evidenceSchema.safeParse(oldEnvelope).success).toBe(false);
+  expect(() => parseEvidence(oldEnvelope)).toThrow();
 });
 
 it("projects known provider fields and preserves open JSON payloads", () => {

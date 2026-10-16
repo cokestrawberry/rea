@@ -4,6 +4,7 @@ import {
   defaultHopperLauncherPath,
   parseConfig,
 } from "./config/parseConfig.js";
+import { parseEnvironmentValues } from "./config/environment.js";
 import { projectAnalysisError } from "./domain/analysisErrorProjection.js";
 
 it("reports a configuration failure for a NUL in Hopper loader arguments", () => {
@@ -16,6 +17,38 @@ it("reports a configuration failure for a NUL in Hopper loader arguments", () =>
     settings: [{ setting: "HOPPER_LOADER_ARGS_JSON" }],
   });
   expect(result.error.message).toContain("NUL");
+});
+
+it.each([
+  ["unknown value", { CALLER_SETTING: "private\0value" }],
+  ["unknown name", { ["CALLER\0SETTING"]: "private value" }],
+  ["known path", { HOPPER_TARGET_PATH: "private\0path" }],
+] as const)(
+  "rejects a NUL in an environment %s without exposing its value",
+  (_name, environment) => {
+    for (const result of [
+      parseEnvironmentValues(environment),
+      parseConfig(environment),
+    ]) {
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("Expected invalid environment");
+      expect(result.error.settings).toHaveLength(1);
+      expect(result.error.settings[0]?.constraint).toContain("NUL");
+      expect(JSON.stringify(projectAnalysisError(result.error))).not.toContain(
+        "private",
+      );
+    }
+  },
+);
+
+it("accepts ordinary custom environment strings and omitted values", () => {
+  expect(
+    parseEnvironmentValues({
+      CALLER_SETTING: "\nvalue=one;二\t",
+      EMPTY_SETTING: "",
+      OMITTED_SETTING: undefined,
+    }).ok,
+  ).toBe(true);
 });
 
 describe("runtime configuration", () => {

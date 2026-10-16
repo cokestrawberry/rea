@@ -37,7 +37,7 @@ export interface SetupDiscovery {
 /** Discover supported clients and current registrations without mutation. */
 export const discoverSetupState = async (input: {
   readonly host: SetupHost;
-  readonly providerEnvironment: SetupProviderEnvironment;
+  readonly providerConfigured: boolean;
   readonly forceHopperInstall: boolean;
   readonly hopperLauncherConfigured?: boolean;
   readonly proposeHopper: boolean;
@@ -65,8 +65,7 @@ export const discoverSetupState = async (input: {
     input.forceHopperInstall ||
     (hopperInstallSupported &&
       input.proposeHopper &&
-      (Object.keys(input.providerEnvironment).length === 0 ||
-        linuxHopperRepairNeeded));
+      (!input.providerConfigured || linuxHopperRepairNeeded));
   const [clients, detectedClients] = await Promise.all([
     input.host.supportedClients(),
     input.host.detectedClients(),
@@ -162,6 +161,14 @@ export const planSetupActions = async (input: {
     const client = byId.get(id);
     return client === undefined ? [] : [client];
   });
+  const hopperCache = input.host.linuxHopperReleaseCache;
+  if (input.discovery.installHopper && hopperCache?.ok === false)
+    return {
+      plannedActions: [],
+      selectedClients,
+      clientsToConfigure: [],
+      blocker: hopperCache.error.message,
+    };
   if (
     selectedClients.length > 0 &&
     input.host.registrationCommandBlocker !== undefined
@@ -200,6 +207,9 @@ export const planSetupActions = async (input: {
   const plannedActions = setupPlan({
     platform: input.host.platform,
     homeDirectory: input.host.homeDirectory,
+    ...(hopperCache?.ok === true
+      ? { hopperCacheDirectory: hopperCache.value }
+      : {}),
     installHopper: input.discovery.installHopper,
     installSkill: input.installSkill,
     skillClientIds: input.skillClientIds,
@@ -265,6 +275,7 @@ const plannedClientWrites = (
 const setupPlan = (input: {
   readonly platform: NodeJS.Platform;
   readonly homeDirectory: string;
+  readonly hopperCacheDirectory?: string;
   readonly installHopper: boolean;
   readonly installSkill: boolean;
   readonly skillClientIds: readonly string[];
@@ -290,7 +301,7 @@ const setupPlan = (input: {
               : "system package manager",
           detail:
             input.platform === "linux"
-              ? "Download, verify, and install Hopper plus its Xvfb demo-session dependencies. For the supported demo build, REA uses a private display and selects Hopper's offered demo mode for each analysis session."
+              ? `Download the current official Hopper demo, verify its PGP publisher and launcher bytes, and retain archive, public-key.asc and release.json under ${input.hopperCacheDirectory ?? `${input.homeDirectory}/.cache/rea/hopper-releases`}/<launcher-sha256> for offline verification. Preserve replaced damaged evidence beside it as <launcher-sha256>.backup-<id>. Install Hopper plus its Xvfb demo-session dependencies. REA uses a private display and selects Hopper's offered demo mode for each analysis session.`
               : "Download the official Hopper package, verify it, and install it. Hopper may show its demo or license prompt when first opened.",
           external: true,
           operation: "install" as const,
@@ -347,9 +358,9 @@ const linuxDisclosure = (family: LinuxPackageFamily) => {
     process.getuid?.() === 0,
   );
   return {
-    networkOrigins: [disclosure.downloadUrl],
+    networkOrigins: disclosure.networkOrigins,
     commands: disclosure.commands,
-    integrity: `${String(disclosure.expectedBytes)} bytes · SHA-1 ${disclosure.expectedSha1}`,
+    integrity: disclosure.integrity,
   };
 };
 

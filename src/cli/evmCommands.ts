@@ -1,10 +1,10 @@
 import { z } from "incur";
-import { resolve } from "node:path";
 import { evmInterfaceModule } from "../composition/evm.js";
 import { logCliCommand } from "../cliLogging.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
+import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
 
 /** Resolve operator paths and preserve explicit encoding through the shared workflow. */
@@ -28,7 +28,10 @@ export const registerEvmCommands = (
           finishAnalysisCommand(
             () =>
               service.inspect(
-                { path: resolve(args.path), encoding: args.encoding },
+                {
+                  path: absoluteCallerPath(args.path),
+                  encoding: args.encoding,
+                },
                 { signal },
               ),
             service,

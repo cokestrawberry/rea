@@ -47,6 +47,8 @@ interface ReferenceSourceImportRelationship {
   readonly kind: ReferenceSourceImportKind;
   readonly resolution: ReferenceSourceImportResolution;
   readonly parse_state: ReferenceSourceImportParseState;
+  /** Distinguishes call-form CommonJS require from TS import-equals `requires`. */
+  readonly resolutionStrategy?: "runtime-require";
 }
 
 interface ReferenceSourceParseFailure {
@@ -130,6 +132,7 @@ const appendRelationship = (
     readonly kind: ReferenceSourceImportKind;
     readonly parseState: ReferenceSourceImportParseState;
     readonly resolution?: ReferenceSourceImportResolution;
+    readonly resolutionStrategy?: "runtime-require";
   },
 ): void => {
   if (input.to === undefined) return;
@@ -139,6 +142,9 @@ const appendRelationship = (
     kind: input.kind,
     resolution: input.resolution ?? resolveSpecifier(input.to),
     parse_state: input.parseState,
+    ...(input.resolutionStrategy === undefined
+      ? {}
+      : { resolutionStrategy: input.resolutionStrategy }),
   });
 };
 
@@ -269,6 +275,7 @@ const extractRequireAndDynamicImports = (
           to: result.specifier,
           kind: "requires",
           parseState: result.parseState,
+          resolutionStrategy: "runtime-require",
         });
       }
       continue;

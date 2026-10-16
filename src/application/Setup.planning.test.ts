@@ -5,6 +5,7 @@ import type { SetupProgressEvent } from "./SetupTypes.js";
 import { FakeSetupHost, options } from "./Setup.fixture.js";
 import { SetupSkillInstallError } from "./SetupSkill.js";
 import { err, ok } from "../domain/result.js";
+import { HopperReleaseError } from "./HopperReleaseFeed.js";
 
 const linkedSkillFailure = () =>
   new SetupSkillInstallError({
@@ -15,6 +16,44 @@ const linkedSkillFailure = () =>
     recoveryBackupPaths: [],
     cause: undefined,
   });
+
+describe("Linux publisher cache approval", () => {
+  it.each([true, false])(
+    "discloses the selected cache or blocks an unresolved path before approval: %s",
+    async (valid) => {
+      const host = Object.assign(new FakeSetupHost("linux"), {
+        linuxHopperReleaseCache: valid
+          ? ok("/caller/cache/rea/hopper-releases")
+          : err(
+              new HopperReleaseError(
+                "verification_unavailable",
+                "Invalid selected cache path",
+              ),
+            ),
+      });
+      host.distribution = {
+        id: "ubuntu",
+        versionId: "24.04",
+        packageFamily: "deb",
+        hopperSetupSupported: true,
+      };
+      const result = await runSetup(options(false, true), host);
+      if (valid)
+        expect(
+          result.plannedActions.find(({ kind }) => kind === "install_hopper")
+            ?.detail,
+        ).toContain("/caller/cache/rea/hopper-releases/<launcher-sha256>");
+      else
+        expect(result).toMatchObject({
+          status: "needs_human",
+          plannedActions: [],
+        });
+      expect(host.hopperInstalls).toBe(0);
+      expect(host.configurations).toBe(0);
+      expect(host.skillInstalls).toBe(0);
+    },
+  );
+});
 
 describe("selected skill admission", () => {
   it.each(["codex", "shared"] as const)(
@@ -267,6 +306,63 @@ describe("setup workflow", () => {
   });
 });
 
+describe("setup client selection", () => {
+  it.each([true, false])(
+    "handles repeated clients once in first-selected order (dry run: %s)",
+    async (dryRun) => {
+      const host = new FakeSetupHost();
+      host.hopper = "/Applications/Hopper";
+      host.skill = "unchanged";
+      host.clients = [
+        { name: "cursor", configPath: "/cursor.json" },
+        { name: "codex", configPath: "/codex.toml", format: "toml" },
+      ];
+      const inspected: string[] = [];
+      const configured: string[] = [];
+      const inspect = host.inspectClientConfiguration;
+      const configure = host.configureClient;
+      host.inspectClientConfiguration = (client) => {
+        inspected.push(client.name);
+        return inspect(client);
+      };
+      host.configureClient = (client, environment, command) => {
+        configured.push(client.name);
+        return configure(client, environment, command);
+      };
+
+      const result = await runSetup(
+        {
+          ...options(true),
+          clientIds: ["codex", "cursor", "codex", "cursor"],
+          installSkill: false,
+          dryRun,
+        },
+        host,
+      );
+
+      expect(result.status).toBe(dryRun ? "planned" : "ready");
+      expect(result.plannedActions.map(({ id }) => id)).toEqual([
+        "configure_client:codex",
+        "configure_client:cursor",
+      ]);
+      expect(inspected).toEqual(["codex", "cursor"]);
+      expect(configured).toEqual(dryRun ? [] : ["codex", "cursor"]);
+      expect(result.appliedActions).toEqual(
+        dryRun ? [] : ["configured_codex", "configured_cursor"],
+      );
+      if (!dryRun) {
+        expect(result.clients).toEqual({
+          codex: { status: "configured" },
+          cursor: { status: "configured" },
+        });
+        expect(host.doctorScopes.at(-1)?.clients).toEqual(["codex", "cursor"]);
+      }
+      expect(host.hopperInstalls).toBe(0);
+      expect(host.skillInstalls).toBe(0);
+    },
+  );
+});
+
 describe("setup plan application", () => {
   it("returns a complete plan without mutation", async () => {
     const host = new FakeSetupHost();
@@ -378,7 +474,9 @@ describe("setup plan application", () => {
     expect(host.hopperInstalls).toBe(0);
     expect(host.configurations).toBe(0);
   });
+});
 
+describe("setup Hopper installation", () => {
   it("installs Hopper when unattended authorization is explicit", async () => {
     const host = new FakeSetupHost("linux");
     host.distribution = {
@@ -407,6 +505,25 @@ describe("setup plan application", () => {
     await runSetup({ ...options(true, true), signal: controller.signal }, host);
 
     expect(host.hopperSignals).toEqual([controller.signal]);
+  });
+
+  it("records an installed Hopper when opening the app needs manual recovery", async () => {
+    const host = new FakeSetupHost("darwin");
+    host.installHopper = () =>
+      Promise.resolve({
+        status: "installed",
+        launcherPath: "/Applications/Hopper.app/Contents/MacOS/hopper",
+        warning:
+          "Hopper was installed, but macOS could not open it. Open it manually.",
+      });
+
+    const result = await runSetup(options(true, true), host);
+
+    expect(result).toMatchObject({
+      status: "needs_human",
+      appliedActions: ["installed_hopper"],
+      remediation: expect.stringContaining("Open it manually"),
+    });
   });
 
   it("reuses existing Hopper without selecting every detected client", async () => {
