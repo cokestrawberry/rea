@@ -35,6 +35,7 @@ import { ipcDescriptor } from "./electronStaticAnalysisIpc.js";
 import {
   symbolicDefiniteExit,
   symbolicLogicalRight,
+  symbolicLogicalOperands,
 } from "./javascriptSymbolicControlFlow.js";
 
 const callLabel = (node: t.Node): string =>
@@ -562,21 +563,22 @@ export const collectElectronWrappedCallPaths = (
         );
       return;
     }
-    if (t.isLogicalExpression(node)) {
-      walk(node.left, env, context);
+    const logical = symbolicLogicalOperands(node);
+    if (logical !== undefined) {
+      walk(logical.left, env, context);
       const right = symbolicLogicalRight(
-        node.operator,
-        resolver.evaluate(node.left, env),
+        logical.operator,
+        resolver.evaluate(logical.left, env),
       );
       if (right === false) return;
       walk(
-        node.right,
+        logical.right,
         env,
         right === undefined
           ? condition(
               context,
-              node.left,
-              node.operator === "??" ? "nullish" : node.operator === "&&",
+              logical.left,
+              logical.operator === "??" ? "nullish" : logical.operator === "&&",
             )
           : context,
       );
@@ -610,6 +612,7 @@ export const collectElectronWrappedCallPaths = (
         parent && !t.isFunction(parent);
         child = parent, parent = state.parentsByNode.get(child)
       ) {
+        const logical = symbolicLogicalOperands(parent);
         if (t.isIfStatement(parent) || t.isConditionalExpression(parent)) {
           if (child === parent.test) continue;
           const truth = symbolicTruth(resolver.evaluate(parent.test, env));
@@ -617,17 +620,17 @@ export const collectElectronWrappedCallPaths = (
           if (truth !== undefined && truth !== positive) return;
           if (truth === undefined)
             context = condition(context, parent.test, positive);
-        } else if (t.isLogicalExpression(parent) && child === parent.right) {
+        } else if (logical !== undefined && child === logical.right) {
           const right = symbolicLogicalRight(
-            parent.operator,
-            resolver.evaluate(parent.left, env),
+            logical.operator,
+            resolver.evaluate(logical.left, env),
           );
           if (right === false) return;
           if (right === undefined)
             context = condition(
               context,
-              parent.left,
-              parent.operator === "??" ? "nullish" : parent.operator === "&&",
+              logical.left,
+              logical.operator === "??" ? "nullish" : logical.operator === "&&",
             );
         } else if (t.isBlockStatement(parent)) {
           const index = parent.body.findIndex(

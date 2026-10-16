@@ -90,6 +90,47 @@ it("substitutes numeric modules, named exports and captured wrapper arguments", 
   });
 });
 
+it.each([
+  [
+    "an ordinary value returned from an unresolved spread",
+    `function pick(x) { return x; }
+     function collect(...rest) { return rest[0]; }
+     inspect(collect("app:quit", pick(...extra)));`,
+    { kind: "literal", value: "app:quit" },
+  ],
+  [
+    "a returned unknown value in an ordinary rest array",
+    `function pick(x) { return x; }
+     function collect(...rest) { return rest; }
+     inspect(collect("app:quit", pick(...extra)));`,
+    {
+      kind: "array",
+      values: [{ kind: "literal", value: "app:quit" }, { kind: "unknown" }],
+    },
+  ],
+  [
+    "a parameter after an unresolved spread",
+    `function wrap(first, second, third) { return third; }
+     inspect(wrap("ui", ...extra, "app:quit"));`,
+    { kind: "unknown" },
+  ],
+  [
+    "a rest parameter covering an unresolved spread",
+    `function wrap(first, ...rest) { return rest; }
+     inspect(wrap("ui", ...extra, "app:quit"));`,
+    { kind: "unknown" },
+  ],
+  [
+    "a parameter after an expanded rest array",
+    `function inner(first, second) { return second; }
+     function outer(...args) { return inner(...args); }
+     inspect(outer("a", "b"));`,
+    { kind: "literal", value: "b" },
+  ],
+] as const)("binds call arguments for %s", (_case, source, expected) => {
+  expect(inspectOne(source)).toMatchObject(expected);
+});
+
 it("checks block lexical initializers against their containing function call", () => {
   const { parsed, resolver } = resolverFor(`run();
     function run() { { const value = require("electron"); inspect(value); } }`);
@@ -495,6 +536,75 @@ it.each([
   ],
 ] as const)("resolves object properties when %s", (_case, source, expected) => {
   expect(inspectOne(source)).toEqual(expected);
+});
+
+it.each([
+  [
+    "a plain assignment yields its right operand",
+    `let channel = "app:"; inspect(channel = "ping");`,
+    { kind: "literal", value: "ping" },
+  ],
+  [
+    "an arithmetic assignment is unknown",
+    `let channel = "app:"; inspect(channel += "ping");`,
+    { kind: "unknown", reason: "compound assignment" },
+  ],
+] as const)(
+  "evaluates an assignment expression where %s",
+  (_case, source, expected) => {
+    expect(inspectOne(source)).toEqual(expected);
+  },
+);
+
+it.each(["||=", "&&=", "??="])(
+  "unions an unknown left operand with the right literal for %s",
+  (operator) => {
+    const variants = symbolicVariants(
+      inspectOne(`let channel = "app:"; inspect(channel ${operator} "ping");`),
+    );
+    expect(variants.some((variant) => variant.kind === "unknown")).toBe(true);
+    expect(variants).toContainEqual(
+      expect.objectContaining({ kind: "literal", value: "ping" }),
+    );
+  },
+);
+
+it.each([
+  ["||=", "kept"],
+  ["??=", "kept"],
+  ["&&=", ""],
+])("short-circuits %s with a known object property", (operator, left) => {
+  expect(
+    inspectOne(
+      `inspect(({value: ${JSON.stringify(left)}}).value ${operator} "ping");`,
+    ),
+  ).toEqual({ kind: "literal", value: left });
+});
+
+it("does not read a compound export write as its right operand", () => {
+  const exportWriteFixture = (write: string) => `(() => {
+    const modules = {
+      5(module, exports) { exports.channel = "app:"; ${write} },
+      9(module, exports, load) { const helper = load(5); inspect(helper.channel); }
+    };
+    function load(id) { const m = {exports:{}}; modules[id](m,m.exports,load); return m.exports; }
+    load(9);
+  })();`;
+  expect(inspectOne(exportWriteFixture(`exports.channel = "ping";`))).toEqual({
+    kind: "literal",
+    value: "ping",
+  });
+  expect(inspectOne(exportWriteFixture(`exports.channel += "ping";`))).toEqual({
+    kind: "unknown",
+    reason: "compound assignment",
+  });
+  const variants = symbolicVariants(
+    inspectOne(exportWriteFixture(`exports.channel ||= "ping";`)),
+  );
+  expect(variants.some((variant) => variant.kind === "unknown")).toBe(true);
+  expect(variants).toContainEqual(
+    expect.objectContaining({ kind: "literal", value: "ping" }),
+  );
 });
 
 it("propagates branch guards through object properties and function calls", () => {
