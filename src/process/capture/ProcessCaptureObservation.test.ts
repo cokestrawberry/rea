@@ -201,7 +201,7 @@ it("marks redacted scripted input as an interaction unknown", () => {
   expect(result.residual_unknowns).toContainEqual({
     scope: "interaction",
     reason:
-      "Sensitive scripted input values are redacted from process capture Evidence.",
+      "Contiguous literal sensitive scripted input values are redacted. Rendered frames containing a sensitive value are withheld; output after redaction flush is counted but not retained.",
   });
 });
 
@@ -251,7 +251,7 @@ it("reports withheld terminal output instead of a budget omission", () => {
 
   expect(result.truncated).toBe(true);
   expect(result.limitations).toContainEqual(
-    expect.stringContaining("were withheld"),
+    expect.stringContaining("Raw PTY output was withheld"),
   );
   expect(result.limitations).not.toContainEqual(
     expect.stringContaining("exceeded output_bytes"),
