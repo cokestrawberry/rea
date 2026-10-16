@@ -19,6 +19,7 @@ import {
 import {
   addElectronAstEdge,
   addElectronInferenceEdge,
+  comparePoint,
   electronFindingSourceNode,
   electronObservationIdentity,
   electronRangeContains,
@@ -334,29 +335,20 @@ const containingHandler = (
   validation: ElectronSenderValidationFinding,
 ): ElectronIpcRecord | undefined =>
   records
-    .filter(
-      (record) =>
-        record.file.path === file.path &&
-        record.finding.handler_location !== null &&
-        electronRangeContains(
-          record.finding.handler_location,
-          validation.location,
-        ),
-    )
-    .sort(
-      (left, right) =>
-        rangeMagnitude(left.finding.handler_location) -
-        rangeMagnitude(right.finding.handler_location),
-    )[0];
-
-const rangeMagnitude = (
-  range: ElectronIpcRecord["finding"]["handler_location"],
-): number =>
-  range === null
-    ? Number.MAX_SAFE_INTEGER
-    : (range.end.line - range.start.line) * 1_000_000 +
-      range.end.column -
-      range.start.column;
+    .flatMap((record) => {
+      const range = record.finding.handler_location;
+      return record.file.path === file.path &&
+        range !== null &&
+        electronRangeContains(range, validation.location)
+        ? [{ record, range }]
+        : [];
+    })
+    .sort((left, right) => {
+      const startOrder = comparePoint(right.range.start, left.range.start);
+      return startOrder !== 0
+        ? startOrder
+        : comparePoint(left.range.end, right.range.end);
+    })[0]?.record;
 
 const coverageFor = (
   context: JavaScriptArtifactGraphContext,

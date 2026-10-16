@@ -141,6 +141,26 @@ describe("static Electron application analysis", () => {
     });
   });
 
+  it("attaches sender validation to the innermost handler on a line wider than one million columns", async () => {
+    const root = await wideLineHandlerFixtureDirectory();
+
+    const result = await reconstructJavaScriptArtifact({ input_path: root });
+    const graph = parseJavaScriptApplicationGraph(result.graph);
+    const validatedChannels = graph.nodes.flatMap(({ kind, observations }) =>
+      kind === "ipc-handler" &&
+      observations.some(
+        ({ properties }) =>
+          properties.fact_kind === "sender-validation-candidate",
+      )
+        ? observations.flatMap(({ properties }) =>
+            properties.side === "main" ? [properties.channel] : [],
+          )
+        : [],
+    );
+
+    expect(validatedChannels).toEqual(["rea:inner"]);
+  });
+
   it("returns a tagged cancellation without executing application code", async () => {
     const root = await fixtureDirectory();
     const controller = new AbortController();
@@ -591,6 +611,27 @@ const { ipcRenderer } = require("electron");
 ipcRenderer.invoke("rea:read");
 ipcRenderer.send("rea:write", "value");
 `,
+    ),
+  ]);
+  return root;
+};
+
+const wideLineHandlerFixtureDirectory = async (): Promise<string> => {
+  const root = await createTestTempDirectory("rea-electron-wide-line-");
+  await Promise.all([
+    writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ name: "rea-electron-wide-line", main: "main.cjs" }),
+    ),
+    // The outer handler starts past column 1,000,000 and ends on the next line.
+    writeFile(
+      join(root, "main.cjs"),
+      [
+        'const { ipcMain } = require("electron");',
+        `${" ".repeat(1_100_000)}ipcMain.handle("rea:outer", async () => { ipcMain.on("rea:inner", (event) => event.senderFrame.url === "file://app/index.html");`,
+        "});",
+        "",
+      ].join("\n"),
     ),
   ]);
   return root;
