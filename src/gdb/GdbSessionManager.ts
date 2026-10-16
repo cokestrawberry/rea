@@ -962,10 +962,7 @@ export class GdbSessionManager {
               return err(await this.#stopAfterProtocolFailure(session, cause));
             if (cause instanceof GdbCommandProcessExitError) {
               const processExit = cause as GdbCommandProcessExitError;
-              const result: GdbCommandResult = {
-                ...processExit.partial,
-                command,
-              };
+              const result = processExit.partial;
               const evidence = createEvidence(
                 undefined,
                 { id: "gnu.gdb", name: "GNU GDB", version: null },
@@ -1424,7 +1421,7 @@ export class GdbSessionManager {
       const records = [...pending.lines];
       pending.reject(
         new GdbProtocolFailureError(message, {
-          command: pending.command,
+          command: pending.evidenceCommand,
           mi: "",
           records,
           console: records.filter((line) => line.startsWith("~")).join("\n"),
@@ -1611,7 +1608,7 @@ export class GdbSessionManager {
       clearTimeout(pending.timer);
       pending.reject(
         new GdbCommandProcessExitError({
-          command: pending.command,
+          command: pending.evidenceCommand,
           mi: "",
           records: [...pending.lines],
           console: pending.lines

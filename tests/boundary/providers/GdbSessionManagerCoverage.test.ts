@@ -3069,7 +3069,9 @@ it("preserves the protocol failure when an incomplete stop adds uncertainty", as
     });
     expect(failed.error.partialObservation).toMatchObject({
       predicate_type: "rea.debugger.console-observation",
+      parameters: { command: "will-fail" },
       raw_result: {
+        command: "will-fail",
         records: ['~"protocol output before failure"'],
         completion_status: "unknown",
       },
