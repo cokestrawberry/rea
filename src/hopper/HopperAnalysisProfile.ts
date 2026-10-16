@@ -56,7 +56,7 @@ export const resolveHopperAnalysisProfile = async (
   let preparedImage: HopperMachOImage | undefined;
   if (
     target.kind === "executable" &&
-    machoContainer === "fat64" &&
+    (machoContainer === "fat64" || machoContainer === "fat32") &&
     options.loaderArgsOverride.length === 0
   ) {
     const resolved = await resolveHopperMachOImage(target, options.signal);

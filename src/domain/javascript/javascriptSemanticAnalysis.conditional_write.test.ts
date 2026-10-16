@@ -6,6 +6,8 @@ const bindingValue = (source: string, name: string) =>
     (binding) => binding.name === name,
   )?.value;
 
+const valueStatus = (source: string) => bindingValue(source, "value")?.status;
+
 describe("JavaScript semantic analysis: conditionally skipped writes", () => {
   it("does not promote a skipped assignment through a later read", () => {
     const ir = analyzeJavaScriptSemantics(
@@ -69,5 +71,80 @@ describe("JavaScript semantic analysis: conditionally skipped writes", () => {
       status: "literal",
       value: 1,
     });
+  });
+
+  it("tracks computed keys skipped by an optional chain before them", () => {
+    for (const access of [
+      "foo?.bar[value = 1]",
+      "foo?.bar.baz[value = 1]",
+      "foo?.[key][value = 1]",
+    ])
+      expect(valueStatus(`let value; ${access};`)).toBe("unknown");
+    expect(bindingValue("let value; (foo?.bar)[value = 1];", "value")).toEqual({
+      status: "literal",
+      value: 1,
+    });
+  });
+
+  it("tracks right operands skipped by logical assignment", () => {
+    for (const operator of ["||=", "&&=", "??="])
+      expect(valueStatus(`let value; flag ${operator} (value = 1);`)).toBe(
+        "unknown",
+      );
+    expect(bindingValue("let value; flag += (value = 1);", "value")).toEqual({
+      status: "literal",
+      value: 1,
+    });
+  });
+
+  it("tracks defaults skipped by destructuring", () => {
+    expect(valueStatus("let value; const {a = (value = 1)} = obj;")).toBe(
+      "unknown",
+    );
+  });
+
+  it("tracks writes skipped by a jump out of a labeled block", () => {
+    expect(
+      valueStatus("let value; done: { if (flag) break done; value = 1; }"),
+    ).toBe("unknown");
+    expect(bindingValue("let value; done: { value = 1; }", "value")).toEqual({
+      status: "literal",
+      value: 1,
+    });
+  });
+
+  it("tracks writes skipped by a jump out of a do-while body", () => {
+    for (const jump of ["break", "continue"])
+      expect(
+        valueStatus(
+          `let value; do { if (flag) ${jump}; value = 1; } while (again);`,
+        ),
+      ).toBe("unknown");
+    expect(
+      bindingValue(
+        "let value; do { for (;;) { break; } value = 1; } while (again);",
+        "value",
+      ),
+    ).toEqual({ status: "literal", value: 1 });
+  });
+
+  it("preserves initializers and discriminants before labeled loop and switch bodies", () => {
+    for (const source of [
+      "let value; outer: for (value = 1; again;) { if (flag) continue outer; }",
+      "outer: for (var value = 1; again;) { if (flag) continue outer; }",
+      "let value; outer: switch (value = 1) { default: break outer; }",
+    ])
+      expect(bindingValue(source, "value")).toEqual({
+        status: "literal",
+        value: 1,
+      });
+  });
+
+  it("tracks a do-while test write skipped by a break in its body", () => {
+    expect(
+      valueStatus(
+        "let value; do { if (flag) break; } while ((value = 1) && false);",
+      ),
+    ).toBe("unknown");
   });
 });

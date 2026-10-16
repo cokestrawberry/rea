@@ -38,6 +38,7 @@ process.stdin.on("data", (chunk) => {
     const line = input.slice(0, boundary);
     input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match && line.includes("list-thread-groups"))
       process.stdout.write(match[1] + "^done,groups=[]\\n");
     else if (match) process.stdout.write(match[1] + "^done\\n");
@@ -52,7 +53,9 @@ process.stdin.on("data", (chunk) => {
     });
     managers.push(manager);
 
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     expect(manager.status(started.value.session_id)?.state).toBe("ready");
@@ -86,6 +89,7 @@ process.stdin.on("data", (chunk) => {
     const line = input.slice(0, boundary);
     input = input.slice(boundary + 1);
     const match = /^(\\d+)(.*)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match) process.stdout.write(match[1] + (match[2].includes("-gdb-set auto-load off") ? "^error,msg=\\"rejected\\"\\n" : "^done\\n"));
   }
 });
@@ -98,7 +102,9 @@ process.stdin.on("data", (chunk) => {
     });
     managers.push(manager);
 
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
 
     expect(started.ok).toBe(false);
     if (!started.ok)

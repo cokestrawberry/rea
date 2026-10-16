@@ -35,7 +35,9 @@ import { ipcDescriptor } from "./electronStaticAnalysisIpc.js";
 import {
   symbolicDefiniteExit,
   symbolicLogicalRight,
+  symbolicLogicalOperands,
 } from "./javascriptSymbolicControlFlow.js";
+import { compareUnicodeCodePoints } from "../unicodeCodePointOrder.js";
 
 const callLabel = (node: t.Node): string =>
   t.isSequenceExpression(node)
@@ -106,6 +108,32 @@ export const collectElectronWrappedCallPaths = (
         },
       ],
     };
+  };
+  const sequentialFallthrough = (
+    statement: t.Statement,
+    env: SymbolicEnvironment,
+    context: PathContext,
+  ): { readonly continues: boolean; readonly context: PathContext } => {
+    if (symbolicDefiniteExit(statement)) return { continues: false, context };
+    if (!t.isIfStatement(statement)) return { continues: true, context };
+    const truth = symbolicTruth(resolver.evaluate(statement.test, env));
+    if (truth !== undefined)
+      return symbolicDefiniteExit(
+        truth ? statement.consequent : statement.alternate,
+      )
+        ? { continues: false, context }
+        : { continues: true, context };
+    if (symbolicDefiniteExit(statement.consequent))
+      return {
+        continues: true,
+        context: condition(context, statement.test, false),
+      };
+    if (symbolicDefiniteExit(statement.alternate))
+      return {
+        continues: true,
+        context: condition(context, statement.test),
+      };
+    return { continues: true, context };
   };
   const metadataContext = (
     context: PathContext,
@@ -410,7 +438,12 @@ export const collectElectronWrappedCallPaths = (
       api_key_expression: null,
       api_status: "dynamic" as const,
       resolution_basis: "wrapper-substitution" as const,
-      members,
+      // The direct syntax pass recursively retains literal dotted paths. The
+      // symbolic resolver enumerates only immediate object keys, so its
+      // replacement must not erase paths already established at this call.
+      members: [
+        ...new Set([...(existing?.value.members ?? []), ...members]),
+      ].sort(compareUnicodeCodePoints),
       unknown_members: resolver.unknownMembers(object),
       module_key: null,
       location,
@@ -528,21 +561,9 @@ export const collectElectronWrappedCallPaths = (
       let next = context;
       for (const statement of node.body) {
         walk(statement, env, next);
-        if (symbolicDefiniteExit(statement)) break;
-        if (t.isIfStatement(statement)) {
-          const truth = symbolicTruth(resolver.evaluate(statement.test, env));
-          if (truth !== undefined) {
-            if (
-              symbolicDefiniteExit(
-                truth ? statement.consequent : statement.alternate,
-              )
-            )
-              break;
-          } else if (symbolicDefiniteExit(statement.consequent))
-            next = condition(next, statement.test, false);
-          else if (symbolicDefiniteExit(statement.alternate))
-            next = condition(next, statement.test);
-        }
+        const fallthrough = sequentialFallthrough(statement, env, next);
+        if (!fallthrough.continues) break;
+        next = fallthrough.context;
       }
       return;
     }
@@ -562,21 +583,22 @@ export const collectElectronWrappedCallPaths = (
         );
       return;
     }
-    if (t.isLogicalExpression(node)) {
-      walk(node.left, env, context);
+    const logical = symbolicLogicalOperands(node);
+    if (logical !== undefined) {
+      walk(logical.left, env, context);
       const right = symbolicLogicalRight(
-        node.operator,
-        resolver.evaluate(node.left, env),
+        logical.operator,
+        resolver.evaluate(logical.left, env),
       );
       if (right === false) return;
       walk(
-        node.right,
+        logical.right,
         env,
         right === undefined
           ? condition(
               context,
-              node.left,
-              node.operator === "??" ? "nullish" : node.operator === "&&",
+              logical.left,
+              logical.operator === "??" ? "nullish" : logical.operator === "&&",
             )
           : context,
       );
@@ -610,6 +632,7 @@ export const collectElectronWrappedCallPaths = (
         parent && !t.isFunction(parent);
         child = parent, parent = state.parentsByNode.get(child)
       ) {
+        const logical = symbolicLogicalOperands(parent);
         if (t.isIfStatement(parent) || t.isConditionalExpression(parent)) {
           if (child === parent.test) continue;
           const truth = symbolicTruth(resolver.evaluate(parent.test, env));
@@ -617,29 +640,33 @@ export const collectElectronWrappedCallPaths = (
           if (truth !== undefined && truth !== positive) return;
           if (truth === undefined)
             context = condition(context, parent.test, positive);
-        } else if (t.isLogicalExpression(parent) && child === parent.right) {
+        } else if (logical !== undefined && child === logical.right) {
           const right = symbolicLogicalRight(
-            parent.operator,
-            resolver.evaluate(parent.left, env),
+            logical.operator,
+            resolver.evaluate(logical.left, env),
           );
           if (right === false) return;
           if (right === undefined)
             context = condition(
               context,
-              parent.left,
-              parent.operator === "??" ? "nullish" : parent.operator === "&&",
+              logical.left,
+              logical.operator === "??" ? "nullish" : logical.operator === "&&",
             );
         } else if (t.isBlockStatement(parent)) {
           const index = parent.body.findIndex(
             (statement) => statement === child,
           );
-          if (
-            index >= 0 &&
-            parent.body
-              .slice(0, index)
-              .some((statement) => symbolicDefiniteExit(statement))
-          )
-            return;
+          if (index >= 0) {
+            for (const statement of parent.body.slice(0, index)) {
+              const fallthrough = sequentialFallthrough(
+                statement,
+                env,
+                context,
+              );
+              if (!fallthrough.continues) return;
+              context = fallthrough.context;
+            }
+          }
         }
       }
       call(node, env, context, isolatedSeed?.callee);
