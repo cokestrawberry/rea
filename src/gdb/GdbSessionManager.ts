@@ -278,6 +278,7 @@ interface GdbSession {
   bufferTail: Buffer | undefined;
   bufferTailBytes: number;
   bufferBytes: number;
+  discardingOversizedLine: boolean;
   invalidUtf8Observed: boolean;
   promptTail: string;
   ready: boolean;
@@ -547,6 +548,7 @@ export class GdbSessionManager {
       bufferTail: undefined,
       bufferTailBytes: 0,
       bufferBytes: 0,
+      discardingOversizedLine: false,
       invalidUtf8Observed: false,
       promptTail: "",
       ready: false,
@@ -1270,6 +1272,12 @@ export class GdbSessionManager {
     let offset = 0;
     while (offset < data.byteLength) {
       const newline = data.indexOf(0x0a, offset);
+      if (session.discardingOversizedLine) {
+        if (newline < 0) break;
+        session.discardingOversizedLine = false;
+        offset = newline + 1;
+        continue;
+      }
       const piece = data.subarray(
         offset,
         newline < 0 ? data.byteLength : newline,
@@ -1278,11 +1286,22 @@ export class GdbSessionManager {
       const lineBytes =
         session.bufferBytes - (newline >= 0 && piece.at(-1) === 0x0d ? 1 : 0);
       if (lineBytes > MAX_MI_LINE_BYTES) {
+        session.recentRecordsTruncated = true;
+        for (const pending of session.pending.values())
+          pending.outputTruncated = true;
         this.#failProtocol(
           session,
           "GDB emitted an MI line exceeding the 16 MiB protocol limit.",
         );
-        return;
+        this.#resetLineBuffer(session);
+        // Resume at the next record boundary so later tagged responses, such
+        // as the one close() waits for, are still parsed.
+        if (newline < 0) {
+          session.discardingOversizedLine = true;
+          break;
+        }
+        offset = newline + 1;
+        continue;
       }
       this.#appendLineBytes(session, piece);
       if (newline < 0) break;
@@ -1299,10 +1318,7 @@ export class GdbSessionManager {
         record.at(-1) === 0x0d ? record.subarray(0, -1) : record;
       const invalidUtf8 = !isUtf8(withoutCarriageReturn);
       const line = withoutCarriageReturn.toString("utf8");
-      session.bufferChunks.length = 0;
-      session.bufferTail = undefined;
-      session.bufferTailBytes = 0;
-      session.bufferBytes = 0;
+      this.#resetLineBuffer(session);
       if (invalidUtf8) session.invalidUtf8Observed = true;
       if (line.length > 0) lines.push({ value: line, invalidUtf8 });
       offset = newline + 1;
@@ -1387,6 +1403,13 @@ export class GdbSessionManager {
         completion_status: "complete",
       });
     }
+  }
+
+  #resetLineBuffer(session: GdbSession): void {
+    session.bufferChunks.length = 0;
+    session.bufferTail = undefined;
+    session.bufferTailBytes = 0;
+    session.bufferBytes = 0;
   }
 
   #appendLineBytes(session: GdbSession, piece: Buffer): void {

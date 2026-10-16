@@ -2963,6 +2963,59 @@ process.stdin.on('data', (chunk) => {
     expect(failed.error._tag).toBe("AnalysisCapabilityUnavailableError");
 });
 
+it.each([
+  ["within one chunk", ["x".repeat(16 * 1024 * 1024 + 1) + '\n~"after"\n']],
+  ["across chunks", ["x".repeat(16 * 1024 * 1024 + 1), '\n~"after"\n']],
+] as const)(
+  "resumes MI parsing after an oversized line %s",
+  async (_label, chunks) => {
+    let stopCalls = 0;
+    const fake = createFakeSpawner((child, token, command) => {
+      if (command.includes("big-output")) {
+        for (const chunk of chunks) child.stdout.write(chunk);
+        return;
+      }
+      child.stdout.write(
+        command.includes("list-thread-groups")
+          ? `${token}^done,groups=[]\n`
+          : `${token}^done\n`,
+      );
+    });
+    const manager = managerWithFakeSpawner(fake.spawnProcess, {
+      stopProcess: async (session, name) => {
+        stopCalls += 1;
+        if (stopCalls === 1)
+          return {
+            status: "incomplete",
+            reason: "simulated protocol stop uncertainty",
+          };
+        return stopOwnedDebuggerProcess(session, name);
+      },
+    });
+    const started = await expectGdbSessionStarted(manager);
+
+    const failed = await manager.execute(
+      started.value.session_id,
+      "big-output",
+    );
+    expect(failed).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisCapabilityUnavailableError" },
+    });
+
+    expect(manager.status(started.value.session_id)).toMatchObject({
+      recent_mi_records_truncated: true,
+      recent_mi_records: expect.arrayContaining(['~"after"']),
+    });
+    const closed = await manager.close(started.value.session_id);
+
+    expect(closed).toMatchObject({
+      ok: true,
+      value: { target_state: "none_observed" },
+    });
+  },
+);
+
 it("caps the number of MI records retained for a single command", async () => {
   const recordCount = 16_385;
   const manager = await managerFor(`
