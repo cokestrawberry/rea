@@ -11,6 +11,27 @@ import { parseProcessScenario } from "../../domain/process/processScenario.js";
 import type { BoundedProcessTextNormalization } from "./ProcessNormalization.js";
 
 const require = createRequire(import.meta.url);
+it("withholds a rendered value reconstructed across control sequences", async () => {
+  const renderer = new TerminalRenderer({
+    columns: 20,
+    rows: 4,
+    scrollback: 10,
+    maxBytes: 100_000,
+    normalize: boundedNormalize((value) => value),
+    sensitiveValues: ["swordfish"],
+  });
+  try {
+    renderer.write("sword\u001b[31mfish", 3);
+    expect(await renderer.frames()).toEqual([]);
+    expect(renderer.retention()).toMatchObject({
+      observed_frames: 1,
+      retained_frames: 0,
+    });
+    expect(renderer.truncated()).toBe(true);
+  } finally {
+    await renderer.dispose();
+  }
+});
 const { Terminal } =
   require("@xterm/headless") as typeof import("@xterm/headless");
 const { SerializeAddon } =

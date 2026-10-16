@@ -1,4 +1,7 @@
 import type { JsonValue } from "./jsonValue.js";
+import type { RustBinary } from "./rust/rustBinary.js";
+import type { GoBinary } from "./go/goBinary.js";
+import type { PeResources } from "./native/peResources.js";
 
 /** Stable tags exposed by safe analysis-error projections. */
 const ANALYSIS_ERROR_TAGS = [
@@ -151,6 +154,9 @@ import type {
 
 /** Provider-neutral evidence collected before a typed analysis failure. */
 export type AnalysisPartialObservation =
+  | RustBinary
+  | GoBinary
+  | PeResources
   | PartialProcessCaptureObservation
   | NativeCallPartialObservation
   | FileOffsetPartialObservation

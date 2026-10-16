@@ -2,11 +2,11 @@ import { z } from "incur";
 import { createWebModuleTraceService } from "../composition/webModules.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
 import { logCliCommand } from "../cliLogging.js";
-import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { webModuleTraceInputSchema } from "../domain/webModuleTrace.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
+import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
 
 const importMapInputSchema =
   webModuleTraceInputSchema.shape.import_map.unwrap();
@@ -41,13 +41,11 @@ export const registerWebModuleCommands = (
         .describe("HTTP(S) import-map base URL; requires --import-map-path"),
     }),
     run: ({ args, options }) =>
-      withCommandCancellation(async (signal) => {
-        try {
-          return await logCliCommand(
-            logger,
-            CLI_COMMANDS.traceWebModuleImports,
-            async () => {
-              const result = await service.trace(
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, CLI_COMMANDS.traceWebModuleImports, () =>
+          finishAnalysisCommand(
+            () =>
+              service.trace(
                 {
                   manifest_path: args.manifestPath,
                   script_index: args.scriptIndex,
@@ -65,15 +63,12 @@ export const registerWebModuleCommands = (
                       }),
                 },
                 { signal },
-              );
-              return result.ok
-                ? result.value
-                : projectAnalysisError(result.error);
-            },
-          );
-        } finally {
-          await service.close();
-        }
-      }),
+              ),
+            service,
+            "rea-web-module-trace",
+            "trace_web_module_imports",
+          ),
+        ),
+      ),
   });
 };

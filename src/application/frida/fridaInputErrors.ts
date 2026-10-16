@@ -1,4 +1,15 @@
-import { AnalysisInputError } from "../../domain/analysisErrorCore.js";
+import {
+  AnalysisInputError,
+  AnalysisCapabilityUnavailableError,
+} from "../../domain/analysisErrorCore.js";
+
+/** An owned Frida session whose target or transport has detached. */
+export class FridaSessionDetachedError extends AnalysisCapabilityUnavailableError {
+  constructor(operation: string, sessionId: string) {
+    const reason = `Frida session ${sessionId} is detached; close it with close_frida_session.`;
+    super("frida", operation, reason, { userMessage: reason });
+  }
+}
 
 /** A session ID that names no open Frida session owned by this process. */
 export const unknownFridaSession = (

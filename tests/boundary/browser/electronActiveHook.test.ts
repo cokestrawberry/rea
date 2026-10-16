@@ -28,6 +28,8 @@ class WebContents extends EventEmitter {
   constructor() {
     super();
     this.id = 12;
+    this.session = sessionModule.fromPartition("web-contents");
+    app.emit("web-contents-created", {}, this);
   }
   loadFile() { return Promise.resolve(); }
   loadURL() { return Promise.resolve(); }
@@ -57,13 +59,22 @@ const utilityProcess = {
 const shell = { openExternal: () => Promise.resolve(), openPath: () => Promise.resolve() };
 const createSession = () => {
   const value = new EventEmitter();
-  value.setPermissionRequestHandler = () => undefined;
-  value.setPermissionCheckHandler = () => undefined;
+  value.setPermissionRequestHandler = (handler) => { value.permissionRequestHandler = handler; };
+  value.setPermissionCheckHandler = (handler) => { value.permissionCheckHandler = handler; };
   value.setCertificateVerifyProc = () => undefined;
+  app.emit("session-created", value);
   return value;
 };
 const session = createSession();
-const customSession = createSession();
+const sessions = new Map();
+const sessionModule = {
+  defaultSession: session,
+  fromPartition(partition) {
+    if (!sessions.has(partition)) sessions.set(partition, createSession());
+    return sessions.get(partition);
+  },
+  fromPath(path) { return this.fromPartition(path); },
+};
 const contextBridge = {
   exposeInMainWorld: () => undefined,
   exposeInIsolatedWorld: () => undefined,
@@ -74,10 +85,7 @@ module.exports = {
   contextBridge,
   ipcMain,
   ipcRenderer,
-  session: {
-    defaultSession: session,
-    fromPartition: () => customSession,
-  },
+  session: sessionModule,
   shell,
   utilityProcess,
 };
@@ -194,6 +202,14 @@ it("retains active hook evidence within its event-retention budget", async () =>
   expect(result.popup_decision).toEqual({ action: "deny" });
   expect(
     snapshot.events.filter(
+      (event) => event.event === "loadURL" && event.phase === "attempted",
+    ),
+  ).toHaveLength(1);
+  expect(
+    snapshot.events.find((event) => event.event === "render-process-gone"),
+  ).toMatchObject({ sender: "window:3" });
+  expect(
+    snapshot.events.filter(
       (event) => event.kind === "download" && event.phase === "blocked",
     ),
   ).toHaveLength(2);
@@ -257,6 +273,149 @@ process.stdout.write(JSON.stringify(snapshot) + "\\n");
     role: "browser",
     count: 1,
   });
+});
+
+it("records each child process launch once, including synchronous variants", async () => {
+  const root = await createTestTempDirectory("rea-electron-hook-child-");
+  temporary.push(root);
+  await writeFile(join(root, "electron.js"), electronModuleSource);
+  const script = join(root, "child-processes.cjs");
+  await writeFile(
+    script,
+    `const { exec, execFileSync, execSync, spawnSync } = require("node:child_process");
+const node = process.execPath;
+exec(JSON.stringify(node) + ' -e ""', () => {
+  execSync(JSON.stringify(node) + ' -e ""');
+  spawnSync(node, ["-e", ""]);
+  execFileSync(node, ["-e", ""]);
+  try { execFileSync(node, ["-e", "process.exit(3)"]); } catch {}
+  const missing = spawnSync(require("node:path").join(process.cwd(), "missing-executable"));
+  const timedOut = spawnSync(node, ["-e", "setInterval(() => {}, 1000)"], { timeout: 50 });
+  if (missing.error?.code !== "ENOENT" || timedOut.error?.code !== "ETIMEDOUT") throw new Error("spawnSync errors were not preserved");
+  process.stdout.write(JSON.stringify(globalThis.__reaElectronActiveSnapshot()) + "\\n");
+});
+`,
+  );
+  const hook = join(process.cwd(), "scripts/electron-active-hook.cjs");
+  const execution = await runNode(hook, script, root, root);
+  expect(execution.code, execution.stderr).toBe(0);
+  const snapshot = JSON.parse(
+    execution.stdout.trim().split("\n").at(-1) ?? "null",
+  ) as {
+    readonly events: readonly {
+      readonly kind: string;
+      readonly event: string;
+      readonly phase: string;
+      readonly error: boolean;
+    }[];
+  };
+  const launches = (phase: string) =>
+    snapshot.events
+      .filter(
+        (event) =>
+          event.kind === "process-lifecycle" &&
+          event.event.startsWith("child.") &&
+          event.phase === phase,
+      )
+      .map(({ event }) => event);
+  const launched = [
+    "child.exec",
+    "child.execSync",
+    "child.spawnSync",
+    "child.execFileSync",
+    "child.execFileSync",
+    "child.spawnSync",
+    "child.spawnSync",
+  ];
+  expect(launches("attempted")).toEqual(launched);
+  expect(launches("completed")).toEqual(launched.slice(0, 4));
+  expect(launches("failed")).toEqual([
+    "child.execFileSync",
+    "child.spawnSync",
+    "child.spawnSync",
+  ]);
+  expect(
+    snapshot.events.filter(
+      ({ event, phase }) => event === "child.spawnSync" && phase === "failed",
+    ),
+  ).toMatchObject([{ error: true }, { error: true }]);
+});
+
+it("denies permissions on sessions whose application never installs a handler", async () => {
+  const root = await createTestTempDirectory("rea-electron-hook-permissions-");
+  temporary.push(root);
+  await writeFile(join(root, "electron.js"), electronModuleSource);
+  const script = join(root, "permissions.cjs");
+  await writeFile(
+    script,
+    `const { EventEmitter } = require("node:events");
+const electron = require("electron");
+const createNativeSession = () => {
+  const value = new EventEmitter();
+  value.setPermissionRequestHandler = (handler) => { value.permissionRequestHandler = handler; };
+  value.setPermissionCheckHandler = (handler) => { value.permissionCheckHandler = handler; };
+  return value;
+};
+const decide = (session) => {
+  let requested = null;
+  session.permissionRequestHandler?.({ id: 5 }, "media", (granted) => { requested = granted; });
+  return { requested, checked: session.permissionCheckHandler?.({ id: 5 }, "media") ?? null };
+};
+const createdSession = createNativeSession();
+electron.app.emit("session-created", createdSession);
+const contentsSession = createNativeSession();
+electron.app.emit("session-created", contentsSession);
+const webContents = new EventEmitter();
+webContents.id = 21;
+webContents.session = contentsSession;
+webContents.setWindowOpenHandler = (handler) => { webContents.windowOpenHandler = handler; };
+electron.app.emit("web-contents-created", {}, webContents);
+const decisions = {
+  default_session: decide(electron.session.defaultSession),
+  partition_session: decide(electron.session.fromPartition("persist:custom")),
+  path_session: decide(electron.session.fromPath("/custom/path")),
+  created_session: decide(createdSession),
+  web_contents_session: decide(contentsSession),
+};
+const popup = webContents.windowOpenHandler({ url: "https://popup.invalid" });
+const snapshot = globalThis.__reaElectronActiveSnapshot();
+process.stdout.write(JSON.stringify({ decisions, popup, snapshot }) + "\\n");
+`,
+  );
+  const hook = join(process.cwd(), "scripts/electron-active-hook.cjs");
+  const execution = await runNode(hook, script, root, root);
+  expect(execution.code, execution.stderr).toBe(0);
+  const result = JSON.parse(
+    execution.stdout.trim().split("\n").at(-1) ?? "null",
+  ) as {
+    readonly decisions: Record<
+      string,
+      { readonly requested: boolean | null; readonly checked: boolean | null }
+    >;
+    readonly popup: { readonly action: string };
+    readonly snapshot: {
+      readonly events: readonly Record<string, unknown>[];
+    };
+  };
+
+  const denied = { requested: false, checked: false };
+  expect(result.decisions).toEqual({
+    default_session: denied,
+    partition_session: denied,
+    path_session: denied,
+    created_session: denied,
+    web_contents_session: denied,
+  });
+  expect(result.popup).toEqual({ action: "deny" });
+  for (const event of ["permission-request", "permission-check"])
+    expect(
+      result.snapshot.events.filter(
+        (recorded) =>
+          recorded.event === event &&
+          recorded.kind === "permission" &&
+          recorded.phase === "blocked",
+      ),
+    ).toHaveLength(5);
 });
 
 it("preserves fatal process termination after recording uncaught exceptions", async () => {

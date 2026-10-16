@@ -30,10 +30,7 @@ import {
 } from "../domain/sqlite/sqliteDatabase.js";
 import { isAbsolute } from "node:path";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
-import {
-  OwnedCommandFailure,
-  ownedCommandResources,
-} from "../process/OwnedCommand.js";
+import { ownedCommandResources } from "../process/OwnedCommand.js";
 import type {
   ProviderProcessStopResult,
   ProviderProcessSupervisor,
@@ -288,13 +285,6 @@ export class SqliteDatabaseProvider implements SqliteDatabasePort {
         );
       result = ok(createSqliteObservation(validated.data, input.path));
     } catch (cause: unknown) {
-      // A failure rethrown after retainCleanup carries no owner of its own;
-      // keep the retained worker instead of discarding it.
-      if (
-        cause instanceof OwnedCommandFailure &&
-        cause.cleanupOwner !== undefined
-      )
-        processOwner = cause.cleanupOwner;
       const failure = sqliteDatabaseFailure(
         cause,
         input.path,
