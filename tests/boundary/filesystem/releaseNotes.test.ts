@@ -148,7 +148,7 @@ beforeAll(async () => {
 import { readFileSync } from 'node:fs';
 if (!process.argv.includes('graphql')) {
   const pr = JSON.parse(readFileSync(new URL('../.git/release-pr.json', import.meta.url), 'utf8'));
-  process.stdout.write(JSON.stringify(process.argv.includes('--slurp') ? [[pr]] : pr));
+  process.stdout.write(JSON.stringify([[pr]]));
   process.exit(0);
 }
 let input = ''; for await (const chunk of process.stdin) input += chunk;
@@ -404,7 +404,7 @@ it("binds publication to complete recorded history and the reviewed base", async
   });
 });
 
-it("checks the live merged PR and exact Git snapshot before either publication route", async () => {
+it("checks the live merged PR and exact Git snapshot before publication", async () => {
   const f = await fixture();
   await mkdir(join(f.directory, "docs/releases"), { recursive: true });
   await writeFile(
@@ -436,21 +436,18 @@ it("checks the live merged PR and exact Git snapshot before either publication r
   };
   const prFile = join(f.directory, ".git/release-pr.json");
   await writeFile(prFile, JSON.stringify(pr));
-  for (const selector of [[], ["--pr", "1399"]]) {
-    const result = await f.invoke([
-      "publication",
-      "--repository",
-      "fixture/rea",
-      "--source",
-      source,
-      ...selector,
-    ]);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      status: "verified",
-      version: "6.4.0",
-      commits: 3,
-    });
-  }
+  const result = await f.invoke([
+    "publication",
+    "--repository",
+    "fixture/rea",
+    "--source",
+    source,
+  ]);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    status: "verified",
+    version: "6.4.0",
+    commits: 3,
+  });
   // Worktree edits cannot substitute for the reviewed source.
   await writeFile(join(f.directory, "CHANGELOG.md"), "unreviewed working text");
   await f.invoke([

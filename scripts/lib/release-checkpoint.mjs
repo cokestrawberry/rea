@@ -239,24 +239,14 @@ export async function inspectReleaseCheckpoint(git, options) {
     .object({
       phase: z.enum(["prepare", "publish"]),
       stage: z.enum(["source", "candidate"]),
-      releaseBranch: z.union([
-        z.literal("main"),
-        z.string().startsWith("release/"),
-      ]),
+      releaseBranch: z.string().startsWith("release/"),
       sourceSha: shaSchema,
       candidateSha: shaSchema.optional(),
     })
     .parse(options);
-  if (releaseBranch === "main" && (phase !== "publish" || stage !== "source")) {
-    throw new Error(
-      "Main publication validates its reviewed merged source SHA.",
-    );
-  }
   const expectedVersion = releaseVersion(
-    releaseBranch === "main"
-      ? (await readJson(git, sourceSha, "package.json", versionSchema)).version
-      : releaseBranch.slice("release/".length),
-    releaseBranch === "main" ? "reviewed main release" : "release/VERSION",
+    releaseBranch.slice("release/".length),
+    "release/VERSION",
   );
   if (phase === "publish" && stage === "candidate") {
     throw new Error(

@@ -90,10 +90,10 @@ Before changing the live release PR, have authorization for that PR update.
 Local preparation and validation can proceed independently.
 
 1. Add `rea:release-notes-finalized` to the selected open release PR **before**
-   editing its branch/body. Main proposal pushes respect this label. This is
-   our workflow guard, not Release Please's `autorelease: snooze` mechanism.
-   A proposal already running must finish before editing. Do not dispatch
-   manual preparation over finalized notes.
+   editing its branch/body. Publication then requires the saved contribution
+   inventory. This is our workflow guard, not Release Please's
+   `autorelease: snooze` mechanism. Do not dispatch preparation over
+   finalized notes.
 2. On that release branch, save the reviewed inventory as
    `docs/releases/VERSION.contributions.json`. This is durable public release
    provenance, not a temporary planning file. Do not add credentials or local
@@ -120,15 +120,13 @@ Local preparation and validation can proceed independently.
    the complete diff and wait for current CI. Publication checks the body
    again before release creation. Avoid further body edits while publishing.
 
-The finalization label freezes bot refreshes, not main. New product changes
+The finalization label does not freeze the base branch. New product changes
 after the inventory target require refreshing the notes before publication.
 The workflow checks target ancestry and allows only release metadata paths
 after that target. It also requires the inventory target to equal the reviewed
 merge's first parent, so intervening main commits require a fresh inventory.
 Review diffs within the allowed release metadata paths too: the path guard does
 not prove that package dependency/script edits are version-only changes.
-To resume automatic proposals, remove the finalization label and let the bot
-regenerate; expect editorial changes to be replaced.
 
 Existing releases without a contribution inventory retain their current
 publication path. Never retag or republish a package to correct release prose.

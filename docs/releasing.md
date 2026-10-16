@@ -1,8 +1,9 @@
 # Releasing REA
 
-Pushes to main automatically open or refresh a Release Please PR with the next
-version and changelog. Review its migration notes and wait for its current CI
-checks to pass. Merging that PR into main starts publication automatically.
+Releases start only from a manual dispatch of the Release workflow. Main
+pushes and merged PRs do not open release PRs or publish packages. Each release
+uses a frozen `release/VERSION` checkpoint with explicit prepare and publish
+phases, described below.
 
 The Release workflow validates the merged release metadata and ancestry before
 creating a tag. npm and MCP Registry publication use the exact reviewed merge
@@ -33,43 +34,9 @@ targets stable `latest`, as the public update command does.
 The required reverse-tools lane runs fresh coverage and both mutation
 preflights. Complete mutation sweeps run separately on a schedule or manual
 dispatch and do not block publication; see [the testing guide](testing.md).
-Ordinary main pushes and closed, unmerged PRs cannot publish packages. Check
-both publication jobs and the published-package canary; a merged PR or GitHub
-tag alone does not establish that publication finished. Retry failed jobs in
-the original run after a partial publication.
-
-### Recover an already published npm release
-
-Rerunning a job uses its original workflow and source revision. When a verifier
-or publishing workflow needs a code fix, land that fix on main first, then use
-the separate recovery workflow instead of repeating release creation:
-
-```bash
-gh workflow run release-recovery.yml --ref main \
-  -f version=6.5.0 -f release_run_id=38564502044
-```
-
-Select the existing version and its original automatic Release run. Recovery
-requires that run's successful exact-source CI gate and npm publish step. It
-uses the existing release tag, original qualified tarball and verifier runtime;
-expired or missing artifacts stop recovery. The archive's source, version,
-original run/attempt and Node version must match, and its SHA-512 must equal
-npm's published integrity. The corrected controller runs the public CLI, MCP
-catalog/session and previous-version update canary against that released runtime.
-The installation completes before MCP's handshake begins; dependency lifecycle
-scripts are disabled as in the installed-package verifier.
-
-Only after verification succeeds does recovery publish the released
-`server.json` to MCP Registry. It does not create tags or GitHub releases,
-publish npm bytes, or change dist-tags. Both publication paths share the same
-MCP publisher: a paginated registry lookup preserves an identical active
-version, refuses conflicting/inactive metadata, and fails on lookup errors.
-The original failed run remains a historical failure; the recovery run records
-the new verification and remaining registry publication. Manual frozen-branch
-releases are outside this recovery path.
-
-For a release that needs an independently frozen application checkpoint, use
-the optional manual path below. It retains explicit prepare and publish phases.
+Check both publication jobs and the published-package canary; a merged PR or
+GitHub tag alone does not establish that publication finished. Retry failed
+jobs in the original run after a partial publication.
 
 ## Contributor-aware release notes
 
@@ -95,11 +62,9 @@ and checkpoint checks. The contribution inventory is a reviewed snapshot, not
 a signed attestation; the offline checker verifies local range coverage and
 credit consistency, not GitHub's authorship independently.
 
-Before editing the live PR, add `rea:release-notes-finalized` to prevent ordinary
-main-push proposals from overwriting the editorial notes. Wait for any already
-running proposal to finish. The guard applies to main-push automation; do not
-run manual checkpoint preparation over finalized notes. Remove the label to
-resume bot regeneration. The label does not freeze the base branch: new base
+Before editing the live PR, add `rea:release-notes-finalized`; publication then
+requires the saved contribution inventory. Do not run checkpoint preparation
+over finalized notes. The label does not freeze the base branch: new base
 commits require re-inventorying and re-reviewing the notes.
 
 Update both the release branch's `CHANGELOG.md` and the PR body, preserving
@@ -109,8 +74,7 @@ merge's first parent, and compares the freshly fetched PR body to the changelog.
 It rejects changes outside the release metadata paths and stale credit records
 before any tag or publication. Review the diffs within allowed metadata paths
 as well, especially package dependencies and scripts. Existing candidates without inventories retain their current
-checks. Merging still starts publication; a notes edit does not authorize a
-merge or release by itself.
+checks. A notes edit does not authorize a merge or release by itself.
 
 The checker supports inline Release Please PR bodies up to GitHub's 65,536
 character limit, including the surrounding header/footer. Overflow-link PR
@@ -123,12 +87,6 @@ Use the next minor version proposed by Release Please, including releases with
 breaking changes. Record the full source SHA and create `release/VERSION` at
 that commit. The selected version and Release Please's proposed version must
 agree before publication.
-
-When choosing the manual path, leave the automatic main release PR unmerged.
-Select the application commit from main, create the frozen branch, and prepare
-its own release PR using the steps below. Merging the main release PR starts
-automatic publication instead. Close the superseded main PR after the manual
-release has published and its metadata has been synchronized back to main.
 
 `release/VERSION` also sets the expected version for the workflow. Use an exact
 SemVer such as `release/6.1.0` or `release/6.1.0-rc.1`, without build metadata.
@@ -306,10 +264,6 @@ git fetch origin main --tags
 git merge-base --is-ancestor rea-agents-5.0.0 origin/main
 ```
 
-Close the superseded main proposal before merging the synchronization PR.
-That merge's main push opens a proposal for the following release using the
-updated baseline. Future releases can use the automatic main PR or repeat the
-manual checkpoint procedure; automatic proposals do not move frozen branches.
 Preparation generates and validates the catalog, portable conformance
 projections, and packaged skill from the candidate checkout without committing
 them. The checkpoint validator binds tracked version authority to the source
