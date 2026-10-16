@@ -1381,7 +1381,7 @@ describe("Codex configuration comments", () => {
       await configureClientConfiguration(
         { name: "codex", configPath, format: "toml" },
         {},
-        ["/isolated prefix/bin/rea", "mcp"],
+        [PRODUCT_IDENTITY.cliBinary, "mcp"],
       ),
     ).toMatchObject({ status: "configured" });
     const configured = await readFile(configPath, "utf8");
@@ -1551,7 +1551,7 @@ describe("client configuration filesystem removal", () => {
       cursor,
       JSON.stringify({
         mcpServers: {
-          rea: { command: "/isolated prefix/bin/rea", args: ["mcp"] },
+          rea: { command: PRODUCT_IDENTITY.cliBinary, args: ["mcp"] },
           other: { command: "other" },
         },
       }),
