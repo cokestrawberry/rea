@@ -948,7 +948,9 @@ describe("legacy pointer fixup streams", () => {
       target: 0x99n,
     });
   });
+});
 
+describe("legacy bind addend operands", () => {
   it.each([
     {
       name: "keeps a ten-byte SLEB addend",

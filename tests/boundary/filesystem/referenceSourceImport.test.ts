@@ -234,7 +234,9 @@ describe("reference source symlink import", () => {
       expect.objectContaining({ path: "target.js", kind: "file" }),
     );
   });
+});
 
+describe("reference source root .gitignore policy", () => {
   it.each(["external-file", "dangling-link", "directory"] as const)(
     "does not read a non-regular root .gitignore (%s) and records a limitation",
     async (shape) => {

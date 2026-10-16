@@ -125,7 +125,9 @@ describe("readReferenceSource entries", () => {
       message: "Symbolic link changed while its target was read",
     });
   });
+});
 
+describe("readReferenceSource scale and byte retention", () => {
   it("reads a source file larger than the former 16 MiB ceiling", async () => {
     const root = await createTestTempDirectory("rea-reference-large-");
     const size = 16 * 1024 * 1024 + 1;
