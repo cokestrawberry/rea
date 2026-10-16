@@ -100,6 +100,21 @@ const serializeRequest = (
   return requestBytes as AuthenticatedRequestBytes;
 };
 
+// Number() would round integers beyond 2^53; keep their exact decimal digits.
+const parseBridgeNumber = (
+  _key: string,
+  value: unknown,
+  context?: { source?: string },
+): unknown => {
+  const literal = context?.source;
+  return typeof value === "number" &&
+    literal !== undefined &&
+    /^-?\d+$/.test(literal) &&
+    !Number.isSafeInteger(value)
+    ? literal
+    : value;
+};
+
 class CutterBridgeResponseFrames {
   #parts: Buffer[] = [];
   #page = Buffer.allocUnsafe(FRAME_PAGE_BYTES);
@@ -867,7 +882,10 @@ export class CutterBridgeClient {
                 !timingSafeEqual(expected, Buffer.from(envelope.proof, "hex"))
               )
                 throw new Error("response proof failed");
-              const response: unknown = JSON.parse(envelope.response);
+              const response: unknown = JSON.parse(
+                envelope.response,
+                parseBridgeNumber,
+              );
               connection.end();
               finish(() => resolve(response));
               return false;

@@ -17,7 +17,6 @@ import {
   parseRizinProcStartTime,
   RizinDebugSessionManager,
 } from "../../../src/rizin/RizinDebugSessionManager.js";
-import { evidenceSchema } from "../../../src/domain/evidence.js";
 import { TOOL_EFFECTS } from "../../../src/contracts/toolEffects.js";
 import { spawnOwnedProviderProcess } from "../../../src/process/ProviderProcess.js";
 import {
@@ -367,7 +366,7 @@ it.skipIf(process.platform !== "linux")(
 );
 
 it.skipIf(process.platform !== "linux")(
-  "retains a verified active inferior after public command output truncation makes protocol state ambiguous",
+  "detaches a verified active inferior after resynchronizing a protocol made ambiguous by public command output truncation",
   async () => {
     const sessionId = await startFakeInferiorSession({
       overflowPxCommand: true,
@@ -400,18 +399,19 @@ it.skipIf(process.platform !== "linux")(
         if (watchdog !== undefined) clearTimeout(watchdog);
       });
 
-    expect(completed.ok).toBe(false);
-    if (completed.ok) return;
-    expect(completed.error.cleanupIncomplete).toBe(true);
-    expect(completed.error.cleanupResources).toEqual([sessionId]);
-    const evidence = evidenceSchema.parse(completed.error.partialObservation);
-    expect(evidence.normalized_result).toMatchObject({
+    expect(completed.ok, completed.ok ? "" : completed.error.message).toBe(
+      true,
+    );
+    if (!completed.ok) return;
+    expect(completed.value.result).toMatchObject({
       output_truncated: true,
+      completion_status: "unknown",
     });
-    expect(evidence.limitations.join(" ")).toContain(
-      "The owned debugger session remains retained because cleanup could not be verified",
+    expect(completed.value.evidence.limitations.join(" ")).toContain(
+      "The owned debugger session was stopped.",
     );
     expect(manager!.status(sessionId)?.state).toBe("closed");
+    expect(() => process.kill(inferiorPid!, 0)).not.toThrow();
   },
 );
 

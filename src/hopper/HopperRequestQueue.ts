@@ -14,6 +14,7 @@ import {
 } from "../domain/hopperErrors.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { err, type Result } from "../domain/result.js";
+import { AnalysisResourceConstraintError } from "../domain/analysisErrorCore.js";
 
 export type HopperRequestResult = Result<JsonValue, HopperError>;
 
@@ -201,6 +202,36 @@ export class HopperRequestQueue {
         err(withRequestContext(error, entry)),
         "waiting",
       );
+  }
+
+  /** Reject only the active reply as oversized; queued requests lost their connection. */
+  failActiveResponse(error: AnalysisResourceConstraintError): void {
+    const active = this.#active;
+    this.#active = undefined;
+    if (active !== undefined) {
+      this.#releaseWire(active);
+      this.#settleCaller(
+        active,
+        err(
+          new AnalysisResourceConstraintError(
+            active.method,
+            error.resource,
+            error.reason,
+            error.reportedLimits,
+            {
+              cause: error,
+              ...(error.remediationAction === undefined
+                ? {}
+                : { remediationAction: error.remediationAction }),
+            },
+          ),
+        ),
+        "waiting",
+      );
+    }
+    this.failAll(
+      new HopperProcessError(null, { providerState: "unreachable" }),
+    );
   }
 
   /** Snapshot the one request still occupying Hopper's serial Python thread. */

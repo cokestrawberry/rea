@@ -1,6 +1,10 @@
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/server";
+import { execFile } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { expect, it as test, vi } from "vitest";
+import { readWithoutFifoWriter } from "../../fixtures/fifoInput.js";
 import {
   firmwareFixture,
   assertFirmwareCleanup,
@@ -164,6 +168,41 @@ it("extracts a selected interval with verified file identity and parent-byte lin
     expect.arrayContaining(["--process-num", "1", "--randomness-depth", "0"]),
   );
   expect(fixture.launches[1]?.args).not.toContain("--no-sandbox");
+  await assertFirmwareCleanup(fixture.launches);
+});
+
+it("reports the NFC path that the output tree wrote for an NFD producer name", async () => {
+  const fixture = await firmwareFixture("nfd-name");
+  const result = await fixture.service.execute("extract_firmware", {
+    path: fixture.path,
+    output_directory: fixture.output,
+    range: { offset: 2, length: 4 },
+  });
+  if (!result.ok) throw result.error;
+  const normalized = firmwareResultSchemas.extract_firmware.parse(
+    result.value.normalized_result,
+  );
+  const written = join(fixture.output, "rootfs", "caf\u00e9");
+  expect(normalized.files[0]?.relative_path).toBe("rootfs/cafe\u0301");
+  expect(normalized.files[0]?.path).toBe(written);
+  expect(await readFile(written, "utf8")).toBe("firmware=true\n");
+  await assertFirmwareCleanup(fixture.launches);
+});
+
+it("reports both producer spellings before publishing colliding Unicode paths", async () => {
+  const fixture = await firmwareFixture("nfc-collision");
+  const result = await fixture.service.execute("extract_firmware", {
+    path: fixture.path,
+    output_directory: fixture.output,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("Expected a normalized path collision");
+  expect(result.error).toMatchObject({ _tag: "AnalysisOutputError" });
+  expect(result.error.message).toContain("rootfs/cafe\u0301");
+  expect(result.error.message).toContain("rootfs/caf\u00e9");
+  await expect(access(fixture.output)).rejects.toMatchObject({
+    code: "ENOENT",
+  });
   await assertFirmwareCleanup(fixture.launches);
 });
 
@@ -695,6 +734,27 @@ it("preserves existing output and rejects invalid intervals before invoking extr
     error: { _tag: "AnalysisInputError" },
   });
   expect(fixture.launches).toHaveLength(previous);
+  await assertFirmwareCleanup(fixture.launches);
+});
+
+it("rejects a FIFO input as invalid without waiting for a writer or launching a tool", async () => {
+  const fixture = await firmwareFixture();
+  const fifoPath = join(fixture.root, "input.fifo");
+  await promisify(execFile)("mkfifo", [fifoPath]);
+  const outcome = await readWithoutFifoWriter(fifoPath, () =>
+    fixture.service.execute("inspect_firmware_regions", { path: fifoPath }),
+  );
+  expect(outcome.state).toBe("completed");
+  if (outcome.state !== "completed")
+    throw new Error("Firmware snapshot waited for a FIFO writer");
+  expect(outcome.result).toMatchObject({
+    ok: false,
+    error: {
+      _tag: "AnalysisInputError",
+      issues: [{ path: ["path"], reason: "invalid_value" }],
+    },
+  });
+  expect(fixture.launches).toHaveLength(0);
   await assertFirmwareCleanup(fixture.launches);
 });
 
