@@ -283,6 +283,41 @@ describe("residual unknown dependency histories", () => {
       1, 2,
     ]);
   });
+
+  it("repeats a linked record after the Unknown was updated and rejects a differing first revision", () => {
+    const store = ledger();
+    const output = evidence("linked-output");
+    const linkedInput = input("Is the linked output complete?");
+    const created = store.recordWithUnknown(
+      output,
+      linkedInput,
+      mutation("linked"),
+    );
+    if (!created.ok || created.value === null)
+      throw new Error("Expected the linked Unknown to be created");
+    expect(
+      store.updateUnknown(update(created.value), mutation("linked-update")).ok,
+    ).toBe(true);
+    const before = serializeEvidenceBundle(store.export());
+
+    expect(
+      store.recordWithUnknown(output, linkedInput, mutation("linked")),
+    ).toEqual({ ok: true, value: null });
+    expect(serializeEvidenceBundle(store.export())).toBe(before);
+    expect(store.listUnknowns()[0]?.revision).toBe(2);
+
+    expect(
+      store.recordWithUnknown(
+        output,
+        input("Is the linked output complete?", { severity: "low" }),
+        mutation("linked"),
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { _tag: "UnknownRegistryError", reason: "already-exists" },
+    });
+    expect(serializeEvidenceBundle(store.export())).toBe(before);
+  });
 });
 
 describe("residual unknown registry resolution and history", () => {

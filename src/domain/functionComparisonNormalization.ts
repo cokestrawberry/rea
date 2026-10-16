@@ -72,17 +72,28 @@ export const normalizeCfg = (
   return graph;
 };
 
+const referenceEndpoint = (
+  snapshot: FunctionSnapshot,
+  endpoint: FunctionSnapshot["dossier"]["incoming_references"][number]["source_procedure"],
+) =>
+  endpoint === null
+    ? null
+    : relativeAddress(endpoint.address, snapshot.dossier.procedure.address) ===
+        "0"
+      ? { self: true }
+      : endpoint.name;
+
 export const referenceProjection = (snapshot: FunctionSnapshot) =>
   sorted([
     ...snapshot.dossier.incoming_references.map((item) => ({
       direction: "in",
-      source: item.source_procedure?.name ?? null,
-      target: item.target_procedure?.name ?? null,
+      source: referenceEndpoint(snapshot, item.source_procedure),
+      target: referenceEndpoint(snapshot, item.target_procedure),
     })),
     ...snapshot.dossier.outgoing_references.map((item) => ({
       direction: "out",
-      source: item.source_procedure?.name ?? null,
-      target: item.target_procedure?.name ?? null,
+      source: referenceEndpoint(snapshot, item.source_procedure),
+      target: referenceEndpoint(snapshot, item.target_procedure),
     })),
   ]);
 
@@ -108,8 +119,8 @@ export const referenceKindProjection = (
         );
       return {
         direction,
-        source: edge.source_procedure?.name ?? null,
-        target: edge.target_procedure?.name ?? null,
+        source: referenceEndpoint(snapshot, edge.source_procedure),
+        target: referenceEndpoint(snapshot, edge.target_procedure),
         type: edge.kind.type,
         flow: edge.kind.flow,
         call: edge.kind.call,
@@ -249,7 +260,7 @@ const swiftLiteralSites = (snapshot: FunctionSnapshot) => {
   return { values, complete };
 };
 
-export const sorted = (values: readonly unknown[]): readonly unknown[] =>
+export const sorted = <T>(values: readonly T[]): readonly T[] =>
   values
     .map((value) => ({
       value,

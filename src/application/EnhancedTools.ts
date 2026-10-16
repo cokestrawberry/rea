@@ -259,6 +259,11 @@ export class EnhancedTools {
     addresses: readonly string[],
     signal?: AbortSignal,
   ): EnhancedResult {
+    const cancellations: AnalysisCancelledError[] = [];
+    const projectItemError = (error: AnalysisError) => {
+      if (error instanceof AnalysisCancelledError) cancellations.push(error);
+      return projectAnalysisError(error);
+    };
     const items = await Promise.all(
       addresses.map(async (address) => {
         const resolved = await resolveProcedureAddress(
@@ -267,10 +272,14 @@ export class EnhancedTools {
           signal,
         );
         const procedure = resolved.ok
-          ? await this.#batchProcedureIdentity(resolved.value, signal)
+          ? await this.#batchProcedureIdentity(
+              resolved.value,
+              projectItemError,
+              signal,
+            )
           : {
               status: "unknown" as const,
-              error: projectAnalysisError(resolved.error),
+              error: projectItemError(resolved.error),
             };
         const result = await this.#call(
           "procedure_pseudo_code",
@@ -283,7 +292,7 @@ export class EnhancedTools {
             address,
             procedure,
             status: "error" as const,
-            error: projectAnalysisError(result.error),
+            error: projectItemError(result.error),
           };
         if (typeof result.value !== "string" || result.value.length === 0)
           return {
@@ -305,6 +314,10 @@ export class EnhancedTools {
         };
       }),
     );
+    const [cancelled] = cancellations;
+    if (cancelled !== undefined) return err(cancelled);
+    if (isAborted(signal))
+      return err(new AnalysisCancelledError("batch_decompile"));
     const succeeded = items.filter(({ status }) => status === "ok").length;
     return ok({
       items,
@@ -314,7 +327,13 @@ export class EnhancedTools {
     });
   }
 
-  async #batchProcedureIdentity(address: string, signal?: AbortSignal) {
+  async #batchProcedureIdentity(
+    address: string,
+    projectItemError: (
+      error: AnalysisError,
+    ) => ReturnType<typeof projectAnalysisError>,
+    signal?: AbortSignal,
+  ) {
     const observed = await this.#call("address_name", { address }, signal);
     const named =
       observed.ok &&
@@ -326,7 +345,7 @@ export class EnhancedTools {
       ...(named
         ? {}
         : {
-            name_error: projectAnalysisError(
+            name_error: projectItemError(
               observed.ok
                 ? new AnalysisOutputError(
                     "address_name",
@@ -385,6 +404,7 @@ export class EnhancedTools {
         "provider",
       );
       if (!result.ok) {
+        if (result.error instanceof AnalysisCancelledError) return result;
         graph[level].push({
           address: current.address,
           status: "error",
@@ -443,6 +463,8 @@ export class EnhancedTools {
         }
       }
     }
+    if (isAborted(signal))
+      return err(new AnalysisCancelledError("get_call_graph"));
     return ok({
       graph,
       limitations: [...limitations].sort(compareUnicodeCodePoints),
