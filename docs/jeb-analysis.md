@@ -38,5 +38,6 @@ All four are read-only with respect to the target file; only `open_jeb_project` 
 - When `decompile_jeb_item` omits `unit_path`, the engine implicitly selects the project's first code unit; REA reports `unit_path: null` and a limitation instead of guessing the effective unit.
 - Engine refusals (`success: false` envelopes) are preserved as unsupported-target errors carrying the engine's own message, for example a nonexistent item address.
 - An unreachable endpoint is a provider-availability failure with recovery guidance; REA does not retry or spawn the engine.
+- After initialization and tool discovery succeed, a tool call that exceeds its 120-second deadline is a timeout, and an HTTP or JSON-RPC error response is an unreadable-result protocol failure. Errors during initialization or tool discovery are reported as provider-availability failures, including error responses from a reachable endpoint.
 
 Real-engine verification lives in the JEB lane described in [testing.md](testing.md); mock transport tests do not establish real-engine compatibility.

@@ -436,21 +436,30 @@ export const evaluateReconstructionPackageProofs = (
     const proofs = context.coverage.package_proofs.filter(
       (proof) => proof.kind === kind,
     );
+    // Proofs carry no timestamp, so a pass and a fail over the same
+    // artifact cannot be ordered and the fail must win.
+    const failed = proofs.filter(
+      ({ artifact_sha256s: digests, status }) =>
+        status === "fail" &&
+        requiredArtifactDigests.some((digest) => digests.includes(digest)),
+    );
     const passing = proofs.find(
       ({ artifact_sha256s: digests, status }) =>
         status === "pass" &&
         requiredArtifactDigests.every((digest) => digests.includes(digest)),
     );
-    if (passing !== undefined) {
+    if (passing !== undefined && failed.length === 0) {
       addEvidence(context, passing.evidence_ids);
       continue;
     }
-    if (proofs.some(({ status }) => status === "fail"))
+    if (failed.length > 0)
       addReason(
         context,
         "package-proof-failed",
         kind,
-        "Required package or integration proof failed.",
+        passing === undefined
+          ? "Required package or integration proof failed."
+          : "Required package or integration proof failed and conflicts with a passing proof for the required artifacts.",
       );
     else if (proofs.length > 0)
       addReason(

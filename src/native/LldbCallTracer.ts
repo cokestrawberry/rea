@@ -1,6 +1,6 @@
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import { randomUUID } from "node:crypto";
-import { open, readFile, writeFile } from "node:fs/promises";
+import { open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -891,11 +891,14 @@ const runLldb = async (
         }
         if (observation?.state === "readable")
           targetIdentity = observation.identity;
+        // The tracer reads the ack as soon as its name exists, so rename a complete file into place.
+        const stagedAckPath = `${options.identityAckPath}.staged`;
         await writeFile(
-          options.identityAckPath,
+          stagedAckPath,
           observation?.state === "readable" ? "readable" : "unavailable",
           { mode: 0o600 },
         );
+        await rename(stagedAckPath, options.identityAckPath);
         identityAckWritten = true;
       }
       const interruption = deadline.interruption;

@@ -668,7 +668,6 @@ export class RizinDebugSessionManager {
         throw new AnalysisCancelledError("rizin_debug_command");
       let cleanupFailure: string | undefined;
       if (captured.outputTruncated) {
-        // Stryker disable next-line BooleanLiteral -- `waitForCommandFrames` sets `protocolError` before reporting truncation; both detach wrappers therefore fail closed before a queued command can be awaited, so the held-tail flag cannot change this public path.
         const stopped = await this.#stopDebuggerOnly(session, true);
         if (stopped.status === "incomplete") cleanupFailure = stopped.reason;
       }
@@ -1087,7 +1086,7 @@ export class RizinDebugSessionManager {
   ): void {
     const historyFrame =
       frameBytes > MAX_RECENT_FRAME_BYTES || frame.truncated
-        ? `${frame.text.slice(0, MAX_RECENT_FRAME_BYTES)}[recent frame truncated]`
+        ? `${truncateUtf8(frame.text, MAX_RECENT_FRAME_BYTES)}[recent frame truncated]`
         : frame.text;
     if (frameBytes > MAX_RECENT_FRAME_BYTES || frame.truncated)
       session.historyTruncated = true;
@@ -1158,10 +1157,6 @@ export class RizinDebugSessionManager {
     | { readonly status: "no-inferior" }
     | { readonly status: "detached"; readonly outputSink: "durable" }
   > {
-    if (session.exited || session.protocolError !== undefined)
-      throw new Error(
-        "Rizin protocol state is ambiguous; inferior detach is unverified.",
-      );
     const previous = session.commandTail;
     let release!: () => void;
     session.commandTail = new Promise<void>((resolve) => (release = resolve));
@@ -1179,10 +1174,11 @@ export class RizinDebugSessionManager {
     | { readonly status: "no-inferior" }
     | { readonly status: "detached"; readonly outputSink: "durable" }
   > {
-    if (session.exited || session.protocolError !== undefined)
+    if (session.exited)
       throw new Error(
         "Rizin protocol state is ambiguous; inferior detach is unverified.",
       );
+    if (session.protocolError !== undefined) await this.#resynchronize(session);
     {
       session.inferiorInventoryComplete = false;
       session.knownInferiorIdentities.clear();
@@ -1259,11 +1255,7 @@ export class RizinDebugSessionManager {
     }
   }
 
-  async #runInternalCommand(
-    session: RizinDebugSession,
-    command: string,
-  ): Promise<string> {
-    const marker = `__REA_CLEANUP_COMPLETE_${randomUUID().replaceAll("-", "")}__`;
+  #writeCleanupInput(session: RizinDebugSession, input: string): void {
     const stdin = session.launched.process.stdin;
     if (
       stdin === null ||
@@ -1272,7 +1264,30 @@ export class RizinDebugSessionManager {
       !stdin.writable
     )
       throw new Error("Rizin stdin is unavailable during cleanup.");
-    stdin.write(`${command}\n!echo ${marker}\n`);
+    stdin.write(input);
+  }
+
+  // Rizin handles stdin in order, so a fresh marker proves every earlier
+  // frame, including stale command markers, has been drained and discarded.
+  async #resynchronize(session: RizinDebugSession): Promise<void> {
+    const marker = `__REA_RESYNC_COMPLETE_${randomUUID().replaceAll("-", "")}__`;
+    this.#writeCleanupInput(session, `!echo ${marker}\n`);
+    const deadline = Date.now() + CLEANUP_COMMAND_TIMEOUT_MS;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (isRizinCommandDeadlineExpired(remaining))
+        throw new RizinFrameTimeoutError();
+      if ((await waitForFrame(session, remaining)).text.includes(marker))
+        return;
+    }
+  }
+
+  async #runInternalCommand(
+    session: RizinDebugSession,
+    command: string,
+  ): Promise<string> {
+    const marker = `__REA_CLEANUP_COMPLETE_${randomUUID().replaceAll("-", "")}__`;
+    this.#writeCleanupInput(session, `${command}\n!echo ${marker}\n`);
     const captured = await waitForCommandFrames(
       session,
       marker,
@@ -1521,8 +1536,11 @@ const waitForCommandFrames = async (
 
 const truncateUtf8 = (value: string, maximumBytes: number): string => {
   if (maximumBytes <= 0) return "";
-  const bytes = Buffer.from(value, "utf8").subarray(0, maximumBytes);
-  return bytes.toString("utf8").replace(/\uFFFD$/u, "");
+  const bytes = Buffer.from(value, "utf8");
+  let end = Math.min(maximumBytes, bytes.length);
+  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80)
+    end -= 1;
+  return bytes.subarray(0, end).toString("utf8");
 };
 
 const waitForFrame = (

@@ -212,10 +212,10 @@ const damage: ReadonlyArray<
   ],
 ];
 describe("independent DOS MZ import verification", () => {
-  it("verifies every initialized source byte while retaining overlay and BSS scope", () => {
+  it("verifies every initialized source byte while retaining overlay and BSS scope", async () => {
     const fixture = fixtureDosLoadImage();
-    const result = attestGhidraDosLoadImage(
-      fixture.bytes,
+    const result = await attestGhidraDosLoadImage(
+      fixture.reader,
       fixture.sha256,
       fixture.observation,
     );
@@ -240,11 +240,11 @@ describe("independent DOS MZ import verification", () => {
 
   it.each(damage)(
     "rejects a %s despite a matching executable digest",
-    (_name, mutate) => {
+    async (_name, mutate) => {
       const fixture = fixtureDosLoadImage();
       mutate(fixture.observation);
-      const result = attestGhidraDosLoadImage(
-        fixture.bytes,
+      const result = await attestGhidraDosLoadImage(
+        fixture.reader,
         fixture.sha256,
         fixture.observation,
       );
@@ -258,13 +258,13 @@ describe("independent DOS MZ import verification", () => {
     },
   );
 
-  it("retains source range coordinates when memory evidence disagrees", () => {
+  it("retains source range coordinates when memory evidence disagrees", async () => {
     const fixture = fixtureDosLoadImage();
     const mapping = fixture.observation.mappings[1];
     if (mapping === undefined) throw new Error("Missing module mapping");
     mapping.sha256 = "f".repeat(64);
-    const result = attestGhidraDosLoadImage(
-      fixture.bytes,
+    const result = await attestGhidraDosLoadImage(
+      fixture.reader,
       fixture.sha256,
       fixture.observation,
     );
@@ -280,32 +280,32 @@ describe("independent DOS MZ import verification", () => {
     ]);
   });
 
-  it("is independent of mapping iteration order", () => {
+  it("is independent of mapping iteration order", async () => {
     const fixture = fixtureDosLoadImage();
     fixture.observation.mappings.reverse();
-    expect(
+    await expect(
       attestGhidraDosLoadImage(
-        fixture.bytes,
+        fixture.reader,
         fixture.sha256,
         fixture.observation,
       ),
-    ).toMatchObject({ ok: true, value: { status: "verified" } });
+    ).resolves.toMatchObject({ ok: true, value: { status: "verified" } });
   });
 
-  it("accepts a different segment alias while preserving the observed coordinates and raw table values", () => {
+  it("accepts a different segment alias while preserving the observed coordinates and raw table values", async () => {
     const fixture = fixtureDosLoadImage();
     const relocation = fixture.observation.relocations[0];
     if (relocation === undefined)
       throw new Error("Missing source-owned relocation");
     relocation.segment = 0x0fff;
     relocation.offset = 25;
-    expect(
+    await expect(
       attestGhidraDosLoadImage(
-        fixture.bytes,
+        fixture.reader,
         fixture.sha256,
         fixture.observation,
       ),
-    ).toMatchObject({
+    ).resolves.toMatchObject({
       ok: true,
       value: {
         status: "verified",
@@ -318,20 +318,26 @@ describe("independent DOS MZ import verification", () => {
     });
   });
 
-  it("rejects a changed snapshot and malformed MZ rather than trusting provider hashes", () => {
+  it("rejects a changed snapshot and malformed MZ rather than trusting provider hashes", async () => {
     const fixture = fixtureDosLoadImage();
     fixture.bytes[0] = 0;
-    expect(
+    await expect(
       attestGhidraDosLoadImage(
-        fixture.bytes,
+        fixture.reader,
         fixture.sha256,
         fixture.observation,
       ),
-    ).toMatchObject({ ok: false, error: expect.stringContaining("digest") });
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("digest"),
+    });
     const digest = createHash("sha256").update(fixture.bytes).digest("hex");
-    expect(
-      attestGhidraDosLoadImage(fixture.bytes, digest, fixture.observation),
-    ).toMatchObject({ ok: false, error: expect.stringContaining("MZ header") });
+    await expect(
+      attestGhidraDosLoadImage(fixture.reader, digest, fixture.observation),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("MZ header"),
+    });
   });
 
   it("rejects malformed producer digests and unsafe source coordinates", () => {
@@ -351,5 +357,55 @@ describe("independent DOS MZ import verification", () => {
         mappings: [{ ...mapping, file_offset: Number.MAX_SAFE_INTEGER + 1 }],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("DOS MZ import verification with appended overlay", () => {
+  const overlay = Buffer.alloc(1024 * 1024, 0xa5);
+  const loadImageBytes = 32 + 128;
+
+  it("holds only the load image in memory while hashing the complete file", async () => {
+    const fixture = fixtureDosLoadImage(overlay);
+    const result = await attestGhidraDosLoadImage(
+      fixture.reader,
+      fixture.sha256,
+      fixture.observation,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      value: { status: "verified", overlay_bytes: overlay.length },
+    });
+    expect(
+      Math.max(...fixture.reads.map(([, end]) => end)),
+    ).toBeLessThanOrEqual(loadImageBytes);
+  });
+
+  it("rejects an overlay byte that differs from the admitted digest", async () => {
+    const fixture = fixtureDosLoadImage(overlay);
+    fixture.bytes[fixture.bytes.length - 1] = 0;
+    await expect(
+      attestGhidraDosLoadImage(
+        fixture.reader,
+        fixture.sha256,
+        fixture.observation,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("digest"),
+    });
+  });
+
+  it("reads a new-header signature that lies in the overlay", async () => {
+    const fixture = fixtureDosLoadImage();
+    fixture.bytes.writeUInt32LE(170, 60);
+    fixture.bytes.write("PE\0\0", 170, "latin1");
+    const digest = createHash("sha256").update(fixture.bytes).digest("hex");
+    await expect(
+      attestGhidraDosLoadImage(fixture.reader, digest, fixture.observation),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Windows new header"),
+    });
+    expect(fixture.reads).toContainEqual([170, 174]);
   });
 });

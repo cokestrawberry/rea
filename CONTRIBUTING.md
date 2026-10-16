@@ -43,9 +43,9 @@ passage or missing guidance and explain the correction or confusion.
 Feature and design proposals can start with a problem and desired outcome.
 Examples, prior art, and measurements help when available; ideas without them
 are welcome. Maintainers can investigate reports and help resolve open questions.
-Human ownership and readiness declarations apply to PRs as described below.
+Human ownership applies to PRs as described below.
 
-## Pull request ownership and readiness
+## Pull request ownership
 
 AI-assisted contributions are welcome. Every PR must have a human owner who
 takes responsibility for the complete change, including code, tests,
@@ -66,35 +66,16 @@ Before requesting maintainer review, the human owner must:
   conclusions and proposed checks accurately; never report an unrun check as
   passing. Follow the [verification requirements](#development-feedback-and-pr-verification)
   for required checks and real-provider coverage.
-- Complete the **Author readiness** declaration in the PR template, explicitly
-  stating that the PR is ready for initial review.
 
 Keep the PR description concise and current. Explain the problem, observable
 outcome, approach, and useful evidence; link long logs or put them in optional
 details. Address actionable automated review findings and explain disagreements.
 Human ownership and review remain required when CI or an automated reviewer
-reports success. Readiness requests maintainer review; it does not grant scope
-approval or permission to merge.
+reports success.
 
 Draft PRs may request early feedback with open questions and incomplete checks.
-Leave the readiness declaration unchecked until the human owner has completed
-it. The declaration records initial readiness; later pushes do not invalidate
-it or require another human sign-off. Keep the PR description and affected
-validation current as work changes. AI agents must leave human declarations to
-the human owner and must not attest to a human review on their behalf.
-
-The `PR readiness` check reports pending for drafts and requires a named human
-owner and all three template declarations for non-drafts. It checks that the
-declaration is filled, not whether the code or evidence is correct. Existing PRs
-can copy the **Author readiness** section from the current template.
-Open PRs must have distinct head commits because GitHub shares commit statuses.
-
-Maintainers enable merge enforcement after the workflow is merged: run
-`gh workflow run pr-readiness.yml -f pull_request_number=NUMBER` for existing
-open PRs, then add `PR readiness` from GitHub Actions to the branch's required
-status checks alongside its existing checks. Deploy the workflow to each
-protected target branch before requiring it there. The workflow reads PR
-metadata using trusted default-branch code and writes only a commit status.
+Keep the PR description and affected validation current as work changes. AI
+agents must not attest to a human review on the owner's behalf.
 
 Maintainers may return a PR to the author or close it when the problem is
 unsupported, validation is missing, or the owner cannot explain the change.

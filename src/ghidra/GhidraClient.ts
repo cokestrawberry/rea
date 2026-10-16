@@ -47,6 +47,10 @@ import {
   parseGhidraSessionInfo,
 } from "./GhidraSessionValues.js";
 import { createGhidraTargetSnapshot } from "./GhidraTargetSnapshot.js";
+import {
+  createGhidraSnapshotReader,
+  type GhidraSnapshotReader,
+} from "./GhidraSnapshotReader.js";
 import { readFileHandleChunks } from "../filesystem/readFileHandleChunks.js";
 import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
 import {
@@ -114,6 +118,9 @@ export class GhidraClient {
   #lastDiagnostics: Readonly<Record<string, JsonValue>> = {};
   #startupController: AbortController | undefined;
   #startPromise: Promise<GhidraStartResult> | undefined;
+  #joinStartup:
+    | ((signal: AbortSignal | undefined) => Promise<GhidraStartResult>)
+    | undefined;
   #ready = false;
   #closePromise: Promise<void> | undefined;
   readonly #failure = bindGhidraSessionFailure(
@@ -133,6 +140,7 @@ export class GhidraClient {
   });
   readonly #responseBuffer = new GhidraResponseBuffer({
     onLine: (line) => this.#responseRouter.route(line),
+    onOverflow: (error) => this.#abortProtocol(error.message, error),
   });
   readonly #onSocketData = (chunk: string): void =>
     this.#responseBuffer.push(chunk);
@@ -177,36 +185,44 @@ export class GhidraClient {
     if (progress !== undefined)
       return this.#reportStartupWait(this.start(signal), signal, progress);
     if (this.#closePromise !== undefined)
-      return this.#closePromise.then(
-        () => this.start(signal),
-        (cause: unknown) =>
-          err(
-            new GhidraSessionError(
-              "process",
-              "Ghidra cleanup remains incomplete",
-              this.#diagnostics(),
-              { cause, cleanupFailure: this.#cleanupError(cause) },
+      return this.#waitForStartup(
+        this.#closePromise.then(
+          () =>
+            signal?.aborted
+              ? err(this.#failure("cancelled", "Ghidra startup was cancelled"))
+              : this.start(signal),
+          (cause: unknown) =>
+            err(
+              new GhidraSessionError(
+                "process",
+                "Ghidra cleanup remains incomplete",
+                this.#diagnostics(),
+                { cause, cleanupFailure: this.#cleanupError(cause) },
+              ),
             ),
-          ),
+        ),
+        signal,
       );
     if (this.#startPromise !== undefined) {
       if (this.#startupController?.signal.aborted && !signal?.aborted)
-        return this.#startPromise.then((result) =>
-          result.ok || result.error.cleanupFailure !== undefined
-            ? result
-            : this.start(signal),
+        return this.#waitForStartup(this.#startPromise, signal).then(
+          (result) =>
+            signal?.aborted ||
+            result.ok ||
+            result.error.cleanupFailure !== undefined
+              ? result
+              : this.start(signal),
         );
-      return this.#startPromise;
+      return this.#joinStartup?.(signal) ?? this.#startPromise;
     }
     const controller = new AbortController();
-    const onAbort = (): void => controller.abort(signal?.reason);
-    if (signal?.aborted === true) onAbort();
-    else signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted === true) controller.abort(signal.reason);
     const started = this.#start(controller.signal);
+    const join = this.#shareStartup(controller, started);
     this.#startupController = controller;
     this.#startPromise = started;
+    this.#joinStartup = join;
     const reset = (): void => {
-      signal?.removeEventListener("abort", onAbort);
       if (this.#startPromise === started) {
         this.#startPromise = undefined;
         if (this.#startupController === controller)
@@ -215,7 +231,7 @@ export class GhidraClient {
     };
     void started.then(
       (result) => {
-        signal?.removeEventListener("abort", onAbort);
+        this.#joinStartup = undefined;
         if (result.ok) this.#ready = true;
         else reset();
       },
@@ -224,10 +240,55 @@ export class GhidraClient {
           { error: cause instanceof Error ? cause.message : String(cause) },
           "Ghidra startup promise rejected during bookkeeping",
         );
+        this.#joinStartup = undefined;
         reset();
       },
     );
-    return started;
+    return join(signal);
+  }
+
+  /**
+   * Each caller waits under its own signal; the shared startup aborts only
+   * when no caller is left waiting.
+   */
+  #shareStartup(
+    controller: AbortController,
+    started: Promise<GhidraStartResult>,
+  ): (signal: AbortSignal | undefined) => Promise<GhidraStartResult> {
+    let waiters = 0;
+    return (signal) => {
+      waiters += 1;
+      if (signal === undefined) return started;
+      return this.#waitForStartup(started, signal, () => {
+        waiters -= 1;
+        if (waiters === 0) {
+          controller.abort(signal.reason);
+          // The last waiter retains cleanup failures from the shared result.
+          return false;
+        }
+        return true;
+      });
+    };
+  }
+
+  #waitForStartup(
+    started: Promise<GhidraStartResult>,
+    signal: AbortSignal | undefined,
+    cancelShared?: () => boolean,
+  ): Promise<GhidraStartResult> {
+    if (signal === undefined) return started;
+    return new Promise<GhidraStartResult>((resolve, reject) => {
+      const onAbort = (): void => {
+        if (cancelShared?.() !== false)
+          resolve(
+            err(this.#failure("cancelled", "Ghidra startup was cancelled")),
+          );
+      };
+      const detach = (): void => signal.removeEventListener("abort", onAbort);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+      void started.then(resolve, reject).finally(detach);
+    });
   }
 
   async #reportStartupWait(
@@ -349,6 +410,18 @@ export class GhidraClient {
       if (bytes !== initial.size) throw new RegularFileChangedError(path);
       return { sha256: hash.digest("hex"), bytes };
     }, signal);
+  }
+
+  /** Give `use` positional access to the snapshot so format owners read only the ranges they inspect. */
+  withTargetSnapshotReader<T>(
+    use: (reader: GhidraSnapshotReader) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<Result<T, GhidraSessionError>> {
+    return this.#withTargetSnapshot(
+      (handle, initial, path) =>
+        use(createGhidraSnapshotReader(handle, initial.size, path, signal)),
+      signal,
+    );
   }
 
   async #withTargetSnapshot<T>(

@@ -1,3 +1,4 @@
+import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { jsonValueSchema } from "../domain/jsonValue.js";
 import { firmwareResultSchemas } from "../domain/firmware/firmwareAnalysis.js";
 import { hashFirmwareFile, type FirmwareEntry } from "./FirmwareFiles.js";
+import { normalizeArtifactPath } from "../artifacts/ArtifactPaths.js";
 import type { normalizeUnblobReport } from "./FirmwareReports.js";
 import type { extractionGap } from "../domain/firmware/firmwareAnalysis.js";
 
@@ -89,6 +91,7 @@ export const publishFirmwareExtraction = async (context: {
   maxDepth: number;
   engine: z.infer<typeof firmwareResultSchemas.extract_firmware>["engine"];
   signal: AbortSignal;
+  resources: ArtifactResourceScope;
   retainCleanup: (tree: SafeOutputTree) => void;
 }) => {
   let tree: SafeOutputTree | undefined;
@@ -96,6 +99,18 @@ export const publishFirmwareExtraction = async (context: {
     | z.infer<typeof firmwareResultSchemas.extract_firmware>
     | undefined;
   try {
+    const names = new Map<string, string>();
+    for (const entry of context.entries) {
+      if (entry.kind !== "file") continue;
+      const normalized = normalizeArtifactPath(entry.relativePath);
+      const previous = names.get(normalized);
+      if (previous !== undefined)
+        throw new AnalysisOutputError(
+          "extract_firmware",
+          `Unicode-normalized artifact path collision: ${JSON.stringify(previous)} and ${JSON.stringify(entry.relativePath)} both publish as ${JSON.stringify(normalized)}`,
+        );
+      names.set(normalized, entry.relativePath);
+    }
     const materialized = new Set(
       context.entries
         .filter((entry) => entry.kind === "file")
@@ -122,7 +137,12 @@ export const publishFirmwareExtraction = async (context: {
       }
       const logicalPath = `$output/${entry.relativePath}`;
       const reported = context.normalized.files.get(logicalPath);
-      const sha256 = await hashFirmwareFile(entry.path, context.signal);
+      const sha256 = await hashFirmwareFile(
+        entry.path,
+        context.signal,
+        context.resources,
+        "extract_firmware",
+      );
       if (
         (reported?.sha256 !== null &&
           reported?.sha256 !== undefined &&
@@ -134,7 +154,7 @@ export const publishFirmwareExtraction = async (context: {
           "extract_firmware",
           `Extracted bytes disagree with provider report: ${entry.relativePath}`,
         );
-      await tree.write(
+      const written = await tree.write(
         entry.relativePath,
         createReadStream(entry.path),
         { sha256, bytes: entry.size },
@@ -142,7 +162,7 @@ export const publishFirmwareExtraction = async (context: {
       );
       files.push({
         relative_path: entry.relativePath,
-        path: join(tree.outputRoot, entry.relativePath),
+        path: join(tree.outputRoot, written.relativePath),
         size: entry.size,
         sha256,
         reported_sha256: reported?.sha256 ?? null,

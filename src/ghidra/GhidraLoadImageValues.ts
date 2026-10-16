@@ -5,15 +5,28 @@ import {
   type NativeLoadImageCheck,
   type NativeLoadImageObservation,
 } from "../domain/native/nativeLoadImage.js";
-import { parseDosMzHeader, type DosMzHeader } from "../domain/dosMz.js";
+import {
+  observeMzWindowsHeader,
+  parseDosMzHeader,
+  type DosMzHeader,
+} from "../domain/dosMz.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import { validateDosComLength } from "../domain/dosCom.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { ghidraRawBinaryLanguage } from "./GhidraRawBinaryLanguage.js";
+import type { GhidraSnapshotReader } from "./GhidraSnapshotReader.js";
 
 const sha256 = (bytes: Buffer): string =>
   createHash("sha256").update(bytes).digest("hex");
+const sha256Stream = async (
+  rest: AsyncIterable<Buffer>,
+  prefix: Buffer = Buffer.alloc(0),
+): Promise<string> => {
+  const hash = createHash("sha256").update(prefix);
+  for await (const chunk of rest) hash.update(chunk);
+  return hash.digest("hex");
+};
 const address = (offset: number): string => `0x${offset.toString(16)}`;
 const limitations = [
   "Verification covers original/modified FileBytes, every initialized target-backed header/module mapping, relocation records and the external entry point. Mapping ends are inclusive.",
@@ -22,20 +35,43 @@ const limitations = [
   "A mismatching memory digest identifies the reported source range; it does not locate the first differing byte inside that range.",
 ];
 
+// The relocation table and new-header pointer lie within the declared header,
+// so parsing reads that prefix, the file size and one pointed-to signature.
+const readDosMzHeader = async (
+  snapshot: GhidraSnapshotReader,
+): Promise<Result<DosMzHeader, string>> => {
+  const probe = await snapshot.read(0, Math.min(snapshot.size, 64));
+  const headerBytes = probe.length >= 10 ? probe.readUInt16LE(8) * 16 : 0;
+  const prefix =
+    headerBytes > probe.length
+      ? await snapshot.read(0, Math.min(snapshot.size, headerBytes))
+      : probe;
+  const windowsHeader = observeMzWindowsHeader(prefix, snapshot.size);
+  const signature =
+    windowsHeader.state === "signature-needed"
+      ? await snapshot.read(
+          windowsHeader.offset,
+          Math.min(windowsHeader.offset + 4, snapshot.size),
+        )
+      : undefined;
+  return parseDosMzHeader(prefix, snapshot.size, signature);
+};
+
 /** Verify measured MZ import state against the session's immutable snapshot. */
-export const attestGhidraDosLoadImage = (
-  bytes: Buffer,
+export const attestGhidraDosLoadImage = async (
+  snapshot: GhidraSnapshotReader,
   targetSha256: string,
   observations: NativeLoadImageObservation,
-): Result<NativeLoadImage, string> => {
-  if (sha256(bytes) !== targetSha256)
+): Promise<Result<NativeLoadImage, string>> => {
+  if ((await sha256Stream(snapshot.stream(0))) !== targetSha256)
     return err(
       "Ghidra load-image snapshot digest does not match the admitted target",
     );
-  const parsed = parseDosMzHeader(bytes);
+  const parsed = await readDosMzHeader(snapshot);
   if (!parsed.ok) return parsed;
   const header = parsed.value;
   const loadSegment = 0x1000;
+  const bytes = await snapshot.read(0, header.imageBytes);
   const modified = Buffer.from(bytes);
   const expectedRelocations = [];
   for (let index = 0; index < header.relocationCount; index += 1) {
@@ -90,11 +126,12 @@ export const attestGhidraDosLoadImage = (
   check("default_address_space", "ram", observations.default_address_space);
   check("source_file_count", 1, observations.source_files.length);
   const source = observations.source_files[0];
-  check("source_file_size", bytes.length, source?.size ?? null);
+  check("source_file_size", snapshot.size, source?.size ?? null);
   check("original_file_sha256", targetSha256, source?.original_sha256 ?? null);
+  // Relocations only change the load module, so the overlay is hashed as stored.
   check(
     "modified_file_sha256",
-    sha256(modified),
+    await sha256Stream(snapshot.stream(header.imageBytes), modified),
     source?.modified_sha256 ?? null,
   );
   const entryAddress = address(

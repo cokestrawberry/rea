@@ -17,6 +17,7 @@ import { err, ok, type Result } from "../result.js";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { binaryLayoutSchema } from "../native/binaryLayout.js";
 import { functionDossierSchema } from "../hopperValues.js";
+import type { RelationshipCoverage } from "../relationshipCoverage.js";
 import {
   artifactGraphManifestSchema,
   artifactNodeSchema,
@@ -629,6 +630,8 @@ export interface AnalysisViewParent {
   /** Preserve the authenticated source identity, including explicit absence. */
   readonly subject?: Evidence["subject"];
   readonly limitations: readonly string[];
+  /** The provider's caller/callee coverage; null or absent means it was not reported. */
+  readonly relationshipCoverage?: RelationshipCoverage | null;
   readonly artifact?: { readonly path: string; readonly sha256: string } | null;
   /** Parent Evidence parameters, when the parent operation records them. */
   readonly parameters?: unknown;
