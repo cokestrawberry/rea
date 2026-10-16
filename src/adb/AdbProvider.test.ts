@@ -121,6 +121,24 @@ fi`,
   ]);
 });
 
+it("reports daemon startup that adb announces on stderr", async () => {
+  const { binary } = await writeAdbStub(
+    () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "devices" ]; then
+  printf '* daemon not running; starting now at tcp:5037\\n* daemon started successfully\\n' >&2
+  printf 'List of devices attached\\n'
+  printf 'emulator-5554          device transport_id:1\\n'
+  exit 0
+fi`,
+  );
+  const result = await evidenceResult(providerOver(binary), {
+    operation: "list_adb_devices",
+    input: {},
+  });
+  expect(result.may_have_started_adb_server).toBe(true);
+  expect(result.devices).toHaveLength(1);
+});
+
 it("refuses device listings with an invalid state token", async () => {
   const malformedLine = "serial deviceXYZ  ";
   const { binary } = await writeAdbStub(
@@ -461,21 +479,43 @@ it.each([
   },
 );
 
-it("reports an uninstalled package from empty pm path output", async () => {
+it.each([0, 1])(
+  "reports an uninstalled package from empty pm path output with exit code %i",
+  async (exitCode) => {
+    const { binary } = await writeAdbStub(
+      () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then exit ${String(exitCode)}; fi`,
+    );
+    const projected = await refusedBy(providerOver(binary), {
+      operation: "pull_adb_package",
+      input: {
+        serial: "emulator-5554",
+        package: "com.absent",
+        output_directory: "/tmp/rea-adb-absent",
+      },
+    });
+    expect(projected).toMatchObject({ code: "unsupported_target" });
+    expect(projected.message).toContain("no APK paths");
+  },
+);
+
+it("keeps a pm path failure that prints an error as a protocol failure", async () => {
   const { binary } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
-if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then exit 0; fi`,
+if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then printf 'Error: pm crashed\\n' >&2; exit 1; fi`,
   );
-  const projected = await refusedBy(providerOver(binary), {
+  const result = await providerOver(binary).execute({
     operation: "pull_adb_package",
     input: {
       serial: "emulator-5554",
-      package: "com.absent",
-      output_directory: "/tmp/rea-adb-absent",
+      package: "com.example",
+      output_directory: "/tmp/rea-adb-failed",
     },
   });
-  expect(projected).toMatchObject({ code: "unsupported_target" });
-  expect(projected.message).toContain("no APK paths");
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error._tag).toBe("AnalysisProtocolError");
+  expect(result.error.message).toContain("pm crashed");
 });
 
 it.each([

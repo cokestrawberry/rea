@@ -61,6 +61,7 @@ import {
   parseGetpropOutput,
   parsePackageListOutput,
   parsePmPathOutput,
+  stderrReportsDaemonStart,
 } from "./AdbDeviceOutput.js";
 import { adbHostFileName } from "./AdbHostFileName.js";
 import {
@@ -775,7 +776,12 @@ export class AdbProvider {
           );
         return ok(
           createAnalysisExecution(
-            { client, devices, may_have_started_adb_server: daemonStarted },
+            {
+              client,
+              devices,
+              may_have_started_adb_server:
+                daemonStarted || stderrReportsDaemonStart(ran.value.stderr),
+            },
             provider,
             {
               limitations: [
@@ -1334,7 +1340,27 @@ export class AdbProvider {
       },
       signal,
     );
-    if (!paths.ok) return paths;
+    const notInstalled = (cause?: AnalysisError) =>
+      err(
+        new AnalysisUnsupportedTargetError(
+          operation,
+          serial,
+          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
+          cause === undefined ? undefined : { cause },
+        ),
+      );
+    if (!paths.ok) {
+      // Android 7+ `pm path` exits 1 with no output for an unknown package.
+      const failure =
+        paths.error instanceof AnalysisProtocolError
+          ? execFileOutputFailure(paths.error.cause)
+          : undefined;
+      return failure?.code === 1 &&
+        failure.stdout.trim() === "" &&
+        failure.stderr.trim() === ""
+        ? notInstalled(paths.error)
+        : paths;
+    }
     const parsed = parsePmPathOutput(paths.value.stdout);
     const capturedOutput = {
       stdout: paths.value.stdout,
@@ -1363,13 +1389,7 @@ export class AdbProvider {
       );
     }
     if (parsed.paths.length === 0 && parsed.unparsedLines.length === 0)
-      return err(
-        new AnalysisUnsupportedTargetError(
-          operation,
-          serial,
-          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
-        ),
-      );
+      return notInstalled();
     if (parsed.unparsedLines.length > 0)
       return err(
         new AnalysisProtocolError(
