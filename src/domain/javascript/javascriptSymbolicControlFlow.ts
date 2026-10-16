@@ -1,4 +1,16 @@
 import * as t from "@babel/types";
+export const LOGICAL_ASSIGNMENT_OPERATORS: Readonly<
+  Partial<Record<string, t.LogicalExpression["operator"]>>
+> = { "||=": "||", "&&=": "&&", "??=": "??" };
+
+export const symbolicLogicalOperands = (node: t.Node) => {
+  if (t.isLogicalExpression(node)) return node;
+  if (!t.isAssignmentExpression(node)) return undefined;
+  const operator = LOGICAL_ASSIGNMENT_OPERATORS[node.operator];
+  return operator === undefined
+    ? undefined
+    : { operator, left: node.left, right: node.right };
+};
 import {
   symbolicTruth,
   type SymbolicValue,
