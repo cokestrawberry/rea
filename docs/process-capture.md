@@ -245,9 +245,10 @@ Terminal frame `data` is the comparison text after the selected normalization.
 New captures also preserve `raw_data` when normalization changes a PTY chunk;
 otherwise `data` is already the original text. Older captures may lack the
 original text for changed chunks. Both values participate in Evidence identity,
-while comparisons and trace assertions use the normalized text. Retaining the
-original adds at most `limits.output_bytes` of text, because it comes from the
-same admitted PTY chunks rather than a second unbounded stream.
+while comparisons and trace assertions use the normalized text. A chunk counts
+against `limits.output_bytes` by the bytes it retains: its normalized text plus,
+when normalization changed it, the original text. A replacement that expands a
+chunk therefore cannot grow retained terminal text beyond that limit.
 
 Rendered frame `lines` hold the visible rows after normalization, with trailing
 U+0020 spaces removed. Blank rows and internal spaces remain. `columns` records
@@ -307,13 +308,18 @@ immediately, also during finalization, and ends the run as cancelled.
 REA binds the captured root's first start identity to its ownership token,
 checking the identity before and after reading that token. A missing or
 mismatched token, or an identity change during validation, leaves the identity
-unverified rather than adopting a replacement process. Both finalization
-signals recheck that retained identity immediately before the call; the check
-and signal remain separate operating-system operations. REA does not fall back
-to a bare PID kill for either finalization signal; failed identity or ownership
-validation is recorded as `unverified` with its reason. Cancellation before any
-deadline keeps the existing terminal kill. Descendants are not signalled during
+unverified rather than adopting a replacement process. Every signal REA sends to
+the captured root rechecks that retained identity immediately before the call:
+both finalization signals, the immediate `SIGKILL` of a deadline without
+`finalization_ms` or of a cancellation, and each `signal` event of the scenario.
+The check and signal remain separate operating-system operations. REA does not
+fall back to a bare PID kill; failed identity or ownership validation is
+recorded as `unverified` with its reason. Descendants are not signalled during
 finalization; owned-process cleanup handles them afterwards.
+
+A `signal` event is recorded once its delivery settles: `dispatched` when the
+signal was sent, `target_exited` when no live process matched the root, and
+`failed` when the identity changed or could not be verified.
 
 `exit.reason` keeps the initiating deadline (`timeout` or `idle_timeout`).
 `exit.code` is `null` for every deadline exit; the code of an exit observed
@@ -365,7 +371,9 @@ absent when no finalization was attempted:
   apart from it.
 - If the `SIGKILL` cannot be delivered, REA stops waiting for an exit, keeps every
   observation collected so far with the delivery results, and releases the run
-  through owned-process cleanup.
+  through owned-process cleanup. The same holds for the immediate `SIGKILL` of a
+  deadline with `finalization_ms` of `0` and of a cancellation before any
+  deadline, which carry no finalization record.
 - The `SIGKILL` is not sequenced after the `SIGTERM` delivery result: the two
   deliveries are independent, because cancellation must not wait for a slow
   identity check.
@@ -383,22 +391,40 @@ exit comparison like `settlement.elapsed_ms`.
 Every capture requires `truncation_details`, with separate accounting for:
 
 - `raw_terminal`: original UTF-8 PTY chunk bytes and observed/retained chunk
-  counts. A chunk that does not fit `limits.output_bytes` is omitted whole;
-  a later smaller chunk can still fit.
+  counts. A chunk that does not fit either its remaining original-text budget
+  or normalized-text budget is omitted whole; a later smaller chunk can still
+  fit. A normalized-text omission also omits its original chunk, so raw and
+  normalized coverage can both be incomplete for that event.
+- `normalized_terminal`: normalized comparison-text bytes retained from raw
+  chunks. This is optional when reading historical captures. A raw-fitting
+  chunk is omitted if an ordered normalization stage would exceed the remaining
+  `output_bytes` budget before the final normalized size is known. Its final
+  size is unknown, not assumed to equal the budget. The capture records the
+  omitted-frame count and a limitation; later smaller chunks remain eligible.
 - `rendered_terminal`: cumulative UTF-8 serialized-state and visible-line
   bytes, plus observed/retained frame counts. This is independent of the raw
   chunk budget and does not count JSON encoding. Repeated screen snapshots can
   exhaust it even when all raw output fits. Rendered states use retained PTY
-  input, so raw omissions also limit rendered coverage.
+  input, so raw omissions also limit rendered coverage. When bounded
+  normalization omits a rendered frame before its final size is known,
+  `unknown_size_frames` reports that count; `observed_bytes` includes only
+  rendered frame sizes that were determined exactly.
 - `filesystem_before` and `filesystem_after`: file-count/depth limits,
   enumeration failures, whole-file hash budget and bytes successfully hashed.
   Directory names are read incrementally within the remaining entry capacity.
   When a directory exceeds that capacity, the retained subset follows filesystem
   enumeration order and is then sorted; it is explicitly incomplete and cannot
   establish that an omitted path is absent.
-  An unreadable directory is recorded in `enumeration_omissions` with its
-  root-aliased path and operating-system error code. Entries observed before
-  that directory remain available, while descendants beneath it stay unknown.
+  A directory that cannot be read or searched, an already inspected symlink
+  that becomes unreadable or disappears, or a directory that becomes
+  unavailable during or after enumeration is recorded in
+  `enumeration_omissions` with the retained containing directory's root-aliased
+  path and the first operating-system error code observed. ENOENT on an entry's
+  initial metadata read means absence and does not create an omission.
+  An omission means the descendant list is incomplete; retained descendants
+  remain known, while unretained paths stay unknown. A selected root
+  that cannot be inspected adds the `directory_unavailable` reason without an
+  omission, since no retained directory identifies it.
   Each retained regular file without a digest has an aliased path, size,
   remaining budget and reason: `file_bytes_budget`,
   `file_changed_or_short_read`, or `file_unavailable`. Its `system_code` is

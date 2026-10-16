@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -122,6 +129,48 @@ const terminateFixtureProcess = async (pid: number): Promise<void> => {
   }
   await waitForProcessExit(pid);
 };
+
+itWithCaptureCapability(
+  "retains a deleted observed file when its parent becomes a regular file",
+  async () => {
+    const root = await createTestTempDirectory("rea-observed-parent-type-");
+    const payload = '{"result":42}\n';
+    await mkdir(join(root, "reports"));
+    await writeFile(join(root, "reports", "final.json"), payload);
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: [
+          "-e",
+          `const fs = require('node:fs');
+           fs.renameSync('reports', 'saved-reports');
+           fs.writeFileSync('reports', 'regular file'); console.log('finished');`,
+        ],
+        working_directory: root,
+        filesystem_observation_paths: [join(root, "reports", "final.json")],
+        timeout_ms: 5_000,
+        idle_timeout_ms: 5_000,
+        settle_ms: 100,
+      }),
+    );
+    if (!result.ok) throw result.error;
+    expect(result.value.exit).toMatchObject({ code: 0, reason: "exited" });
+    expect(result.value.filesystem_effects).toContainEqual(
+      expect.objectContaining({
+        path: "root_0:.",
+        status: "deleted",
+        before: expect.objectContaining({
+          type: "file",
+          sha256: createHash("sha256").update(payload).digest("hex"),
+        }),
+        after: null,
+      }),
+    );
+    expect(
+      await readFile(join(root, "saved-reports", "final.json"), "utf8"),
+    ).toBe(payload);
+  },
+);
 
 itWithCaptureCapability(
   "keeps the process deadline bounded when the wall clock moves backward",
@@ -907,6 +956,68 @@ itWithCaptureCapability(
       partial.observations.exit.state,
       "no exit is invented when the escalation was not delivered",
     ).toBe("unavailable");
+  },
+  15_000,
+);
+
+itWithCaptureCapability(
+  "sends the zero-interval deadline kill and a scripted signal through the retained identity",
+  async () => {
+    const calls: string[] = [];
+    const finalizationHost: FinalizationHost = {
+      observe: async () => ({ state: "readable" as const, identity: "launch" }),
+      signal: async (_pid, identity, signal) => {
+        calls.push(`${identity}:${signal}`);
+        return signal === "SIGKILL" ? "unverified" : "identity-changed";
+      },
+    };
+    const root = await createTestTempDirectory("rea-zero-interval-host-");
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: [finalizationFixture, "ignoring", root],
+        working_directory: root,
+        filesystem_observation_paths: [root],
+        events: [{ type: "signal", at_ms: 0, signal: "SIGINT" }],
+        idle_timeout_ms: 10_000,
+        timeout_ms: 500,
+      }),
+      undefined,
+      process.platform,
+      process.env,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      finalizationHost,
+    );
+
+    if (result.ok) throw new Error("expected an unobserved exit");
+    if (!(result.error instanceof ProcessCaptureError)) throw result.error;
+    if (result.error.cleanupIncomplete)
+      expectUnverifiedHostCleanup(result.error);
+    expect(
+      calls,
+      "the scripted signal and the deadline kill both used the identity-checked host",
+    ).toEqual(["launch:SIGINT", "launch:SIGKILL"]);
+    const partial = result.error.partialObservation;
+    if (partial === undefined || !("observations" in partial))
+      throw new Error("expected incomplete process observations");
+    expect(
+      partial.observations.interaction_events,
+      "a scripted signal that was not delivered is not recorded as dispatched",
+    ).toMatchObject({
+      state: "available",
+      value: [{ type: "signal", data: "SIGINT", outcome: "failed" }],
+    });
+    expect(
+      partial.observations.exit.state,
+      "no exit is invented when the deadline kill was not delivered",
+    ).toBe("unavailable");
+    expect(
+      partial.observations,
+      "a scenario without an interval carries no finalization record",
+    ).not.toHaveProperty("finalization");
   },
   15_000,
 );
