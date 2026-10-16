@@ -279,6 +279,8 @@ const emitSessionTimeline = (
     for (const [requestId, type, frameId] of [
       ["failed-request", "Document", "frame-main"],
       ["failed-subresource", "Image", "frame-main"],
+      ["failed-untyped-image", undefined, "frame-main"],
+      ["failed-untyped-document", undefined, "frame-main"],
       ["failed-subframe-document", "Document", "frame-child"],
     ] as const)
       event(socket, "Network.requestWillBeSent", command.sessionId, {
@@ -293,6 +295,8 @@ const emitSessionTimeline = (
     // Network.loadingFailed has no frameId in the CDP protocol.
     for (const [requestId, type, errorText] of [
       ["failed-subresource", "Image", "net::ERR_BLOCKED_BY_CLIENT"],
+      ["failed-untyped-image", "Image", "net::ERR_BLOCKED_BY_CLIENT"],
+      ["failed-untyped-document", "Document", "net::ERR_ABORTED"],
       ["failed-subframe-document", "Document", "net::ERR_ABORTED"],
       ["failed-request", "Document", "net::ERR_CONNECTION_REFUSED"],
     ] as const)

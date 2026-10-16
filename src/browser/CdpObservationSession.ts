@@ -312,7 +312,8 @@ class TimelineCapture {
     const requestId = cdpStringValue(params.requestId);
     if (
       requestId === undefined ||
-      !this.#mainDocumentRequestIds.delete(requestId)
+      !this.#mainDocumentRequestIds.delete(requestId) ||
+      params.type !== "Document"
     )
       return;
     this.#add({

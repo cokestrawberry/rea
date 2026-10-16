@@ -140,6 +140,7 @@ describe("CdpBrowserProvider: cancellation and session events", () => {
       "same_document_navigation",
       "redirect",
       "load_failed",
+      "load_failed",
       "lifecycle",
     ]);
     expect(result.value.timeline).toEqual(
@@ -157,6 +158,7 @@ describe("CdpBrowserProvider: cancellation and session events", () => {
     expect(
       result.value.timeline.filter(({ type }) => type === "load_failed"),
     ).toMatchObject([
+      { request_id: "failed-untyped-document", detail: "net::ERR_ABORTED" },
       { request_id: "failed-request", detail: "net::ERR_CONNECTION_REFUSED" },
     ]);
     expect(result.value.completeness.status).toBe("attach_limited");
