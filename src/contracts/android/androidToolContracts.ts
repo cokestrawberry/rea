@@ -85,7 +85,7 @@ export const ANDROID_TOOL_CONTRACTS = [
     name: "trace_android_references",
     ...toolContractMetadata("trace_android_references"),
     description:
-      "Trace incoming static using nodes to an exact Android class or selected method overload. The total counts containing nodes, not individual invoke instructions. Use inspect_android_class to choose an overload_index when names collide. Source lines and the containing node dex_offset remain unknown. direct_invokes carries exact DEX code-unit instruction offsets when available; direct_invokes_exhaustive false marks byte-bounded partial instruction evidence, and null means coverage is unknown. Using-node coverage remains separate; no runtime calls are inferred.",
+      "Trace incoming static using nodes to an exact Android class or selected method overload. The total counts containing nodes, not individual invoke instructions. Use inspect_android_class to choose an overload_index when names collide. Source lines and the containing node dex_offset remain unknown. direct_invokes carries exact DEX code-unit instruction offsets when available; direct_invokes_exhaustive false marks byte-bounded partial instruction evidence or an unresolved invoke with the target method's name and descriptor, and null means coverage is unknown. Unrelated unresolved framework methods do not reduce instruction coverage. Using-node coverage remains separate; no runtime calls are inferred.",
     kind: "android-provider",
     inputSchema: androidInputSchemas.trace_android_references,
     outputSchema: evidenceResultOf(
