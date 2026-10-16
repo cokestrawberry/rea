@@ -630,6 +630,127 @@ describe("binary_overview capability requirements", () => {
   });
 });
 
+describe("trace_call_path requirements", () => {
+  const capabilities = (operations: readonly string[]) =>
+    operations.map((operation) => ({
+      operation,
+      available: true,
+      reason: null,
+    }));
+
+  it("reports each direction when callers are unavailable", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: [
+            ...capabilities(["procedure_address", "procedure_callees"]),
+            {
+              operation: "procedure_callers",
+              available: false,
+              reason: "Unsupported",
+            },
+          ],
+        }),
+      ),
+    ).toMatchObject({
+      available: true,
+      default_mode_available: true,
+      modes: [
+        { name: "forward", available: true, missing_operations: [] },
+        {
+          name: "backward",
+          available: false,
+          missing_operations: ["procedure_callers"],
+        },
+      ],
+    });
+  });
+
+  it("reports an unavailable default direction when only callers are available", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities([
+            "procedure_address",
+            "procedure_callers",
+          ]),
+        }),
+      ),
+    ).toMatchObject({
+      available: true,
+      default_mode_available: false,
+      modes: [
+        {
+          name: "forward",
+          available: false,
+          missing_operations: ["procedure_callees"],
+        },
+        { name: "backward", available: true, missing_operations: [] },
+      ],
+    });
+  });
+
+  it.each(["procedure_callees", "procedure_callers"])(
+    "is available with procedure_address and %s",
+    (direction) => {
+      expect(
+        entry(
+          "trace_call_path",
+          status({
+            open: true,
+            kind: "executable",
+            capabilities: capabilities(["procedure_address", direction]),
+          }),
+        ),
+      ).toMatchObject({
+        available: true,
+        reason: "available",
+        remediation: null,
+      });
+    },
+  );
+
+  it("is unavailable without procedure_address", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities(["procedure_callees"]),
+        }),
+      ),
+    ).toMatchObject({
+      available: false,
+      reason: "provider_missing",
+      remediation: expect.stringContaining("procedure_address"),
+    });
+  });
+
+  it("is unavailable without a call-direction operation", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities(["procedure_address"]),
+        }),
+      ),
+    ).toMatchObject({
+      available: false,
+      reason: "provider_missing",
+      remediation: expect.stringContaining("procedure_callees"),
+    });
+  });
+});
+
 describe("trace_feature requirements", () => {
   const capabilities = (operations: readonly string[]) =>
     operations.map((operation) => ({
