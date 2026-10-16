@@ -35,7 +35,7 @@ import {
   RegularFileCleanupFailure,
 } from "./RegularFileRead.js";
 import {
-  preserveRecoveryBackup,
+  preserveCurrentRecoveryBackup,
   selectCurrentRecoveryBackup,
 } from "./SetupRecoveryBackup.js";
 import type { ClientConfigurationFileError } from "./ClientConfigurationFiles.js";
@@ -220,23 +220,13 @@ const persistClientConfiguration = async ({
     original === undefined ? undefined : `${client.configPath}.rea.backup`;
   let recoveryBackupPath: string | undefined;
   if (backupPath !== undefined && original !== undefined) {
-    const selection = await selectCurrentRecoveryBackup(backupPath, original);
-    if (!selection.ok) return { status: "failed", reason: "backup" };
-    if (
-      !(await preserveRecoveryBackup(
-        transactionPath,
-        selection.value.backupPath,
-      ))
-    )
+    recoveryBackupPath = await preserveCurrentRecoveryBackup(
+      transactionPath,
+      backupPath,
+      original,
+    );
+    if (recoveryBackupPath === undefined)
       return { status: "failed", reason: "backup" };
-    const verified = await selectCurrentRecoveryBackup(backupPath, original);
-    if (
-      !verified.ok ||
-      verified.value.backupPath !== selection.value.backupPath ||
-      !verified.value.present
-    )
-      return { status: "failed", reason: "backup" };
-    recoveryBackupPath = verified.value.backupPath;
   }
   // A native OpenCode V2 entry replaces REA's legacy V1 entry, which would
   // otherwise conflict with it.
@@ -647,6 +637,25 @@ const registrationCurrent = (
   !Object.hasOwn(parsed.legacyServers, PRODUCT_IDENTITY.mcpServerKey) &&
   !clientServerListedDisabled(parsed, PRODUCT_IDENTITY.mcpServerKey);
 
+/** Entry fields that decide whether and over which transport the client starts REA. */
+const REGISTRATION_STATE_FIELDS: ReadonlySet<string> = new Set([
+  "type",
+  "transport",
+  "enabled",
+  "disabled",
+  "enable",
+]);
+
+/** The caller's other fields on an existing REA entry survive a setup rewrite. */
+const preservedEntryFields = (entry: unknown): Record<string, unknown> =>
+  typeof entry === "object" && entry !== null && !Array.isArray(entry)
+    ? Object.fromEntries(
+        Object.entries(entry).filter(
+          ([field]) => !REGISTRATION_STATE_FIELDS.has(field),
+        ),
+      )
+    : {};
+
 const clientConfigurationDesired = (
   client: SetupClient,
   providerEnvironment: SetupProviderEnvironment,
@@ -688,15 +697,8 @@ const clientConfigurationDesired = (
     launcher,
     environment.value,
   );
-  const previous = parsed?.servers[PRODUCT_IDENTITY.mcpServerKey];
-  if (
-    client.name === "kimi" &&
-    typeof previous === "object" &&
-    previous !== null &&
-    "enabledTools" in previous
-  )
-    registration.enabledTools = previous.enabledTools;
   return {
+    ...preservedEntryFields(parsed?.servers[PRODUCT_IDENTITY.mcpServerKey]),
     ...registration,
     ...(client.name === "codex" || client.name === "grok_build"
       ? {

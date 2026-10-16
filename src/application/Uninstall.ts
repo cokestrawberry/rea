@@ -7,8 +7,7 @@ import {
   withClientServers,
   type ClientConfigurationDocument,
 } from "./ClientConfigurationDocument.js";
-import { copyFile, lstat, realpath, rm, rmdir } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { lstat, realpath, rm, rmdir } from "node:fs/promises";
 import { homeDirectoryFromEnvironment } from "../config/homeDirectory.js";
 import { join } from "node:path";
 
@@ -25,6 +24,7 @@ import {
 import { isOwnedClientRegistrationCommand } from "./ClientRegistrationIdentity.js";
 import { dshDocument } from "./DshCordisPatch.js";
 import { resolveClientConfigTransactionPath } from "./ClientConfigPath.js";
+import { preserveCurrentRecoveryBackup } from "./SetupRecoveryBackup.js";
 import {
   InvalidUtf8FileError,
   RegularFileCleanupFailure,
@@ -55,8 +55,6 @@ interface ManagedPathStats {
 export interface UninstallFileSystem {
   readText(path: string): Promise<string>;
   readRegularText?(path: string): Promise<string>;
-  /** Preserve the first backup; reject an existing destination with EEXIST. */
-  copy(source: string, destination: string): Promise<void>;
   writeText(path: string, contents: string): Promise<void>;
   stat(path: string): Promise<ManagedPathStats>;
   realpath?(path: string): Promise<string>;
@@ -70,8 +68,6 @@ const systemFileSystem = (
 ): UninstallFileSystem => ({
   readText: (path) => readRegularFileText(path, { resources }),
   readRegularText: (path) => readSkillFile(path, resources),
-  copy: (source, destination) =>
-    copyFile(source, destination, fsConstants.COPYFILE_EXCL),
   writeText: (path, contents) =>
     writeFileAtomic(path, contents, { encoding: "utf8" }),
   stat: (path) => lstat(path),
@@ -263,7 +259,9 @@ export const systemUninstallHost = (
         : item(client.name, "failed", blocker);
     },
     removeClient: (client) =>
-      removeClient(client, fileSystem, () => clientWriteBlocker(client)),
+      removeClient(client, fileSystem, resources, () =>
+        clientWriteBlocker(client),
+      ),
     inspectSkill: async () => {
       for (const destination of skillDestinations(
         home,
@@ -434,6 +432,7 @@ const clientRegistrationRemoval = (
 const removeClient = async (
   client: SetupClient,
   fileSystem: UninstallFileSystem,
+  resources: ArtifactResourceScope,
   writeBlocker?: () => string | undefined,
 ): Promise<UninstallItem> => {
   const read = await readClientConfiguration(client, fileSystem);
@@ -475,17 +474,18 @@ const removeClient = async (
     ...(removeNative ? [clientServerPath(parsed, name)] : []),
     ...(legacyPath === undefined ? [] : [legacyPath]),
   ];
-  const backupPath = `${client.configPath}.rea.backup`;
-  try {
-    await fileSystem.copy(transactionPath, backupPath);
-  } catch (cause: unknown) {
-    if (!(cause instanceof Error && "code" in cause && cause.code === "EEXIST"))
-      return item(
-        client.name,
-        "failed",
-        "Configuration could not be backed up, so no change was made. Check file permissions, then rerun uninstall.",
-      );
-  }
+  const recoveryBackupPath = await preserveCurrentRecoveryBackup(
+    transactionPath,
+    `${client.configPath}.rea.backup`,
+    original,
+    { resources },
+  );
+  if (recoveryBackupPath === undefined)
+    return item(
+      client.name,
+      "failed",
+      "Configuration could not be backed up, so no change was made. Check file permissions, then rerun uninstall.",
+    );
   try {
     await fileSystem.writeText(
       transactionPath,
@@ -496,6 +496,16 @@ const removeClient = async (
         editedPaths,
       ),
     );
+  } catch (cause: unknown) {
+    // A failed atomic write leaves the original in place, so no restore is attempted.
+    void cause;
+    return item(
+      client.name,
+      "failed",
+      `Configuration could not be updated and was not changed. Its backup was retained at ${recoveryBackupPath}. Repair the configuration, then rerun uninstall.`,
+    );
+  }
+  try {
     const readback = parseClientConfiguration(
       await fileSystem.readText(transactionPath),
       client.format,
@@ -513,7 +523,7 @@ const removeClient = async (
       `Removed registration from ${client.configPath}.`,
     );
   } catch (cause: unknown) {
-    // Update failure attempts a restore before reporting; cause is preserved below.
+    // Readback failure attempts a restore before reporting; cause is preserved below.
     void cause;
     try {
       await fileSystem.writeText(transactionPath, original);
@@ -522,13 +532,13 @@ const removeClient = async (
       return item(
         client.name,
         "failed",
-        "Configuration could not be updated or restored. Restore its `.rea.backup` manually, then rerun uninstall.",
+        `Configuration could not be updated or restored. Restore ${recoveryBackupPath} manually, then rerun uninstall.`,
       );
     }
     return item(
       client.name,
       "failed",
-      "Configuration could not be updated. The original was restored and its `.rea.backup` was retained. Repair the configuration or restore the backup, then rerun uninstall.",
+      `Configuration could not be updated. The original was restored and its backup was retained at ${recoveryBackupPath}. Repair the configuration or restore the backup, then rerun uninstall.`,
     );
   }
 };
