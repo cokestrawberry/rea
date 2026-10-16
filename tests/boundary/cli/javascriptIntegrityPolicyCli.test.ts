@@ -1,9 +1,12 @@
 import { execFile } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { expect, it } from "vitest";
 
 import { createStrippedAsarAddon } from "../../fixtures/strippedAsarAddon.js";
+import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 const execute = promisify(execFile);
 const run = async (arguments_: readonly string[]): Promise<unknown> => {
@@ -81,6 +84,25 @@ it.each(["fail", "record-and-continue"] as const)(
           },
         ],
       },
+    });
+  },
+);
+
+it.each(["", "/"])(
+  "keeps an app bundle directory on the binary analyze lane when the path ends with %j",
+  async (suffix) => {
+    const root = await createTestTempDirectory("rea-app-bundle-lane-");
+    const bundle = join(root, "Fixture.app");
+    await mkdir(bundle);
+    const failure = await runFailure([
+      "analyze",
+      `${bundle}${suffix}`,
+      "--integrity-policy",
+      "fail",
+    ]);
+    expect(failure).toMatchObject({
+      code: "invalid_request",
+      details: { issues: [{ path: ["integrity_policy"] }] },
     });
   },
 );
