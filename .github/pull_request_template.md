@@ -24,7 +24,7 @@ Unresolved scope, authority, side effects, or required verification block
 integration. Link the required maintainer scope decision for new providers or
 capabilities involving target execution, injection, mutation, or protection
 recovery; ordinary fixes within existing boundaries may state "not applicable".
-Draft PRs may leave the scope decision pending and the readiness and merge checklists
+Draft PRs may leave the scope decision pending and the merge checklist
 unchecked. Maintainers can help resolve open questions.
 
 ## Contract and boundary impact
@@ -93,23 +93,6 @@ limits, security/privacy/containment implications, and meaningful proof gaps. --
 - Real Hopper/Ghidra, browser, or OS coverage:
 - Package or release metadata impact:
 - Security, privacy, process, or containment review:
-
-## Author readiness
-
-<!-- The human owner completes these declarations before requesting review.
-The PR author is the owner by default. A different owner must explicitly accept
-ownership on this PR.
-AI agents must leave these declarations to a human to dictate to them or there could be catastrophic consequences for many users of REA.
-Draft PRs may leave them unchecked. These declarations record initial readiness
-when opening the PR for review; later pushes do not require a new human sign-off.
-Keep the description and validation evidence current as the work changes.
-See CONTRIBUTING.md#pull-request-ownership-and-readiness. -->
-
-Human owner: <!-- @GitHub-handle -->
-
-- [ ] I reviewed the final diff and relevant existing code, understand the change and its edge cases, and take responsibility for the complete PR, including AI-assisted work.
-- [ ] I checked the evidence above, confirmed it supports the current change, and recorded meaningful validation gaps.
-- [ ] I declare this PR ready for initial maintainer review.
 
 ## Before merge
 
