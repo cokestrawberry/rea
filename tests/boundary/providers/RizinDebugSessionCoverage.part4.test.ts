@@ -15,6 +15,36 @@ const { cleanup, makeProvider, start, startInjected, track } =
   createRizinCoverageHarness();
 afterEach(cleanup);
 
+it.skipIf(process.platform === "win32").each([
+  ["a".repeat(16_381) + "\uFFFD" + "b", "a".repeat(16_381) + "\uFFFD"],
+  ["a".repeat(16_383) + "\uAC00", "a".repeat(16_383)],
+] as const)(
+  "preserves complete UTF-8 characters in bounded history and command output: %s",
+  async (text, expected) => {
+    const injected = createInjectedProcess({
+      onWrite: (input, control) => {
+        const marker = /!echo (.+)\n/u.exec(input)?.[1];
+        if (marker !== undefined)
+          setImmediate(() =>
+            control.output(Buffer.from(`${text}\0${marker}\0`)),
+          );
+      },
+    });
+    const { manager, started } = await startInjected(injected.spawnProcess, {
+      maxCommandOutputBytes: 16_384,
+    });
+    if (!started.ok) throw started.error;
+    injected.control.output(Buffer.from(`${text}\0`));
+    expect(manager.status(started.value.session_id)?.recent_output.at(-1)).toBe(
+      `${expected}[recent frame truncated]`,
+    );
+    const result = await manager.execute(started.value.session_id, "bounded");
+    if (!result.ok) throw result.error;
+    expect(result.value.result.output).toBe(expected);
+    expect(result.value.result.output_truncated).toBe(true);
+  },
+);
+
 it.skipIf(process.platform === "win32")(
   "assembles a multi-chunk NUL frame once and preserves its command output",
   async () => {
