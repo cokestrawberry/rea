@@ -82,7 +82,10 @@ it("passes output through unchanged without sensitive values", () => {
 });
 
 it("initializes redaction for a large sensitive-input list", () => {
-  const values = Array.from({ length: 150_000 }, (_, index) => `secret-${index}`);
+  const values = Array.from(
+    { length: 150_000 },
+    (_, index) => `secret-${index}`,
+  );
   expect(() => createSensitiveOutputRedactor(values)).not.toThrow();
 });
 

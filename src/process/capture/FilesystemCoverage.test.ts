@@ -142,7 +142,9 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "marks a directory without search permission unknown instead of failing the snapshot",
   async () => {
-    const root = await createTestTempDirectory("rea-fs-unsearchable-directory-");
+    const root = await createTestTempDirectory(
+      "rea-fs-unsearchable-directory-",
+    );
     const blocked = join(root, "z-blocked");
     await writeFile(join(root, "a-visible.txt"), "visible");
     await mkdir(blocked);

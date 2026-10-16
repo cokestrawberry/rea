@@ -136,7 +136,9 @@ export class TerminalRenderer {
       const visibleText =
         line?.translateToString(false, 0, this.#terminal.cols) ?? "";
       if (
-        this.options.sensitiveValues?.some((value) => visibleText.includes(value))
+        this.options.sensitiveValues?.some((value) =>
+          visibleText.includes(value),
+        )
       )
         containsSensitiveValue = true;
       const paddedLine = visibleText.padEnd(this.#terminal.cols, " ");
