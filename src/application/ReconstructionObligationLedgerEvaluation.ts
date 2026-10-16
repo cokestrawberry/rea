@@ -466,6 +466,6 @@ const dependencyStatus = (
 ): ReconstructionObligation["status"] =>
   (hasDiagnostic(diagnostics, "dependency-missing") ||
     hasDiagnostic(diagnostics, "dependency-open")) &&
-  !["contradicted", "out-of-scope"].includes(status)
+  !["contradicted", "out-of-scope", "unknown"].includes(status)
     ? "blocked"
     : status;
