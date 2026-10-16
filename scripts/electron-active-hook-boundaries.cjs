@@ -383,9 +383,16 @@ const createElectronActiveBoundaryPatches = ({
           nestedDepth -= 1;
         }
         const childId = identity(child, "child");
-        recordRuntime("process-lifecycle", `child.${method}`, "completed", {
-          target: childId,
-        });
+        const failed = method === "spawnSync" && child.error !== undefined;
+        recordRuntime(
+          "process-lifecycle",
+          `child.${method}`,
+          failed ? "failed" : "completed",
+          {
+            target: childId,
+            error: failed,
+          },
+        );
         patchEmitter(child, (event, eventArgs) =>
           recordRuntime("process-lifecycle", `child.${event}`, "observed", {
             target: childId,

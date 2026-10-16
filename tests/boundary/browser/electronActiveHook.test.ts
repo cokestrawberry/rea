@@ -273,6 +273,9 @@ exec(JSON.stringify(node) + ' -e ""', () => {
   spawnSync(node, ["-e", ""]);
   execFileSync(node, ["-e", ""]);
   try { execFileSync(node, ["-e", "process.exit(3)"]); } catch {}
+  const missing = spawnSync(require("node:path").join(process.cwd(), "missing-executable"));
+  const timedOut = spawnSync(node, ["-e", "setInterval(() => {}, 1000)"], { timeout: 50 });
+  if (missing.error?.code !== "ENOENT" || timedOut.error?.code !== "ETIMEDOUT") throw new Error("spawnSync errors were not preserved");
   process.stdout.write(JSON.stringify(globalThis.__reaElectronActiveSnapshot()) + "\\n");
 });
 `,
@@ -287,6 +290,7 @@ exec(JSON.stringify(node) + ' -e ""', () => {
       readonly kind: string;
       readonly event: string;
       readonly phase: string;
+      readonly error: boolean;
     }[];
   };
   const launches = (phase: string) =>
@@ -304,10 +308,21 @@ exec(JSON.stringify(node) + ' -e ""', () => {
     "child.spawnSync",
     "child.execFileSync",
     "child.execFileSync",
+    "child.spawnSync",
+    "child.spawnSync",
   ];
   expect(launches("attempted")).toEqual(launched);
   expect(launches("completed")).toEqual(launched.slice(0, 4));
-  expect(launches("failed")).toEqual(["child.execFileSync"]);
+  expect(launches("failed")).toEqual([
+    "child.execFileSync",
+    "child.spawnSync",
+    "child.spawnSync",
+  ]);
+  expect(
+    snapshot.events.filter(
+      ({ event, phase }) => event === "child.spawnSync" && phase === "failed",
+    ),
+  ).toMatchObject([{ error: true }, { error: true }]);
 });
 
 it("preserves fatal process termination after recording uncaught exceptions", async () => {
