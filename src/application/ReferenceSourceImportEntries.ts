@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
 import { logicalPathEscapesRoot } from "../domain/artifactIdentity.js";
@@ -13,6 +12,7 @@ import {
 } from "../domain/referenceSourceClassification.js";
 import type { HistoricalSourceGraphInput } from "../domain/referenceSourceGraph.js";
 import {
+  oversizedReferenceSourceImports,
   parseReferenceSourceImports,
   PARSEABLE_REFERENCE_SOURCE_LANGUAGES,
 } from "../domain/referenceSourceImportParsing.js";
@@ -50,8 +50,12 @@ const entryRecoveryGuidance = (
   return "This file could not be read. Check its permissions, then try again.";
 };
 
-const hashBytes = (bytes: Uint8Array): string =>
-  createHash("sha256").update(bytes).digest("hex");
+const isParseableLanguage = (language: string | null): boolean =>
+  language !== null && PARSEABLE_REFERENCE_SOURCE_LANGUAGES.has(language);
+
+/** Paths whose imports are parsed, so the reader must keep their bytes. */
+export const shouldRetainReferenceSourceBytes = (path: string): boolean =>
+  isParseableLanguage(detectReferenceSourceLanguage(path));
 
 const failedEntry = (
   entry: Extract<ReferenceSourceEntry, { status: "failed" }>,
@@ -136,14 +140,16 @@ const appendFile = (
   output: ParsedReferenceSourceEntries,
 ): void => {
   const language = detectReferenceSourceLanguage(entry.path);
-  const parsed =
-    language === null || !PARSEABLE_REFERENCE_SOURCE_LANGUAGES.has(language)
-      ? undefined
+  // Absent bytes on a parseable file mean the reader's retention bounds were exceeded.
+  const parsed = !isParseableLanguage(language)
+    ? undefined
+    : entry.bytes === undefined
+      ? oversizedReferenceSourceImports(entry.path)
       : parseReferenceSourceImports(entry.path, entry.bytes, language);
   output.entries.push({
     path: entry.path,
     kind: "file",
-    sha256: hashBytes(entry.bytes),
+    sha256: entry.sha256,
     size: entry.size,
     language,
     classifications: classifyReferenceSourcePath(entry.path),

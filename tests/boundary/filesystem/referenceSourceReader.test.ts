@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstat, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +19,9 @@ describe("readReferenceSource entries", () => {
     await writeFile(join(root, "\u{e000}"), "p");
     await writeFile(join(root, "\u{10000}"), "a");
 
-    const result = await readReferenceSource(root);
+    const result = await readReferenceSource(root, {
+      shouldRetainBytes: () => true,
+    });
 
     if (!result.ok) throw result.error;
     expect(result.value.entries.map(({ path }) => path)).toEqual([
@@ -73,7 +76,7 @@ describe("readReferenceSource entries", () => {
         status: "read",
         kind: "file",
         path: "local",
-        bytes: expect.any(Uint8Array),
+        sha256: createHash("sha256").update("local").digest("hex"),
         size: 5,
       },
       {
@@ -139,6 +142,41 @@ describe("readReferenceSource entries", () => {
         path: "large.bin",
         size,
       }),
+    );
+  });
+
+  it("hashes files that are not selected for retention without keeping their bytes", async () => {
+    const root = await createTestTempDirectory("rea-reference-hash-only-");
+    const source = "export const value = 1;\n";
+    const asset = Buffer.alloc(128 * 1024 + 3, 0x62);
+    await writeFile(join(root, "main.js"), source);
+    await writeFile(join(root, "asset.bin"), asset);
+
+    const result = await readReferenceSource(root, {
+      shouldRetainBytes: (path) => path.endsWith(".js"),
+    });
+
+    if (!result.ok) throw result.error;
+    expect(result.value.entries).toEqual([
+      {
+        status: "read",
+        kind: "file",
+        path: "asset.bin",
+        sha256: createHash("sha256").update(asset).digest("hex"),
+        size: asset.length,
+      },
+      {
+        status: "read",
+        kind: "file",
+        path: "main.js",
+        sha256: createHash("sha256").update(source).digest("hex"),
+        size: Buffer.byteLength(source),
+        bytes: Buffer.from(source),
+      },
+    ]);
+    expect(result.value.entries[0]).not.toHaveProperty("bytes");
+    expect(result.value.bytesRead).toBe(
+      asset.length + Buffer.byteLength(source),
     );
   });
 
