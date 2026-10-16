@@ -32,7 +32,10 @@ const dependencies = ({
   setExitCode: (code) => exitCodes.push(code),
   registerShutdown: (handler) => {
     shutdown.push(handler);
-    return () => shutdownUnregistrations.push("shutdown");
+    return () => {
+      shutdown.splice(shutdown.indexOf(handler), 1);
+      shutdownUnregistrations.push("shutdown");
+    };
   },
   ...(loadOptionalProviders === undefined ? {} : { loadOptionalProviders }),
 });
@@ -89,7 +92,7 @@ describe("MCP runtime errors", () => {
     shutdown[0]?.();
     await nextTurn();
     expect(closeCalls).toBe(1);
-    expect(shutdownUnregistrations).toEqual(["shutdown"]);
+    expect(shutdownUnregistrations).toEqual(["shutdown", "shutdown"]);
   });
 
   it("unregisters every process-lifetime handler during idempotent shutdown", async () => {
@@ -118,7 +121,7 @@ describe("MCP runtime errors", () => {
     await nextTurn();
 
     expect(closeCalls).toBe(1);
-    expect(unregistrations).toEqual(["shutdown"]);
+    expect(unregistrations).toEqual(["shutdown", "shutdown"]);
   });
 
   it("reports transport startup failure without its cause", async () => {
