@@ -1,3 +1,4 @@
+import { scheduleProcessDelay } from "../process/capture/ProcessTimer.js";
 import type { ProgressReporter } from "../application/ProgressReporter.js";
 import type {
   ObserveWebSessionInput,
@@ -372,7 +373,7 @@ const waitForWindow = async (
     const finish = (reason: EndReason): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       signal?.removeEventListener("abort", onAbort);
       removeEnd();
       resolve(reason);
@@ -380,11 +381,13 @@ const waitForWindow = async (
     const onAbort = (): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       removeEnd();
       reject(new AnalysisCancelledError("observe_web_session"));
     };
-    const timer = setTimeout(() => finish("window_elapsed"), durationMs);
+    const timer = scheduleProcessDelay(durationMs, () =>
+      finish("window_elapsed"),
+    );
     removeEnd = capture.onEnd(finish);
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted === true) onAbort();

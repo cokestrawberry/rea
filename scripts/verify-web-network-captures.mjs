@@ -107,6 +107,19 @@ try {
       assert.equal(value.runtime_attribution, "unknown");
       const first = value.records[1];
       if (format === "mitmproxy") {
+        for (const pointer of [
+          "/metadata/proxyauth",
+          "/backup/metadata/proxyauth",
+        ])
+          assert.ok(
+            first.redactions.some(
+              (redaction) =>
+                redaction.pointer === pointer &&
+                redaction.reason === "transport-credential",
+            ),
+          );
+        assert.equal(first.reported.metadata.proxyauth, null);
+        assert.equal(first.reported.backup.metadata.proxyauth, null);
         assert.equal(first.reported.id, "original-producer-id");
         assert.equal(value.records[0].reported.id, first.reported.id);
         assert.equal(first.location.offset, 0);
@@ -166,6 +179,7 @@ try {
       const text = JSON.stringify(value);
       for (const secret of [
         "native-transport-secret",
+        "native-proxy-password",
         "cookie-secret",
         "redirect-password",
         "user:password",
