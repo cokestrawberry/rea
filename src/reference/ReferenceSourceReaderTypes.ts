@@ -22,6 +22,8 @@ export interface ReferenceSourceReaderOptions {
     path: string,
     kind: ReferenceSourceExclusionKind,
   ) => boolean;
+  /** Files selected here keep their bytes within the retention bounds; all others are only hashed. */
+  readonly shouldRetainBytes?: (path: string) => boolean;
 }
 
 export type ReferenceSourceFailureCode =
@@ -36,7 +38,9 @@ export type ReferenceSourceEntry =
       readonly status: "read";
       readonly kind: "file";
       readonly path: string;
-      readonly bytes: Uint8Array;
+      readonly sha256: string;
+      /** Absent unless selected by `shouldRetainBytes` and within the retention bounds. */
+      readonly bytes?: Uint8Array;
       readonly size: number;
     }
   | {
@@ -92,9 +96,11 @@ export type TraversalState = {
     path: string,
     kind: ReferenceSourceExclusionKind,
   ) => boolean;
+  readonly shouldRetainBytes?: (path: string) => boolean;
   readonly entries: ReferenceSourceEntry[];
   readonly pending: PendingDirectory[];
   bytesRead: number;
+  retainedBytes: number;
 };
 
 export type StableFileRequest = {
@@ -104,6 +110,7 @@ export type StableFileRequest = {
   readonly absolute: string;
   readonly path: string;
   readonly expected: BigIntStats;
+  readonly retainBytes: boolean;
   readonly signal?: AbortSignal;
 };
 
