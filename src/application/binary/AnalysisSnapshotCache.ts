@@ -32,6 +32,7 @@ import type {
   AnalysisOperation,
   CapabilityDescriptor,
 } from "../AnalysisProvider.js";
+import type { EvidenceImportDelta } from "../investigation/EvidenceLedger.js";
 import { OFFICIAL_TOOL_CONTRACTS } from "../../contracts/officialToolContracts.js";
 import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
 
@@ -196,7 +197,10 @@ export class AnalysisSnapshotCache {
       | undefined,
     mergeEvidence: (
       bundle: EvidenceBundle,
-    ) => Result<number, EvidenceIntegrityError | AnalysisInputError>,
+    ) => Result<
+      Pick<EvidenceImportDelta, "metadataChanged">,
+      EvidenceIntegrityError | AnalysisInputError
+    >,
   ): Result<number, AnalysisError> {
     let validated: AnalysisSnapshot;
     try {
@@ -218,8 +222,11 @@ export class AnalysisSnapshotCache {
           "Analysis snapshot profile_mismatch: target, provider, or analysis profile does not match the active binary",
         ),
       );
-    const importedEvidence = mergeEvidence(validated.evidence_bundle);
-    return importedEvidence.ok ? ok(this.stage(validated)) : importedEvidence;
+    const merged = mergeEvidence(validated.evidence_bundle);
+    if (!merged.ok) return merged;
+    // Replaced Evidence metadata leaves earlier entries disagreeing with their records.
+    if (merged.value.metadataChanged) this.#clearEntries();
+    return ok(this.stage(validated));
   }
 
   /** Return canonical entries for persistence. */
