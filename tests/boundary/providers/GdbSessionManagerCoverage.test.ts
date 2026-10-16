@@ -120,7 +120,9 @@ it("rejects an invalid caller TTY and platforms without safe GDB ownership", asy
     },
   });
   managers.push(macos);
-  const macUnavailable = await macos.start();
+  const macUnavailable = await macos.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
   expect(macUnavailable).toMatchObject({
     ok: false,
     error: { _tag: "AnalysisCapabilityUnavailableError" },
@@ -131,7 +133,9 @@ it("rejects an invalid caller TTY and platforms without safe GDB ownership", asy
 
   const windows = new GdbSessionManager({ platform: "win32" });
   managers.push(windows);
-  const unavailable = await windows.start();
+  const unavailable = await windows.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
   expect(unavailable).toMatchObject({
     ok: false,
     error: { _tag: "AnalysisCapabilityUnavailableError" },
@@ -192,7 +196,9 @@ const createFakeSpawner = (
     child.stdout.write(
       command.includes("list-thread-groups")
         ? `${token}^done,groups=[]\n`
-        : `${token}^done\n`,
+        : command === "-inferior-tty-show"
+          ? `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`
+          : `${token}^done\n`,
     ),
   options: {
     readonly stdinEnabled?: boolean;
@@ -269,7 +275,9 @@ const recordingInferiorListResponder = (groups: string) => {
       child.stdout.write(
         command.includes("list-thread-groups")
           ? `${token}^done,groups=${groups}\n`
-          : `${token}^done\n`,
+          : command === "-inferior-tty-show"
+            ? `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`
+            : `${token}^done\n`,
       );
     },
   };
@@ -282,7 +290,9 @@ it("returns cancellation when GDB startup is aborted after spawn", async () => {
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
 
-  const started = await manager.start(controller.signal);
+  const started = await manager.start(controller.signal, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) expect(started.error._tag).toBe("AnalysisCancelledError");
@@ -294,6 +304,13 @@ it("cancels immediately after the startup prompt before sending configuration co
   const commands: string[] = [];
   const fake = createFakeSpawner(
     (child, token, command) => {
+      if (command === "-inferior-tty-show") {
+        child.stdout.write(
+          `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+        );
+        return;
+      }
+
       commands.push(command);
       child.stdout.write(`${token}^done\n`);
     },
@@ -304,7 +321,9 @@ it("cancels immediately after the startup prompt before sending configuration co
   );
   const manager = managerWithFakeSpawner(fake.spawnProcess);
 
-  const started = await manager.start(controller.signal);
+  const started = await manager.start(controller.signal, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started).toMatchObject({
     ok: false,
@@ -316,12 +335,22 @@ it("cancels immediately after the startup prompt before sending configuration co
 
 it("rejects a GDB exit queued with the final startup response", async () => {
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     child.stdout.write(`${token}^done\n`);
-    if (command.includes("auto-load off"))
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    )
       setImmediate(() => child.exit(7, null));
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
   expect(started).toMatchObject({
     ok: false,
     error: { _tag: "AnalysisCapabilityUnavailableError" },
@@ -333,14 +362,24 @@ it("cancels startup when aborted during the final readiness drain", async () => 
   const controller = new AbortController();
   const commands: string[] = [];
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     commands.push(command);
     child.stdout.write(`${token}^done\n`);
-    if (command.includes("auto-load off"))
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    )
       setImmediate(() => controller.abort());
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
 
-  const started = await manager.start(controller.signal);
+  const started = await manager.start(controller.signal, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started).toMatchObject({
     ok: false,
@@ -369,7 +408,9 @@ it("preserves cancellation and cleanup details when startup stop is uncertain", 
     },
   });
 
-  const started = await manager.start(controller.signal);
+  const started = await manager.start(controller.signal, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started).toMatchObject({
     ok: false,
@@ -400,7 +441,9 @@ it("classifies cancellation while asynchronous GDB ownership preparation is pend
         );
       }),
   });
-  const starting = manager.start(controller.signal);
+  const starting = manager.start(controller.signal, {
+    inferiorTty: "/dev/pts/42",
+  });
   await spawnEntered;
   controller.abort();
   const started = await starting;
@@ -414,6 +457,13 @@ it("drains active GDB commands and rejects new commands before closeAll cleanup"
   let heldToken = "";
   let heldCommand = "";
   const fake = createFakeSpawner((_child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
     if (command.includes("held command")) {
       heldToken = token;
       heldCommand = command;
@@ -450,6 +500,11 @@ it("drains active GDB commands and rejects new commands before closeAll cleanup"
 it("enforces the per-session queue capacity while a GDB command is active", async () => {
   let heldToken = "";
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     if (command.includes("held-for-capacity")) heldToken = token;
     else if (command.includes("list-thread-groups"))
       child.stdout.write(`${token}^done,groups=[]\n`);
@@ -512,6 +567,13 @@ it.each([
   "fails pending GDB commands when stdin emits %s",
   async (event, message) => {
     const fake = createFakeSpawner((child, token, command) => {
+      if (command === "-inferior-tty-show") {
+        child.stdout.write(
+          `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+        );
+        return;
+      }
+
       if (!command.includes("held-command"))
         child.stdout.write(`${token}^done\n`);
     });
@@ -553,6 +615,11 @@ it.each([
 
 it("reports process exit rather than protocol failure when stdin closes afterward", async () => {
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     if (!command.includes("held-command"))
       child.stdout.write(`${token}^done\n`);
   });
@@ -615,6 +682,13 @@ it("reports process exit rather than protocol failure when stdin closes afterwar
 it("retains partial GDB command Evidence while an inherited writer remains", async () => {
   let writerActive = false;
   const fake = createFakeSpawner((_child, _token, command) => {
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${_token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
     if (command.includes("held-writer-command")) return;
     _child.stdout.write(`${_token}^done\n`);
   });
@@ -695,6 +769,11 @@ it("converts non-Error queue cancellation failures into a tagged error", async (
 it("waits for GDB stdout settlement after a no-inferior exit without re-entering MI", async () => {
   const commands: string[] = [];
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     commands.push(command);
     if (command.includes("list-thread-groups"))
       child.stdout.write(`${token}^done,groups=[]\n`);
@@ -719,6 +798,11 @@ it("waits for GDB stdout settlement after a no-inferior exit without re-entering
 it("reports incomplete stop if GDB exits while close waits in the serialized queue", async () => {
   let heldToken = "";
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     if (command.includes("held-before-close")) heldToken = token;
     else if (command.includes("list-thread-groups"))
       child.stdout.write(`${token}^done,groups=[]\n`);
@@ -806,8 +890,8 @@ it("rejects a GDB leader exit without a verified sink and retains inherited outp
   expect(closed.ok).toBe(false);
   expect(manager.status(started.value.session_id)).toMatchObject({
     state: "closed",
-    inferior_tty: null,
-    inferior_tty_verified: false,
+    inferior_tty: "/dev/pts/42",
+    inferior_tty_verified: true,
   });
   expect(child.killSignals).toEqual([]);
   child.stdout.write("=thread-group-exited,id=descendant-sentinel\n");
@@ -981,6 +1065,11 @@ it("rejects inferior TTY configuration when GDB reports a different terminal", a
 it("rejects an inferior TTY when GDB does not confirm the setting command", async () => {
   const commands: string[] = [];
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     commands.push(command);
     child.stdout.write(
       command.includes("inferior-tty-set")
@@ -1123,6 +1212,8 @@ process.stdin.on('data', (chunk) => {
     const line = input.slice(0, end); input = input.slice(end + 1);
     const match = /^(\\d+)(.*)/.exec(line);
     if (!match) continue;
+    if (match[2].includes('inferior-tty-set')) { process.stdout.write(match[1] + '^done\\n'); continue; }
+    if (match[2].includes('inferior-tty-show')) { process.stdout.write(match[1] + '^done,inferior_tty_terminal="/dev/pts/42"\\n'); continue; }
     ${handler}
   }
 });
@@ -1144,6 +1235,7 @@ it("rejects a pre-cancelled GDB start and an unconfigured executable", async () 
   cancelled.abort();
   const startResult = await new GdbSessionManager({ platform: "linux" }).start(
     cancelled.signal,
+    { inferiorTty: "/dev/pts/42" },
   );
   expect(startResult.ok).toBe(false);
   if (!startResult.ok)
@@ -1152,7 +1244,7 @@ it("rejects a pre-cancelled GDB start and an unconfigured executable", async () 
   const missing = await new GdbSessionManager({
     platform: "linux",
     environment: { REA_GDB_COMMAND: join(tmpdir(), "does-not-exist-gdb") },
-  }).start();
+  }).start(undefined, { inferiorTty: "/dev/pts/42" });
   expect(missing.ok).toBe(false);
   if (!missing.ok) {
     expect(missing.error._tag).toBe("AnalysisCapabilityUnavailableError");
@@ -1171,7 +1263,9 @@ ${responsiveProvider()}
   });
   managers.push(manager);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(true);
   if (started.ok) expect(started.value.mi_version).toBe("mi2");
@@ -1195,7 +1289,9 @@ it("retains ownership when GDB startup fails before its prompt and stop is incom
   });
   managers.push(manager);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) {
@@ -1213,7 +1309,9 @@ it("uses a fallback message when the process launcher rejects without an Error",
     return Promise.reject("non-error launch failure");
   });
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) {
@@ -1234,7 +1332,9 @@ it("returns startup timeout when the MI prompt never arrives", async () => {
   });
   managers.push(manager);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) {
@@ -1251,7 +1351,9 @@ it("handles a provider with no MI stdout stream as a startup timeout", async () 
     startupTimeoutMs: 15,
   });
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started).toMatchObject({
     ok: false,
@@ -1261,12 +1363,22 @@ it("handles a provider with no MI stdout stream as a startup timeout", async () 
 });
 
 it("preserves a timeout while startup waits for the automatic-loading response", async () => {
-  const fake = createFakeSpawner((_child, _token, _command) => undefined);
+  const fake = createFakeSpawner((_child, _token, _command) => {
+    if (_command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${_token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+    return undefined;
+  });
   const manager = managerWithFakeSpawner(fake.spawnProcess, {
     commandTimeoutMs: 25,
   });
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) {
@@ -1279,13 +1391,23 @@ it("preserves a timeout while startup waits for the automatic-loading response",
 });
 
 it("maps an acknowledged startup-command timeout to the startup operation", async () => {
-  const fake = createFakeSpawner((_child, _token, _command) => undefined);
+  const fake = createFakeSpawner((_child, _token, _command) => {
+    if (_command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${_token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+    return undefined;
+  });
   const manager = managerWithFakeSpawner(fake.spawnProcess, {
     commandTimeoutMs: 20,
     stopProcess: async () => ({ status: "stopped" }),
   });
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started).toMatchObject({
     ok: false,
@@ -1314,7 +1436,9 @@ it("retains startup timeout without partial evidence when cleanup is uncertain",
   });
   managers.push(manager);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started).toMatchObject({
     ok: false,
@@ -1334,7 +1458,15 @@ it("retains startup timeout without partial evidence when cleanup is uncertain",
 it("maps startup command timeout and preserves initial no-inferior evidence when cleanup is uncertain", async () => {
   let detachResult: unknown;
   let retainedSessionId = "";
-  const fake = createFakeSpawner((_child, _token, _command) => undefined);
+  const fake = createFakeSpawner((_child, _token, _command) => {
+    if (_command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${_token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+    return undefined;
+  });
   const manager = managerWithFakeSpawner(fake.spawnProcess, {
     commandTimeoutMs: 25,
     stopProcess: async (session) => {
@@ -1350,7 +1482,9 @@ it("maps startup command timeout and preserves initial no-inferior evidence when
     },
   });
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) {
@@ -1387,7 +1521,7 @@ it("handles a start signal that becomes aborted during listener registration", a
   });
   managers.push(manager);
 
-  const started = await manager.start(signal);
+  const started = await manager.start(signal, { inferiorTty: "/dev/pts/42" });
 
   expect(registrations).toBe(1);
   expect(started.ok).toBe(false);
@@ -1397,15 +1531,26 @@ it("handles a start signal that becomes aborted during listener registration", a
 it("handles cancellation after the automatic-loading response", async () => {
   const controller = new AbortController();
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     child.stdout.write(
       command.includes("list-thread-groups")
         ? `${token}^done,groups=[]\n`
         : `${token}^done\n`,
     );
-    if (command.includes("auto-load off")) controller.abort();
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    )
+      controller.abort();
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
-  const started = await manager.start(controller.signal);
+  const started = await manager.start(controller.signal, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) expect(started.error._tag).toBe("AnalysisCancelledError");
@@ -1415,7 +1560,9 @@ it("reports an MI stream failure when the child has no stdin pipe", async () => 
   const fake = createFakeSpawner(undefined, { stdinEnabled: false });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) {
@@ -1453,8 +1600,16 @@ it("preserves the protocol failure when owned-process stop is confirmed", async 
 
 it("converts a closed stdin guard failure without partial MI records", async () => {
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     child.stdout.write(`${token}^done\n`);
-    if (command.includes("auto-load off"))
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    )
       Object.defineProperty(child.stdin, "destroyed", { value: true });
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess, {
@@ -1544,7 +1699,9 @@ it("does not issue a command after an exit wins the startup prompt race", async 
   const fake = createFakeSpawner(undefined, { exitOnFirstStdoutData: true });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok)
@@ -1559,7 +1716,9 @@ it("preserves SIGTERM startup exit status in the capability failure and Evidence
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   if (!started.ok) {
@@ -1577,7 +1736,17 @@ it("preserves SIGTERM startup exit status in the capability failure and Evidence
 
 it("rejects the command queued behind a timed-out GDB request", async () => {
   const fake = createFakeSpawner((_child, _token, command) => {
-    if (command.includes("auto-load off"))
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${_token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    )
       fake.children[0]?.stdout.write(`${_token}^done\n`);
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess, {
@@ -1677,7 +1846,7 @@ it("correlates command output records and reports invalid or cancelled requests"
   expect(manager.status(started.value.session_id)).toBeDefined();
 });
 
-it("refuses to close a session while GDB reports a live target", async () => {
+it("refuses to close a session after TTY verification is revoked", async () => {
   const manager = await managerFor(
     responsiveProvider(`
       if (match[2].includes('auto-load off')) process.stdout.write(match[1] + '^done\\n');
@@ -1687,18 +1856,24 @@ it("refuses to close a session while GDB reports a live target", async () => {
   );
   const started = await expectGdbSessionStarted(manager);
 
+  await manager.execute(started.value.session_id, "set inferior-tty");
   const closed = await manager.close(started.value.session_id);
 
   expect(closed.ok).toBe(false);
   if (!closed.ok)
     expect(JSON.stringify(closed.error)).toContain(
-      "Live GDB thread groups remain",
+      "TTY verification was revoked",
     );
 });
 
 it("retains ownership when recursive MI returns an unknown inferior list", async () => {
   const commands: string[] = [];
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     commands.push(command);
     child.stdout.write(
       command.includes("list-thread-groups")
@@ -2057,16 +2232,18 @@ it.each([
   },
 );
 
-it("does not detach a live inferior when no durable TTY was selected", async () => {
+it("does not detach a live inferior after TTY verification is revoked", async () => {
   const responder = recordingInferiorListResponder('[{id="i1",pid="123"}]');
   const fake = createFakeSpawner(responder.respond);
   const manager = managerWithFakeSpawner(fake.spawnProcess);
   const started = await expectGdbSessionStarted(manager);
 
+  await manager.execute(started.value.session_id, "set inferior-tty");
+
   await expect(manager.closeAll()).rejects.toMatchObject({
     errors: [
       expect.objectContaining({
-        message: expect.stringMatching(/durable output sink/i),
+        message: expect.stringMatching(/TTY verification was revoked/i),
       }),
     ],
   });
@@ -2116,8 +2293,18 @@ it("confirms no inferior before the shared stop helper signals GDB", async () =>
 it("retains ownership when manual close receives a truncated empty inferior list", async () => {
   const commands: string[] = [];
   const fake = createFakeSpawner((_child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
     commands.push(command);
-    if (command.includes("auto-load off")) {
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    ) {
       fake.children[0]?.stdout.write(`${token}^done\n`);
       return;
     }
@@ -2148,7 +2335,17 @@ it("retains ownership when manual close receives a truncated empty inferior list
 
 it("retains ownership and sends no signal when MI state is saturated or unknown", async () => {
   const fake = createFakeSpawner((_child, token, command) => {
-    if (command.includes("auto-load off"))
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    )
       fake.children[0]?.stdout.write(`${token}^done\n`);
     else if (command.includes("list-thread-groups"))
       fake.children[0]?.stdout.write(`${token}^error,msg="unknown"\n`);
@@ -2197,6 +2394,13 @@ it("routes protocol failure cleanup through detach verification without direct s
 
 it("retains ownership without signaling when detach confirmation fails", async () => {
   const fake = createFakeSpawner((_child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
     fake.children[0]?.stdout.write(
       command.includes("list-thread-groups")
         ? `${token}^error,msg="state unavailable"\n`
@@ -2372,7 +2576,15 @@ it("reports cancellation if owned-process stop rejects during an active command"
   const controller = new AbortController();
   let stopCalls = 0;
   const fake = createFakeSpawner((child, token, command) => {
-    if (command.includes("auto-load off"))
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    )
       child.stdout.write(`${token}^done\n`);
     else controller.abort();
   });
@@ -2430,6 +2642,13 @@ it("rethrows an unexpected non-domain cleanup failure while closing", async () =
 
 it("returns partial command evidence when the active MI request times out after stop", async () => {
   const fake = createFakeSpawner((_child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
     if (command.includes("hang-for-timeout")) return;
     if (command.includes("list-thread-groups"))
       _child.stdout.write(`${token}^done,groups=[]\n`);
@@ -2461,6 +2680,13 @@ it("preserves cancellation without cleanup details when stop is confirmed", asyn
   const controller = new AbortController();
   let requestToken = "";
   const fake = createFakeSpawner((_child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
     if (command.includes("cancel-confirmed")) requestToken = token;
     else _child.stdout.write(`${token}^done\n`);
   });
@@ -2503,6 +2729,11 @@ it("rechecks cancellation after registering the active MI request listener", asy
   });
   const commands: string[] = [];
   const fake = createFakeSpawner((child, token, command) => {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
     commands.push(command);
     child.stdout.write(`${token}^done\n`);
   });
@@ -2820,7 +3051,15 @@ process.stdin.on('data', (chunk) => {
 
 it("completes an MI record split after a chunk without a newline", async () => {
   const fake = createFakeSpawner((child, token, command) => {
-    if (command.includes("auto-load off")) {
+    if (command === "-inferior-tty-show") {
+      child.stdout.write(`${token}^done,inferior_tty_terminal="/dev/pts/42"\n`);
+      return;
+    }
+
+    if (
+      command.includes("auto-load off") ||
+      command.includes("inferior-tty-set")
+    ) {
       child.stdout.write(`${token}^done\n`);
       return;
     }
@@ -2929,7 +3168,9 @@ it("drains buffered startup stdout before capturing early-exit Evidence", async 
   });
   managers.push(manager);
 
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
 
   expect(started.ok).toBe(false);
   expect(children).toHaveLength(2);
@@ -2946,7 +3187,20 @@ it("drains buffered startup stdout before capturing early-exit Evidence", async 
 it("reports command timeout when an incomplete stop cannot confirm process exit", async () => {
   let stopCalls = 0;
   const fake = createFakeSpawner((_child, _token, command) => {
-    if (!command.includes("auto-load off")) return;
+    if (command === "-inferior-tty-show") {
+      _child.stdout.write(
+        `${_token}^done,inferior_tty_terminal="/dev/pts/42"\n`,
+      );
+      return;
+    }
+
+    if (
+      !(
+        command.includes("auto-load off") ||
+        command.includes("inferior-tty-set")
+      )
+    )
+      return;
     fake.children[0]?.stdout.write(`${_token}^done\n`);
   });
   const manager = managerWithFakeSpawner(fake.spawnProcess, {

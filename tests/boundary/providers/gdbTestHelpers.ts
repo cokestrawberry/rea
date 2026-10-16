@@ -7,9 +7,12 @@ type StartedGdbSession = Extract<GdbSessionStart, { readonly ok: true }>;
 
 export const expectGdbSessionStarted = async (
   manager: GdbSessionManager,
-  ...arguments_: Parameters<GdbSessionManager["start"]>
+  signal?: AbortSignal,
+  options: Parameters<GdbSessionManager["start"]>[1] = {
+    inferiorTty: "/dev/pts/42",
+  },
 ): Promise<StartedGdbSession> => {
-  const started = await manager.start(...arguments_);
+  const started = await manager.start(signal, options);
   expect(started.ok).toBe(true);
   if (!started.ok) throw new Error(started.error.message);
   return started;
