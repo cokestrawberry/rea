@@ -1,5 +1,8 @@
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
-import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+import {
+  ArtifactResourceScope,
+  type ArtifactResourceOwner,
+} from "../artifacts/ArtifactResourceScope.js";
 import { readStableArtifact } from "../artifacts/readStableArtifact.js";
 import {
   AnalysisError,
@@ -37,13 +40,6 @@ export class ArtifactAnalysisResources {
     readonly scope: ArtifactResourceScope;
     operation: string;
   };
-  readonly #pending = new Map<
-    ArtifactAnalysisRuntime,
-    {
-      readonly owner: ProviderProcessSupervisor | undefined;
-      readonly operation: string;
-    }
-  >();
   #tail: Promise<void> = Promise.resolve();
   #busy = false;
   #closed = false;
@@ -118,79 +114,60 @@ export class ArtifactAnalysisResources {
     root: ArtifactAnalysisRuntime,
     owner?: ProviderProcessSupervisor,
   ): void {
-    this.#pending.set(root, {
-      owner,
-      operation:
-        this.#pending.get(root)?.operation ?? this.#artifacts.operation,
-    });
+    const retained = this.#pendingRoots.find(
+      (resource) => resource.root === root,
+    );
+    if (retained !== undefined) retained.process = owner;
+    else
+      this.#artifacts.scope.retain({
+        kind: "owned-process-root",
+        resource: root.path,
+        root,
+        process: owner,
+        providerId: this.providerId,
+        operation: this.#artifacts.operation,
+        resources:
+          owner?.launch.ownership === undefined
+            ? [root.path]
+            : ownedCommandResources(owner.launch.ownership, root.path),
+      });
+  }
+
+  get #pendingRoots(): readonly Extract<
+    ArtifactResourceOwner,
+    { kind: "owned-process-root" }
+  >[] {
+    return this.#artifacts.scope.pendingOwners.filter(
+      (
+        owner,
+      ): owner is Extract<
+        ArtifactResourceOwner,
+        { kind: "owned-process-root" }
+      > => owner.kind === "owned-process-root",
+    );
   }
 
   get pendingPaths(): readonly string[] {
-    return [...this.#pending.keys()].map((root) => root.path);
-  }
-
-  #resourcesFor(root: ArtifactAnalysisRuntime): readonly string[] {
-    const ownership = this.#pending.get(root)?.owner?.launch.ownership;
-    return ownership === undefined
-      ? [root.path]
-      : ownedCommandResources(ownership, root.path);
+    return this.#pendingRoots.map(({ root }) => root.path);
   }
 
   get #pendingResources(): readonly string[] {
-    return [...this.#pending.keys()].flatMap((root) =>
-      this.#resourcesFor(root),
+    return this.#pendingRoots.flatMap((owner) =>
+      owner.process === undefined ? [owner.root.path] : owner.resources,
     );
   }
 
   async release(): Promise<void> {
-    for (const [root, retained] of this.#pending) {
-      try {
-        const { owner } = retained;
-        if (owner !== undefined) {
-          const stopped = await owner.stop();
-          if (stopped.status === "incomplete") {
-            const cleanup = stopped.cleanupResult;
-            throw new ProviderCleanupError(
-              this.providerId,
-              this.#resourcesFor(root),
-              {
-                reason: stopped.reason,
-                ...(cleanup?.failures === undefined
-                  ? {}
-                  : {
-                      failures: cleanup.failures.map((failure) => ({
-                        ...failure,
-                      })),
-                    }),
-                ...(cleanup?.unverified === undefined
-                  ? {}
-                  : {
-                      unverified: cleanup.unverified.map((process) => ({
-                        ...process,
-                      })),
-                    }),
-              },
-              { operation: retained.operation },
-            );
-          }
-          this.#pending.set(root, { ...retained, owner: undefined });
-        }
-        await root.close();
-        this.#pending.delete(root);
-      } catch (cause: unknown) {
-        const diagnostics =
-          cause instanceof ProviderCleanupError ? cause.diagnostics : undefined;
+    for (const owner of this.#pendingRoots) {
+      const released = await this.#artifacts.scope.release(owner);
+      if (released.kind === "failed") {
+        if (released.cause instanceof ProviderCleanupError)
+          throw released.cause;
         throw new ProviderCleanupError(
           this.providerId,
-          this.#resourcesFor(root),
-          {
-            ...diagnostics,
-            reason:
-              cause instanceof ProviderCleanupError
-                ? String(diagnostics?.reason ?? cause.message)
-                : String(cause),
-          },
-          { operation: retained.operation, cause },
+          owner.process === undefined ? [owner.root.path] : owner.resources,
+          { reason: String(released.cause) },
+          { operation: owner.operation, cause: released.cause },
         );
       }
     }

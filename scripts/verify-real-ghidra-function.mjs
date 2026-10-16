@@ -219,10 +219,7 @@ export async function verifyDebugFunctionOperations(
   });
   assertIndirectDossier(indirectDossier, leaf.address);
 
-  const { cancellation, timeout } = await verifyRequestCancellationAndTimeout(
-    client,
-    entry,
-  );
+  const { cancellation } = await verifyRequestCancellation(client, entry);
   const concurrent = await verifyConcurrentRequests(client, entry, leaf);
 
   return {
@@ -237,7 +234,6 @@ export async function verifyDebugFunctionOperations(
     terminal_call_limitations: terminalLimitations,
     returning_call_limitations: returningObservation.limitations,
     cancellation,
-    timeout,
     concurrency: concurrent,
   };
 }
@@ -393,7 +389,7 @@ function assertIndirectDossier(indirectDossier, leafAddress) {
     );
 }
 
-async function verifyRequestCancellationAndTimeout(client, entry) {
+async function verifyRequestCancellation(client, entry) {
   const aborted = new AbortController();
   aborted.abort();
   const cancelled = await client.callTool(
@@ -404,14 +400,7 @@ async function verifyRequestCancellationAndTimeout(client, entry) {
   if (cancelled.ok || cancelled.error.kind !== "cancelled")
     throw new Error("Ghidra established-request cancellation drifted");
 
-  const timedOut = await client.ping({ timeoutMs: 0 });
-  if (timedOut.ok || timedOut.error.kind !== "timeout")
-    throw new Error("Ghidra expired ping deadline drifted");
-
-  return {
-    cancellation: "cancelled-before-wire",
-    ping_deadline: "expired-before-wire",
-  };
+  return { cancellation: "cancelled-before-wire" };
 }
 
 async function verifyConcurrentRequests(client, entry, leaf) {

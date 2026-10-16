@@ -7,10 +7,6 @@ import { fileURLToPath } from "node:url";
 // Route production MCP before importing Incur. Incur owns registration helpers
 // such as `mcp add`, while the MCP runtime serves the stdio tool catalog.
 const args = process.argv.slice(2);
-const { default: packageJson } = await import("../package.json", {
-  with: { type: "json" },
-});
-process.env.REA_PACKAGE_VERSION = packageJson.version;
 const isMcpMode =
   args.length === 1 && (args[0] === "--mcp" || args[0] === "mcp");
 const isMcpDoctorMode = args[0] === "mcp" && args[1] === "doctor";
