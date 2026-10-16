@@ -28,6 +28,7 @@ import {
 } from "../../../../src/ghidra/GhidraSessionValues.js";
 import { waitForExit as waitForChildExit } from "../../../support/process/processFixture.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
+import { createDeferred } from "../../../fixtures/binarySession.js";
 
 const fixturePath = fileURLToPath(
   new URL("../../../fixtures/fakeGhidra.mjs", import.meta.url),
@@ -683,11 +684,12 @@ describe("GhidraClient startup lifecycle", () => {
 
   it("cancels a caller joining an aborted startup before cleanup completes", async () => {
     const launcher = new FixtureLauncher("silent");
-    const cleanupEntered = Promise.withResolvers<void>();
-    const cleanupRelease = Promise.withResolvers<void>();
+    const cleanupEntered = createDeferred<void>();
+    const cleanupRelease = createDeferred<void>();
     const client = clientFor({
       async launch(session) {
         const launched = await launcher.launch(session);
+        if (!launched.ok) return launched;
         return ok({
           ...launched.value,
           cleanup: async () => {

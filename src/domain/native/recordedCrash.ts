@@ -229,7 +229,9 @@ const recordedCrashObjectSchema = z.strictObject({
       owner_display: z.string().nullable(),
       descriptor_location: range,
       descriptor_bytes_base64: base64,
-      process_info: z.strictObject({ historical_pid: signed32 }).optional(),
+      process_info: z
+        .strictObject({ historical_pid: signed32 })
+        .exactOptional(),
     }),
   ),
   note_padding: z.array(
