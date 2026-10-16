@@ -15,7 +15,7 @@ import {
   endpointArgument as endpointArgumentHelper,
   prefixedArgument,
   range,
-  rangeForOffsets,
+  rangeForText,
   sourceSlice,
   staticPath,
   staticPathResolutionContext,
@@ -40,6 +40,11 @@ import {
   isUnmodifiedGlobalReference,
   isUnmodifiedImportMetaUrl,
 } from "./javascriptSemanticAmbientWrites.js";
+import {
+  semanticFactoryLoaderMemberAt,
+  semanticFactoryRequireLoaderAt,
+  semanticRequireLoaderAt,
+} from "./javascriptSemanticRequireOrigin.js";
 
 type JavaScriptCallLike =
   | t.CallExpression
@@ -56,16 +61,14 @@ export const inspectCall = (
   const { accumulator } = context;
   const name = calleeName(node.callee);
   const first = stringValue(node.arguments[0]);
-  const module = context.accumulator.moduleRangeIndex.find(node.start);
-  const moduleRequireName = module?.requireName ?? null;
-  const requireCall = requireCallSpecifier(node, name, moduleRequireName);
+  const requireCall = requireCallSpecifier(node, bindings, context);
   if (requireCall !== null)
     addReference(context, {
       node,
       kind: "require",
       specifier: requireCall.specifier,
     });
-  const chunkLoad = chunkLoadSpecifier(node, name, moduleRequireName);
+  const chunkLoad = chunkLoadSpecifier(node, bindings, context);
   if (chunkLoad !== null)
     addReference(context, {
       node,
@@ -224,31 +227,61 @@ const noteMediaElementPreloads = (
 
 const requireCallSpecifier = (
   node: JavaScriptCallLike,
-  name: string,
-  moduleRequireName: string | null,
+  bindings: JavaScriptSemanticAnalysisState,
+  context: FindingContext,
 ): { readonly specifier: string | undefined } | null => {
-  if (name === "require" || name.endsWith(".require"))
-    return { specifier: argumentValue(node.arguments[0]) };
-  if (name === "__webpack_require__" || name === moduleRequireName)
-    return { specifier: argumentValue(node.arguments[0]) };
-  if (
-    name === "__webpack_require__.bind" ||
-    (moduleRequireName !== null && name === `${moduleRequireName}.bind`)
-  )
-    return { specifier: argumentValue(node.arguments[1]) };
+  const bareRequire = t.isIdentifier(node.callee, { name: "require" });
+  if (bareRequire) {
+    const loader = semanticRequireLoaderAt(
+      node,
+      bindings,
+      context.accumulator.factoryRequireBindingIds,
+    );
+    if (loader === "local") return null;
+    if (loader === "unknown") context.accumulator.unknownFindings += 1;
+    return {
+      specifier:
+        loader === "unknown" ? undefined : argumentValue(node.arguments[0]),
+    };
+  }
+  const factoryLoader = semanticFactoryRequireLoaderAt(
+    node,
+    bindings,
+    context.accumulator.factoryRequireBindingIds,
+  );
+  if (factoryLoader === "factory-loader")
+    return {
+      specifier: argumentValue(
+        node.arguments[
+          t.isMemberExpression(unwrapJavaScriptExpression(node.callee).node) ||
+          t.isOptionalMemberExpression(
+            unwrapJavaScriptExpression(node.callee).node,
+          )
+            ? 1
+            : 0
+        ],
+      ),
+    };
+  if (factoryLoader === "unknown") {
+    context.accumulator.unknownFindings += 1;
+    return { specifier: undefined };
+  }
   return null;
 };
 
 const chunkLoadSpecifier = (
   node: JavaScriptCallLike,
-  name: string,
-  moduleRequireName: string | null,
+  bindings: JavaScriptSemanticAnalysisState,
+  context: FindingContext,
 ): { readonly specifier: string | undefined } | null => {
-  if (
-    name !== "__webpack_require__.e" &&
-    (moduleRequireName === null || name !== `${moduleRequireName}.e`)
-  )
-    return null;
+  const loader = semanticFactoryLoaderMemberAt(
+    node,
+    bindings,
+    context.accumulator.factoryRequireBindingIds,
+    "e",
+  );
+  if (loader === undefined) return null;
+  if (loader === "unknown") return { specifier: undefined };
   return { specifier: prefixedArgument("chunk:", node.arguments[0]) };
 };
 
@@ -537,11 +570,14 @@ export const addSourceMapDirectives = (
   for (const comment of comments) {
     const start = comment.start;
     const end = comment.end;
+    const loc = comment.loc;
     if (
       start === undefined ||
       start === null ||
       end === undefined ||
-      end === null
+      end === null ||
+      loc === undefined ||
+      loc === null
     )
       continue;
     // The parser owns comment boundaries. Exclude only the closing block
@@ -574,7 +610,11 @@ export const addSourceMapDirectives = (
       terminator === -1 ? commentSource.length : declaredStart + terminator;
     if (declaredEnd === declaredStart) continue;
     const declared = commentSource.slice(declaredStart, declaredEnd);
-    const location = rangeForOffsets(source, start, start + declaredEnd);
+    // Babel owns the start coordinates; only the directive text is measured.
+    const location = rangeForText(
+      { line: loc.start.line, column: loc.start.column },
+      commentSource.slice(0, declaredEnd),
+    );
     addFindingOnce(accumulator, `source-map\0${declared}`, () =>
       accumulator.sourceMaps.push({ declared_url: declared, location }),
     );

@@ -746,15 +746,22 @@ export const range = (node: t.Node): JavaScriptSourceRange => ({
   },
 });
 
-/** Convert exact text offsets into a source range. */
-export const rangeForOffsets = (
-  source: string,
-  start: number,
-  end: number,
-): JavaScriptSourceRange => ({
-  start: pointForOffset(source, start),
-  end: pointForOffset(source, end),
-});
+/** Locate the end of exact text that begins at a known source point. */
+export const rangeForText = (
+  start: JavaScriptSourceRange["start"],
+  text: string,
+): JavaScriptSourceRange => {
+  // Match JavaScript line terminators, treating CRLF as a single newline.
+  const lines = text.split(/\r\n|[\n\r\u2028\u2029]/u);
+  const lastLine = lines.at(-1) ?? "";
+  return {
+    start,
+    end:
+      lines.length === 1
+        ? { line: start.line, column: start.column + lastLine.length }
+        : { line: start.line + lines.length - 1, column: lastLine.length },
+  };
+};
 
 /** Compare two exact source ranges. */
 export const sourceRangesEqual = (
@@ -766,13 +773,6 @@ export const sourceRangesEqual = (
   left.start.column === right.start.column &&
   left.end.line === right.end.line &&
   left.end.column === right.end.column;
-
-const pointForOffset = (source: string, offset: number) => {
-  const before = source.slice(0, offset);
-  // Match JavaScript line terminators, treating CRLF as a single newline.
-  const lines = before.split(/\r\n|[\n\r\u2028\u2029]/u);
-  return { line: lines.length, column: lines.at(-1)?.length ?? 0 };
-};
 
 /** Observe known bundler/framework marker strings without claiming dependency use. */
 export const detectVendors = (source: string): string[] =>

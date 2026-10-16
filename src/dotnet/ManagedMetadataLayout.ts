@@ -116,6 +116,9 @@ const CODED_INDEXES = {
 
 const SUPPORTED_TABLE_MASK = (1n << BigInt(METADATA_TABLE_NAMES.length)) - 1n;
 
+// ECMA-335 metadata tokens hold a 24-bit RID below the table byte.
+const MAX_TABLE_ROW_COUNT = 0x00ff_ffff;
+
 const requireRange = (
   bytes: Buffer,
   offset: number,
@@ -316,6 +319,7 @@ const readTablesHeader = (
 const readRowCounts = (
   tableBytes: Buffer,
   valid: bigint,
+  tablesOffset: number,
 ): readonly number[] => {
   const rowCounts = Array<number>(METADATA_TABLE_NAMES.length).fill(0);
   let tableCursor = 24;
@@ -323,6 +327,13 @@ const readRowCounts = (
     if ((valid & (1n << BigInt(index))) === 0n) continue;
     requireRange(tableBytes, tableCursor, 4, "metadata.table-row-count");
     const count = tableBytes.readUInt32LE(tableCursor);
+    if (count > MAX_TABLE_ROW_COUNT)
+      throw managedFailure(
+        "invalid-tables",
+        "metadata.table-row-count",
+        `Metadata table ${METADATA_TABLE_NAMES[index] ?? String(index)} declares ${String(count)} rows, exceeding the 24-bit token RID range`,
+        tablesOffset + tableCursor,
+      );
     rowCounts[index] = count;
     tableCursor += 4;
   }
@@ -417,7 +428,7 @@ export const readManagedMetadataLayout = (
     artifact,
     streams,
   );
-  const rowCounts = readRowCounts(tableBytes, valid);
+  const rowCounts = readRowCounts(tableBytes, valid, tablesOffset);
   const tables = buildMetadataTables({
     tableBytes,
     rowCounts,

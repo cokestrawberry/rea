@@ -64,6 +64,22 @@ export interface ReferenceSourceImportParseResult {
 export const PARSEABLE_REFERENCE_SOURCE_LANGUAGES: ReadonlySet<string> =
   new Set(["JavaScript", "TypeScript", "JSX", "TSX"]);
 
+/** Outcome for a source whose size exceeds the bounds within which imports are parsed. */
+export const oversizedReferenceSourceImports = (
+  path: string,
+): ReferenceSourceImportParseResult => ({
+  relationships: [],
+  parse_failures: [
+    {
+      path,
+      parser: "source-size",
+      reason:
+        "Source size exceeds the parsing bounds; import targets were not parsed.",
+    },
+  ],
+  limitations: [],
+});
+
 const safeModuleName = (node: Node | null | undefined): string | undefined => {
   if (isStringLiteral(node)) return node.value;
   return undefined;
@@ -324,7 +340,13 @@ export const parseReferenceSourceImports = (
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
+  } catch (cause: unknown) {
+    const code =
+      typeof cause === "object" && cause !== null && "code" in cause
+        ? cause.code
+        : undefined;
+    if (code === "ERR_STRING_TOO_LONG")
+      return oversizedReferenceSourceImports(path);
     return {
       relationships: [],
       parse_failures: [

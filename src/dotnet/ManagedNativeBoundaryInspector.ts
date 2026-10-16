@@ -13,11 +13,15 @@ import {
   readManagedMetadataLayout,
   type ManagedMetadataLayout,
 } from "./ManagedMetadataLayout.js";
+import { readTypeMemberListFacts } from "./ManagedTypeMemberLists.js";
 import {
   readManagedPeLayout,
   type ManagedPeLayout,
 } from "./ManagedPeReader.js";
-import { ManagedReaderFailure } from "./ManagedReaderFailure.js";
+import {
+  appendManagedParseIssues,
+  ManagedReaderFailure,
+} from "./ManagedReaderFailure.js";
 import {
   buildNativeBoundaryInspection,
   cliNative,
@@ -108,10 +112,12 @@ const readBoundaryInventory = (
     metadataOffset,
     cli.metadata.size,
   );
+  const memberLists = readTypeMemberListFacts(bytes, layout);
   const inventory = readManagedMetadataInventory(
     bytes,
     layout,
     readManagedResourceDirectory(pe, issues),
+    memberLists,
   );
   return { layout, inventory };
 };
@@ -144,7 +150,7 @@ export const inspectManagedNativeBoundariesBytes = (
   }
   try {
     const heapExtent = Math.max(layout.strings.size, layout.blob.size);
-    issues.push(...inventory.issues);
+    appendManagedParseIssues(issues, inventory.issues);
     const moduleRefs = parseModuleRefs(bytes, layout, heapExtent, issues);
     const members = new Map([
       ...parseFields(bytes, layout, heapExtent, issues),

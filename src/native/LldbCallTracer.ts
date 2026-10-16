@@ -1,6 +1,6 @@
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import { randomUUID } from "node:crypto";
-import { open, readFile, writeFile } from "node:fs/promises";
+import { open, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -123,6 +123,7 @@ const tracerOutputSchema = z.discriminatedUnion("status", [
       "tracer-error",
     ]),
     error: z.string().nullable(),
+    target_process_created: z.boolean().optional(),
   }),
 ]);
 
@@ -423,11 +424,12 @@ export class LldbCallTracer implements NativeCallTracer {
     let targetTermination: TargetTermination = exited.targetLaunched
       ? await ensureTerminated(paths.pid, exited.targetIdentity, true)
       : "terminated";
-    // These two bridge outcomes are emitted before a target process exists.
-    // Other missing-PID cases, including a missing result, remain unknown.
+    // Only an explicit bridge phase fact may prove that no target process was
+    // created. A missing PID or an integrity-error status alone is ambiguous.
     if (
       output !== undefined &&
-      (output.status === "target-error" || output.status === "launch-error") &&
+      output.status !== "traced" &&
+      output.target_process_created === false &&
       (await readTargetPid(paths.pid)) === undefined
     )
       targetTermination = "terminated";
@@ -889,11 +891,14 @@ const runLldb = async (
         }
         if (observation?.state === "readable")
           targetIdentity = observation.identity;
+        // The tracer reads the ack as soon as its name exists, so rename a complete file into place.
+        const stagedAckPath = `${options.identityAckPath}.staged`;
         await writeFile(
-          options.identityAckPath,
+          stagedAckPath,
           observation?.state === "readable" ? "readable" : "unavailable",
           { mode: 0o600 },
         );
+        await rename(stagedAckPath, options.identityAckPath);
         identityAckWritten = true;
       }
       const interruption = deadline.interruption;

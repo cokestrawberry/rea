@@ -2,36 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { inspectManagedArtifactBytes } from "./ManagedArtifactInspector.js";
 import { inspectManagedMembersBytes } from "./ManagedMemberInspector.js";
-import { readManagedPeLayout } from "./ManagedPeReader.js";
 import {
   buildManagedPeFixture,
+  fixtureTablesStream,
   managedPeFixtureTarget,
 } from "./ManagedPe.fixture.js";
-
-const fixtureTablesStream = (bytes: Buffer) => {
-  const pe = readManagedPeLayout(bytes);
-  if (pe.cli === null) throw new Error("Fixture omitted CLI metadata");
-  const root = pe.rvaToOffset(
-    pe.cli.metadata.rva,
-    pe.cli.metadata.size,
-    "cli.metadata",
-  );
-  const versionLength = bytes.readUInt32LE(root + 12);
-  const streamHeader = ((root + 16 + versionLength + 3) & ~3) + 4;
-  expect(
-    bytes.toString(
-      "ascii",
-      streamHeader + 8,
-      bytes.indexOf(0, streamHeader + 8),
-    ),
-  ).toBe("#~");
-  const tablesOffset = root + bytes.readUInt32LE(streamHeader);
-  const valid = bytes.readBigUInt64LE(tablesOffset + 8);
-  let count = 0;
-  for (let table = 0; table < 64; table += 1)
-    if ((valid & (1n << BigInt(table))) !== 0n) count += 1;
-  return { streamHeader, tablesOffset, extraDataOffset: 24 + count * 4 };
-};
 
 describe("CLR metadata tables ExtraData extension", () => {
   it.each([

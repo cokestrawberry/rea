@@ -24,6 +24,7 @@ import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import { parseExecutableHeader } from "../domain/binaryTarget.js";
 import { GhidraProvider } from "./GhidraProvider.js";
 import type { GhidraTargetSnapshot } from "./GhidraClient.js";
+import type { GhidraSnapshotReader } from "./GhidraSnapshotReader.js";
 import type { GhidraProviderClientFactory } from "./GhidraProviderClient.js";
 import type { GhidraHeadlessLauncher } from "./GhidraLauncher.js";
 import type { GhidraInstallationHost } from "./GhidraInstallation.js";
@@ -35,6 +36,7 @@ import { silentLogger } from "../logger.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { ProviderStartupDeadline } from "../process/ProviderDeadline.js";
+import { ProviderResponseLineLimitError } from "../process/ProviderResponseLineLimit.js";
 
 const INSTALL = "/opt/ghidra_12.1.4_PUBLIC";
 afterEach(() => vi.restoreAllMocks());
@@ -875,6 +877,42 @@ describe("Ghidra result projection", () => {
     },
   );
 
+  it("projects a bridge response line limit as a resource constraint", async () => {
+    const limit = new ProviderResponseLineLimitError("Ghidra", 1024);
+    const ghidra = provider(installationHost(), () => ({
+      start: () => Promise.resolve(ok(sessionInfo())),
+      callTool: () =>
+        Promise.resolve(
+          err(
+            new GhidraSessionError(
+              "protocol",
+              limit.message,
+              {},
+              { cause: limit },
+            ),
+          ),
+        ),
+      close: () => Promise.resolve(ok(null)),
+    }));
+    const client = await createElfClient(ghidra);
+    const result = await client.execute("list_procedures", {});
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisResourceConstraintError",
+        operation: "list_procedures",
+        resource: "memory",
+        reportedLimits: limit.reportedLimits,
+        remediationAction: limit.remediationAction,
+      },
+    });
+    if (!result.ok)
+      expect(projectAnalysisError(result.error)).toMatchObject({
+        code: "resource_constraint",
+        remediation: { action: limit.remediationAction },
+      });
+  });
+
   it("preserves the rejected name constraint and function address", async () => {
     const message =
       "Invalid function name at 0x10100: Symbol name contains invalid characters";
@@ -907,7 +945,9 @@ describe("Ghidra result projection", () => {
       },
     });
   });
+});
 
+describe("Ghidra cancellation projection", () => {
   it("projects remote decompile cancellation as a provider-neutral interruption", async () => {
     const code = "decompile_cancelled";
     const tag = "AnalysisCancelledError";
@@ -1199,8 +1239,14 @@ describe("Ghidra measured DOS load-image projection", () => {
         ...(state === "missing-snapshot"
           ? {}
           : {
-              readTargetSnapshot: () =>
-                Promise.resolve(ok({ kind: "captured", bytes: fixture.bytes })),
+              readTargetSnapshot: () => {
+                throw new Error(
+                  "MZ verification must not capture the complete file",
+                );
+              },
+              withTargetSnapshotReader: <T>(
+                use: (reader: GhidraSnapshotReader) => Promise<T>,
+              ) => use(fixture.reader).then((value) => ok(value)),
             }),
       });
       const ghidra = provider(installationHost(), factory);

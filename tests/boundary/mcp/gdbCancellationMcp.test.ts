@@ -37,6 +37,7 @@ it.skipIf(process.platform === "win32")(
     const directory = await mkdtemp(join(tmpdir(), "rea-gdb-mcp-cancel-"));
     const provider = join(directory, "fake-gdb.mjs");
     const commandPath = join(directory, "command-started");
+    const tty = join(directory, "inferior-terminal");
     await writeFile(
       provider,
       `#!${process.execPath}
@@ -47,6 +48,8 @@ process.stdin.on("data", async (chunk) => {
     const match = /^(\\d+)/.exec(line);
     if (!match) continue;
     if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
+    else if (line.includes("inferior-tty-show")) process.stdout.write(match[1] + "^done,inferior_tty_terminal=" + ${JSON.stringify(JSON.stringify(tty))} + "\\n");
+    else if (line.includes("inferior-tty-set")) process.stdout.write(match[1] + "^done\\n");
     else await import("node:fs/promises").then((fs) => fs.writeFile(${JSON.stringify(commandPath)}, "started"));
   }
 });
@@ -72,7 +75,7 @@ process.stdin.on("data", async (chunk) => {
       await client.connect(clientTransport);
       const started = await client.callTool({
         name: "start_gdb_session",
-        arguments: {},
+        arguments: { inferior_tty: tty },
       });
       const sessionId = z
         .object({ session_id: z.string().uuid() })
@@ -144,7 +147,7 @@ process.stdin.on("data", (chunk) => {
       await server.connect(serverTransport);
       await client.connect(clientTransport);
       const contract = toolContract("start_gdb_session");
-      expect(contract.inputSchema.safeParse({}).success).toBe(true);
+      expect(contract.inputSchema.safeParse({}).success).toBe(false);
       expect(
         contract.inputSchema.safeParse({ inferior_tty: tty }).success,
       ).toBe(true);
@@ -155,12 +158,12 @@ process.stdin.on("data", (chunk) => {
         (tool) => tool.name === "start_gdb_session",
       );
       expect(listed?.inputSchema).toBeDefined();
-      expect(
-        new Ajv2020({ strict: false, validateFormats: false }).validate(
-          z.record(z.string(), z.unknown()).parse(listed?.inputSchema),
-          { inferior_tty: tty },
-        ),
-      ).toBe(true);
+      const advertised = z
+        .record(z.string(), z.unknown())
+        .parse(listed?.inputSchema);
+      const ajv = new Ajv2020({ strict: false, validateFormats: false });
+      expect(ajv.validate(advertised, { inferior_tty: tty })).toBe(true);
+      expect(ajv.validate(advertised, {})).toBe(false);
       const started = await client.callTool({
         name: "start_gdb_session",
         arguments: { inferior_tty: tty },
@@ -190,6 +193,7 @@ it.skipIf(process.platform === "win32")(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "rea-gdb-mcp-mi-utf8-"));
     const provider = join(directory, "fake-gdb.mjs");
+    const tty = join(directory, "inferior-terminal");
     await writeFile(
       provider,
       `#!${process.execPath}
@@ -202,7 +206,8 @@ process.stdin.on("data", (chunk) => {
     if (line.includes("auto-load off")) {
       process.stdout.write(match[1] + "^done\\n");
       process.stdout.write(Buffer.from([0xff, 0x0a]));
-    } else if (line.includes("list-thread-groups")) process.stdout.write(match[1] + "^done,groups=[]\\n");
+    } else if (line.includes("inferior-tty-show")) process.stdout.write(match[1] + "^done,inferior_tty_terminal=" + ${JSON.stringify(JSON.stringify(tty))} + "\\n");
+    else if (line.includes("list-thread-groups")) process.stdout.write(match[1] + "^done,groups=[]\\n");
     else process.stdout.write(match[1] + "^done\\n");
   }
 });
@@ -228,7 +233,7 @@ process.stdin.on("data", (chunk) => {
       await client.connect(clientTransport);
       const started = await client.callTool({
         name: "start_gdb_session",
-        arguments: {},
+        arguments: { inferior_tty: tty },
       });
       const sessionId = z
         .object({ session_id: z.string().uuid() })
@@ -517,7 +522,7 @@ it("records partial GDB startup Evidence from an MCP start error", async () => {
     await client.connect(clientTransport);
     const response = await client.callTool({
       name: "start_gdb_session",
-      arguments: {},
+      arguments: { inferior_tty: "/dev/pts/7" },
     });
     expect(recorded).toEqual([evidence.evidence_id]);
     expect(response.isError).toBe(true);
@@ -526,6 +531,48 @@ it("records partial GDB startup Evidence from an MCP start error", async () => {
         details: { partial_observation: { evidence_id: evidence.evidence_id } },
       },
     });
+  } finally {
+    await Promise.allSettled([client.close(), server.close()]);
+  }
+});
+
+it("rejects start_gdb_session without inferior_tty before starting GDB", async () => {
+  let startCalls = 0;
+  const manager = {
+    start: async () => {
+      startCalls += 1;
+      return ok({
+        session_id: "00000000-0000-4000-8000-000000000001",
+        mi_version: "mi3" as const,
+      });
+    },
+    execute: async () =>
+      err(new AnalysisCapabilityUnavailableError("gdb", "unused", "unused")),
+    status: () => undefined,
+    close: async () => ok({ target_state: "unknown" as const }),
+    retryCleanupFailures: async () => ok(null),
+  } satisfies GdbToolManager;
+  const server = new McpServer({ name: "gdb-missing-tty", version: "1" });
+  registerGdbTools(
+    server,
+    manager,
+    silentLogger,
+    createToolResultDelivery(undefined),
+  );
+  const client = new Client({ name: "gdb-missing-tty", version: "1" });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const response = await client.callTool({
+      name: "start_gdb_session",
+      arguments: {},
+    });
+    const text = JSON.stringify(response.content);
+    expect(response.isError, text).toBe(true);
+    expect(text).toContain("inferior_tty");
+    expect(startCalls).toBe(0);
   } finally {
     await Promise.allSettled([client.close(), server.close()]);
   }

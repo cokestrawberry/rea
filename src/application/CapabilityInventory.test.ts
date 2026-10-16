@@ -97,6 +97,53 @@ const entry = (
   return found;
 };
 
+describe("ADB and Apktool host availability", () => {
+  it("uses only their selected owner probes", () => {
+    const ready = {
+      status: "available" as const,
+      code: null,
+      reason: null,
+      diagnostics: {},
+    };
+    const configuredButInvalid = {
+      status: "unavailable" as const,
+      code: "not_configured" as const,
+      reason: "REA_ADB_PATH is invalid",
+      diagnostics: {},
+    };
+    const readyInventory = buildCapabilityInventory(status(), {
+      ...enabledPolicy,
+      adbAnalysisAvailability: ready,
+      apktoolAnalysisAvailability: ready,
+    });
+    expect(
+      readyInventory.find(({ name }) => name === "inspect_adb_client"),
+    ).toMatchObject({ available: true, reason: "available" });
+    expect(
+      readyInventory.find(({ name }) => name === "inspect_apktool_client"),
+    ).toMatchObject({ available: true, reason: "available" });
+
+    const unavailableInventory = buildCapabilityInventory(status(), {
+      ...enabledPolicy,
+      adbAnalysisAvailability: configuredButInvalid,
+      apktoolAnalysisAvailability: {
+        status: "unavailable",
+        code: "unsupported_version",
+        reason: "Apktool 2.6.3 is older than 2.7.0",
+        diagnostics: {},
+      },
+    });
+    expect(
+      unavailableInventory.find(({ name }) => name === "inspect_adb_client"),
+    ).toMatchObject({ available: false, reason: "provider_missing" });
+    expect(
+      unavailableInventory.find(
+        ({ name }) => name === "decode_android_resources",
+      ),
+    ).toMatchObject({ available: false, reason: "provider_unavailable" });
+  });
+});
+
 describe("capability failure reasons", () => {
   it("keeps an unavailable Android runtime distinct from a missing provider", () => {
     const inventory = buildCapabilityInventory(status(), {
@@ -626,6 +673,127 @@ describe("binary_overview capability requirements", () => {
       available: false,
       reason: "provider_unavailable",
       remediation: "Document view is closed",
+    });
+  });
+});
+
+describe("trace_call_path requirements", () => {
+  const capabilities = (operations: readonly string[]) =>
+    operations.map((operation) => ({
+      operation,
+      available: true,
+      reason: null,
+    }));
+
+  it("reports each direction when callers are unavailable", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: [
+            ...capabilities(["procedure_address", "procedure_callees"]),
+            {
+              operation: "procedure_callers",
+              available: false,
+              reason: "Unsupported",
+            },
+          ],
+        }),
+      ),
+    ).toMatchObject({
+      available: true,
+      default_mode_available: true,
+      modes: [
+        { name: "forward", available: true, missing_operations: [] },
+        {
+          name: "backward",
+          available: false,
+          missing_operations: ["procedure_callers"],
+        },
+      ],
+    });
+  });
+
+  it("reports an unavailable default direction when only callers are available", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities([
+            "procedure_address",
+            "procedure_callers",
+          ]),
+        }),
+      ),
+    ).toMatchObject({
+      available: true,
+      default_mode_available: false,
+      modes: [
+        {
+          name: "forward",
+          available: false,
+          missing_operations: ["procedure_callees"],
+        },
+        { name: "backward", available: true, missing_operations: [] },
+      ],
+    });
+  });
+
+  it.each(["procedure_callees", "procedure_callers"])(
+    "is available with procedure_address and %s",
+    (direction) => {
+      expect(
+        entry(
+          "trace_call_path",
+          status({
+            open: true,
+            kind: "executable",
+            capabilities: capabilities(["procedure_address", direction]),
+          }),
+        ),
+      ).toMatchObject({
+        available: true,
+        reason: "available",
+        remediation: null,
+      });
+    },
+  );
+
+  it("is unavailable without procedure_address", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities(["procedure_callees"]),
+        }),
+      ),
+    ).toMatchObject({
+      available: false,
+      reason: "provider_missing",
+      remediation: expect.stringContaining("procedure_address"),
+    });
+  });
+
+  it("is unavailable without a call-direction operation", () => {
+    expect(
+      entry(
+        "trace_call_path",
+        status({
+          open: true,
+          kind: "executable",
+          capabilities: capabilities(["procedure_address"]),
+        }),
+      ),
+    ).toMatchObject({
+      available: false,
+      reason: "provider_missing",
+      remediation: expect.stringContaining("procedure_callees"),
     });
   });
 });

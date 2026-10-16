@@ -160,6 +160,101 @@ describe("reconstruction coverage closure", () => {
   });
 });
 
+describe("reconstruction coverage package proofs", () => {
+  it("fails closed when a failed package proof covers the same artifact as a passing one", () => {
+    const workspace = completeReconstructionCoverageData();
+    const contradicted = createReconstructionCoverageData({
+      ...workspace,
+      package_proofs: [
+        ...workspace.package_proofs,
+        {
+          proof_id: "proof.clean-install.failed",
+          kind: "clean-install",
+          status: "fail",
+          artifact_sha256s: [digest("1")],
+          evidence_ids: [reconstructionCoverageEvidenceId("4")],
+        },
+      ],
+    });
+
+    expect(
+      evaluateReconstructionClosure(
+        contradicted,
+        "replacement.cli",
+        RECONSTRUCTION_COVERAGE_NOW,
+      ),
+    ).toMatchObject({
+      status: "failed",
+      reasons: [
+        expect.objectContaining({
+          code: "package-proof-failed",
+          subject_id: "clean-install",
+          detail: expect.stringContaining("conflicts with a passing proof"),
+        }),
+      ],
+    });
+  });
+
+  it("keeps a failed package proof for an unrelated artifact from vetoing a passing one", () => {
+    const workspace = completeReconstructionCoverageData();
+    const unrelated = createReconstructionCoverageData({
+      ...workspace,
+      package_proofs: [
+        ...workspace.package_proofs,
+        {
+          proof_id: "proof.clean-install.other-artifact",
+          kind: "clean-install",
+          status: "fail",
+          artifact_sha256s: [digest("8")],
+          evidence_ids: [reconstructionCoverageEvidenceId("4")],
+        },
+      ],
+    });
+
+    expect(
+      evaluateReconstructionClosure(
+        unrelated,
+        "replacement.cli",
+        RECONSTRUCTION_COVERAGE_NOW,
+      ),
+    ).toMatchObject({ status: "ready" });
+  });
+
+  it("does not report an unrelated failed proof as a required artifact failure", () => {
+    const workspace = completeReconstructionCoverageData();
+    const unrelated = createReconstructionCoverageData({
+      ...workspace,
+      package_proofs: [
+        ...workspace.package_proofs.filter(
+          (proof) => proof.kind !== "clean-install",
+        ),
+        {
+          proof_id: "proof.clean-install.other-artifact",
+          kind: "clean-install",
+          status: "fail",
+          artifact_sha256s: [digest("8")],
+          evidence_ids: [reconstructionCoverageEvidenceId("4")],
+        },
+      ],
+    });
+    expect(
+      evaluateReconstructionClosure(
+        unrelated,
+        "replacement.cli",
+        RECONSTRUCTION_COVERAGE_NOW,
+      ),
+    ).toMatchObject({
+      status: "unknown",
+      reasons: [
+        expect.objectContaining({
+          code: "package-proof-unknown",
+          subject_id: "clean-install",
+        }),
+      ],
+    });
+  });
+});
+
 describe("reconstruction coverage verifier observations", () => {
   it("uses one contract and result for each claim covered by a shared verifier", () => {
     const workspace = completeReconstructionCoverageData();

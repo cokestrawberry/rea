@@ -16,6 +16,7 @@ import {
 import {
   AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
+  AnalysisUnsupportedTargetError,
 } from "../domain/analysisErrorCore.js";
 import { BinaryTargetError } from "../domain/configurationErrors.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
@@ -31,6 +32,7 @@ interface HopperProfileOptions {
   readonly launcherPath: string;
   readonly loaderArgsOverride: readonly string[];
   readonly provider: ProviderIdentity;
+  readonly platform?: NodeJS.Platform;
   readonly signal?: AbortSignal;
 }
 
@@ -54,13 +56,25 @@ export const resolveHopperAnalysisProfile = async (
   let preparedImage: HopperMachOImage | undefined;
   if (
     target.kind === "executable" &&
-    machoContainer === "fat64" &&
+    (machoContainer === "fat64" || machoContainer === "fat32") &&
     options.loaderArgsOverride.length === 0
   ) {
     const resolved = await resolveHopperMachOImage(target, options.signal);
     if (!resolved.ok) return resolved;
     preparedImage = resolved.value;
   }
+  if (
+    (options.platform ?? process.platform) === "darwin" &&
+    preparedImage === undefined &&
+    alterableAppleScriptLiteral(target.path)
+  )
+    return err(
+      new AnalysisUnsupportedTargetError(
+        "resolve_analysis_profile",
+        target.path,
+        "Hopper's macOS helper builds AppleScript from its target path without escaping it. Rename or copy the target to a path without quotes, backslashes, or line breaks, or select another provider.",
+      ),
+    );
   const derived = hopperLoaderArgsForTarget(
     target,
     preparedImage === undefined ? machoContainer : "thin",
@@ -103,6 +117,11 @@ export const resolveHopperAnalysisProfile = async (
     }),
   });
 };
+
+// The vendor helper interpolates its arguments into AppleScript literals
+// without escaping; these characters would alter the generated script.
+export const alterableAppleScriptLiteral = (value: string): boolean =>
+  /["\\\r\n]/u.test(value);
 
 /** Ghidra owns these lanes; Hopper names the family it declines rather than guessing. */
 const HOPPER_DECLINED_ARCHITECTURE_LABELS: Record<

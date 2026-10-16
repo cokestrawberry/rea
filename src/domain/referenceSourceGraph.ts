@@ -341,6 +341,13 @@ const checkSymlinks = (
     kinds.add(entry_kind);
     excludedKinds.set(path, kinds);
   }
+  const unreadableDirectories = createReferenceSourcePathLookup(
+    graph.entries.flatMap((entry) =>
+      entry.kind === "directory" && entry.tree_state === "unreadable"
+        ? [entry.path]
+        : [],
+    ),
+  );
   for (const [index, entry] of graph.entries.entries()) {
     if (entry.kind !== "symlink") continue;
     if (entry.target === null) continue;
@@ -359,6 +366,12 @@ const checkSymlinks = (
       candidate !== "." && candidate !== "/";
       candidate = posix.dirname(candidate)
     ) {
+      // A search-only directory is not enumerated, so its children are
+      // uninventoried; treat it like an excluded directory.
+      if (unreadableDirectories.resolve(candidate) !== undefined) {
+        excluded = true;
+        continue;
+      }
       const excludedAncestor = excludedPaths.resolve(candidate);
       if (excludedAncestor === undefined) continue;
       const kinds = excludedKinds.get(excludedAncestor);

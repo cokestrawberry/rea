@@ -199,10 +199,7 @@ export abstract class BinarySessionRecords {
       active === undefined
         ? undefined
         : { target: active.target, profile: active.profile },
-      (bundle) => {
-        const imported = this.#records.mergeEvidenceBundle(bundle);
-        return imported.ok ? ok(imported.value.recordsAdded) : imported;
-      },
+      (bundle) => this.#records.mergeEvidenceBundle(bundle),
     );
     if (imported.ok) this.#emitSnapshotChanged();
     return imported;

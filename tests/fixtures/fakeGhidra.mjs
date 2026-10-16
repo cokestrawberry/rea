@@ -43,6 +43,7 @@ else {
     }
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
+    socket.on("error", () => undefined);
     socket.setEncoding("utf8");
     const state = {
       buffer: { value: "" },

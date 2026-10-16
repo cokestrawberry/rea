@@ -148,6 +148,56 @@ const changingWorker = async (
   };
 };
 
+it.runIf(supportedHost)(
+  "retires an exec-replaced debugger on cancellation",
+  async () => {
+    const { path, root, environment, basic } = await fixture();
+    const controller = new AbortController();
+    const ready = join(root.path, "exec.ready");
+    let launches = 0;
+    const provider = new PwntoolsRecordedCrashProvider(
+      environment,
+      async (spawn) => {
+        if (++launches === 1) return basic(spawn);
+        return spawnOwnedProviderProcess({
+          ...spawn,
+          command: "/bin/sh",
+          arguments: [
+            "-c",
+            'exec "$0" -e "require(\'node:fs\').writeFileSync(process.argv[1], \'ready\'); setInterval(() => {}, 1000)" "$1"',
+            process.execPath,
+            ready,
+          ],
+        });
+      },
+      async () => root,
+    );
+    onTestFinished(async () => {
+      controller.abort();
+      await provider.close();
+    });
+    const pending = provider.inspectAndClose(
+      { path, include_debugger_context: true },
+      { signal: controller.signal },
+    );
+    await expect
+      .poll(() =>
+        access(ready).then(
+          () => true,
+          () => false,
+        ),
+      )
+      .toBe(true);
+    controller.abort();
+    const result = await pending;
+    expect(result).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisCancelledError", cleanupIncomplete: false },
+    });
+    await expect(access(root.path)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
 it.runIf(supportedHost).each(["decoder", "debugger"] as const)(
   "classifies %s failure markers only after surviving descendants stop",
   async (stage) => {

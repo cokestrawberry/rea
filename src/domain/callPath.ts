@@ -69,6 +69,17 @@ const distancesToGoal = (
   return depth;
 };
 
+// Paths are bounded by count and by total node count so that long paths
+// cannot expand the result beyond the node budget.
+const MAX_INLINE_PATHS = 100;
+const MAX_INLINE_PATH_NODES = 10_000;
+
+const inlinePathLimit = (hops: number): number =>
+  Math.max(
+    1,
+    Math.min(MAX_INLINE_PATHS, Math.floor(MAX_INLINE_PATH_NODES / (hops + 1))),
+  );
+
 interface SearchState {
   readonly graph: CallGraph;
   readonly snapshots: ReadonlyMap<string, FunctionSnapshot>;
@@ -88,20 +99,31 @@ export const buildCallPath = (input: CallPathInput): CallPathResult => {
     goal: parsed.goal.address,
   });
   const goalDistances = distancesToGoal(graph, parsed.goal.address);
-  const shortestDepth = goalDistances.get(parsed.start.address) ?? null;
+  const shortestHops = goalDistances.get(parsed.start.address) ?? null;
+  const shortestPaths = {
+    graph,
+    start: parsed.start.address,
+    goal: parsed.goal.address,
+    goalDistances,
+  };
+  const shortestCount =
+    shortestHops === null ? null : countShortestPaths(shortestPaths);
   const paths =
-    shortestDepth === null
+    shortestHops === null
       ? []
       : enumeratePaths({
-          graph,
-          start: parsed.start.address,
-          goal: parsed.goal.address,
-          goalDistances,
+          ...shortestPaths,
+          limit: inlinePathLimit(shortestHops),
         }).paths.map((path) => citePath(path, snapshots));
-  const shortestHops = paths[0]?.hops;
-  const found = shortestHops !== undefined;
+  const truncated =
+    shortestCount !== null && BigInt(paths.length) < shortestCount;
   const exhaustive = search.exhaustive;
-  const limitations = search.limitations;
+  const limitations = truncated
+    ? [
+        ...search.limitations,
+        `Returned only the first ${paths.length} shortest paths in node-address code point order; shortest_path_count gives the total.`,
+      ]
+    : search.limitations;
   const resultContext = {
     start: parsed.start.address,
     goal: parsed.goal.address,
@@ -110,11 +132,13 @@ export const buildCallPath = (input: CallPathInput): CallPathResult => {
     limitations: [...new Set(limitations)].sort(compareUnicodeCodePoints),
   };
   const searchScope = { exhaustive };
-  if (found)
+  if (shortestHops !== null && shortestCount !== null)
     return callPathResultSchema.parse({
       ...resultContext,
       status: "found",
       shortest_hops: shortestHops,
+      shortest_path_count: shortestCount.toString(),
+      paths_truncated: truncated,
       search_scope: searchScope,
       paths,
     });
@@ -295,36 +319,61 @@ const inspectSearch = ({
   };
 };
 
-interface EnumerationInput {
+interface ShortestPathSearch {
   readonly graph: CallGraph;
   readonly start: string;
   readonly goal: string;
   readonly goalDistances: ReadonlyMap<string, number>;
 }
 
+interface EnumerationInput extends ShortestPathSearch {
+  readonly limit: number;
+}
+
+/** Callees one hop closer to the goal, in deterministic order. */
+const shortestSuccessors = (
+  { graph, goalDistances }: ShortestPathSearch,
+  node: string,
+): string[] => {
+  const distance = goalDistances.get(node);
+  return graph
+    .outNeighbors(node)
+    .filter(
+      (neighbor) =>
+        distance !== undefined && goalDistances.get(neighbor) === distance - 1,
+    )
+    .sort(compareUnicodeCodePoints);
+};
+
+/** Exact count; bigint because merging branches grow it exponentially. */
+const countShortestPaths = (search: ShortestPathSearch): bigint => {
+  // goalDistances iterates in breadth-first order, so every successor of a
+  // node is counted before the node itself.
+  const counts = new Map<string, bigint>([[search.goal, 1n]]);
+  for (const node of search.goalDistances.keys()) {
+    if (node === search.goal) continue;
+    let count = 0n;
+    for (const successor of shortestSuccessors(search, node))
+      count += counts.get(successor) ?? 0n;
+    counts.set(node, count);
+  }
+  return counts.get(search.start) ?? 0n;
+};
+
 const enumeratePaths = ({
-  graph,
-  start,
-  goal,
-  goalDistances,
+  limit,
+  ...search
 }: EnumerationInput): {
   readonly paths: string[][];
 } => {
+  const { start, goal } = search;
   const output: string[][] = [];
   const path = [start];
   const neighbors = new Map<string, readonly string[]>();
   const frame = (node: string): EnumerationFrame => {
     let candidates = neighbors.get(node);
     if (candidates === undefined) {
-      const distance = goalDistances.get(node);
-      candidates = graph
-        .outNeighbors(node)
-        .filter(
-          (neighbor) =>
-            distance !== undefined &&
-            goalDistances.get(neighbor) === distance - 1,
-        )
-        .sort(compareUnicodeCodePoints);
+      candidates = shortestSuccessors(search, node);
       neighbors.set(node, candidates);
     }
     return { neighbors: candidates, nextIndex: 0 };
@@ -335,6 +384,7 @@ const enumeratePaths = ({
     if (current === undefined) break;
     if (path.at(-1) === goal) {
       output.push([...path]);
+      if (output.length === limit) break;
       pending.pop();
       path.pop();
       continue;
