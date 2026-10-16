@@ -25,6 +25,43 @@ import { semanticCoverageResourceLimits } from "../../domain/javascript/javascri
 
 const SHA256 = "a".repeat(64);
 
+it.each([
+  ["plain export", "const answer = 42; export { answer };", 0],
+  ["aliased export", "const answer = 42; export { answer as result };", 0],
+  ["declaration only", "const answer = 42;", 0],
+  ["genuine assignment", "let answer = 0; answer = 1;", 1],
+])(
+  "projects writes only for actual writes: %s",
+  (_name, source, writeCount) => {
+    const graph = graphFor(source);
+    const binding = graph.nodes.find(
+      ({ kind, label }) => kind === "binding" && label === "answer",
+    );
+    if (binding === undefined) throw new Error("Expected answer binding");
+    const writes = graph.relations.filter(
+      ({ relation, target_node_id }) =>
+        relation === "writes" && target_node_id === binding.node_id,
+    );
+    expect(writes).toHaveLength(writeCount);
+    const exportReference = graph.nodes.find(
+      ({ identity }) => identity.role_key === "reference:0:export:answer",
+    );
+    if (source.includes("export {")) expect(exportReference).toBeDefined();
+
+    const trace = queryJavaScriptSemanticGraph(graph, {
+      seed: { kind: "semantic-node", node_id: binding.node_id },
+      direction: "backward-provenance",
+      allowed_relations: ["writes"],
+    });
+    expect(trace.status).toBe("found");
+    expect(trace.summary).toMatchObject({
+      total_seed_matches: 1,
+      traversed_relations: writeCount,
+    });
+    expect(trace.relations).toHaveLength(writeCount);
+  },
+);
+
 it("projects closure and direct interprocedural flow without execution", () => {
   const graph = graphFor(`
       const outer = 2;
@@ -989,4 +1026,59 @@ it("projects and adopts more than the default per-file capacity when explicitly 
   expect(() => bounded.adoptFileProjection(result.value)).toThrow(
     "exceed the offered tree capacity",
   );
+});
+
+const FINGERPRINT_COUNT = 150_000;
+
+const fingerprintedFunction = () => {
+  const text = "function only(value) { return value + 1; }";
+  const file: JavaScriptArtifactFile = {
+    path: "fingerprints.js",
+    container_sha256: SHA256,
+    sha256: SHA256,
+    bytes: Buffer.byteLength(text),
+    inventory_artifact_id: `art_${SHA256}`,
+    kind: "javascript",
+    unpacked: false,
+    text: { included: true, value: text },
+  };
+  const ir = analyzeJavaScriptSemantics(text);
+  const fingerprint = ir.functionFingerprints[0];
+  if (fingerprint === undefined) throw new Error("Expected a fingerprint");
+  return { file, ir, fingerprint };
+};
+
+it("projects more fingerprints than push accepts as arguments", () => {
+  const { file, ir, fingerprint } = fingerprintedFunction();
+  const projection = createJavaScriptSemanticGraphProjection();
+
+  expect(() =>
+    projection.projectFile(file, {
+      ...ir,
+      functionFingerprints: Array.from(
+        { length: FINGERPRINT_COUNT },
+        () => fingerprint,
+      ),
+    }),
+  ).not.toThrow();
+}, 60_000);
+
+it("adopts more fingerprints than push accepts as arguments", () => {
+  const { file, ir } = fingerprintedFunction();
+  const steps = projectJavaScriptSemanticFileSteps(file, ir, 100);
+  let result = steps.next();
+  while (!result.done) result = steps.next();
+  const [fingerprint] = result.value.fingerprints;
+  if (fingerprint === undefined) throw new Error("Expected a fingerprint");
+  const projection = createJavaScriptSemanticGraphProjection();
+
+  expect(() =>
+    projection.adoptFileProjection({
+      ...result.value,
+      fingerprints: Array.from(
+        { length: FINGERPRINT_COUNT },
+        () => fingerprint,
+      ),
+    }),
+  ).not.toThrow();
 });

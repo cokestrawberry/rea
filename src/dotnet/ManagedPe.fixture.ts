@@ -1,3 +1,4 @@
+import { readManagedPeLayout } from "./ManagedPeReader.js";
 import { createHash } from "node:crypto";
 
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
@@ -53,6 +54,15 @@ interface ManagedPeFixtureOptions {
   readonly targetFramework?: string | null;
   readonly typeName?: string;
   readonly typeNamespace?: string;
+  /** NestedClass rows as [nested, enclosing] TypeDef rows. */
+  readonly nestedTypes?: readonly (readonly [number, number])[];
+  /** TypeRef rows after the TargetFrameworkAttribute row, from row 2. */
+  readonly typeReferences?: readonly {
+    readonly namespace: string;
+    readonly name: string;
+    /** TypeRef row of the enclosing type, for a nested type. */
+    readonly enclosingRow?: number;
+  }[];
   /** Raw #US stream bytes; omitted means the metadata has no #US stream. */
   readonly userStringHeap?: Buffer;
   readonly virtualSectionSize?: number;
@@ -590,6 +600,11 @@ interface FixtureMetadataRowContext {
       readonly name: number;
       readonly namespace: number;
     }[];
+    readonly typeReferences: readonly {
+      readonly name: number;
+      readonly namespace: number;
+      readonly enclosingRow?: number;
+    }[];
     readonly tokenBlob: number;
     readonly fieldSignature: number;
     readonly methodSignature: number;
@@ -668,6 +683,52 @@ const exportedTypeTable = (
         ],
       ];
 
+const typeRefTable = (
+  options: ManagedPeFixtureOptions,
+  indexes: FixtureMetadataRowContext["indexes"],
+  heapSizes: FixtureMetadataRowContext["heapSizes"],
+  widths: FixtureIndexWidths,
+): readonly [number, readonly Buffer[]] => [
+  1,
+  [
+    typeRefRow(
+      indexes.attributeName,
+      indexes.attributeNamespace,
+      heapSizes.strings,
+      metadataIndex(options.typeRefScopeRaw ?? 0, widths.resolutionScope),
+    ),
+    ...indexes.typeReferences.map(({ name, namespace, enclosingRow }) =>
+      typeRefRow(
+        name,
+        namespace,
+        heapSizes.strings,
+        metadataIndex(
+          enclosingRow === undefined ? 0 : (enclosingRow << 2) | 3,
+          widths.resolutionScope,
+        ),
+      ),
+    ),
+  ],
+];
+
+const nestedClassTable = (
+  options: ManagedPeFixtureOptions,
+  widths: FixtureIndexWidths,
+): readonly (readonly [number, readonly Buffer[]])[] =>
+  (options.nestedTypes?.length ?? 0) === 0
+    ? []
+    : [
+        [
+          41,
+          (options.nestedTypes ?? []).map(([nested, enclosing]) =>
+            Buffer.concat([
+              metadataIndex(nested, widths.table(2)),
+              metadataIndex(enclosing, widths.table(2)),
+            ]),
+          ),
+        ],
+      ];
+
 const specTables = (
   options: ManagedPeFixtureOptions,
   indexes: FixtureMetadataRowContext["indexes"],
@@ -706,7 +767,7 @@ const fixtureIndexWidths = ({
 }: FixtureMetadataRowContext): FixtureIndexWidths => {
   const rowCounts = new Map<number, number>([
     [0, options.moduleRowCount ?? 1],
-    [1, 1],
+    [1, indexes.typeReferences.length + 1],
     [2, indexes.additionalTypeNames.length + 1],
     [4, 1],
     [6, options.methodRowCount ?? 1],
@@ -725,6 +786,7 @@ const fixtureIndexWidths = ({
     [35, referenceStringIndexes.length],
     [39, indexes.exportedTypes.length],
     [40, 1],
+    [41, options.nestedTypes?.length ?? 0],
     [43, options.methodSpecMethods?.length ?? 0],
   ]);
   const count = (table: number): number => rowCounts.get(table) ?? 0;
@@ -772,17 +834,7 @@ const fixtureMetadataRows = ({
         moduleRow(indexes.moduleName, heapSizes.strings, heapSizes.guids),
       ),
     ],
-    [
-      1,
-      [
-        typeRefRow(
-          indexes.attributeName,
-          indexes.attributeNamespace,
-          heapSizes.strings,
-          metadataIndex(options.typeRefScopeRaw ?? 0, widths.resolutionScope),
-        ),
-      ],
-    ],
+    typeRefTable(options, indexes, heapSizes, widths),
     [
       2,
       [...indexes.additionalTypeNames, indexes.typeName].map((name) =>
@@ -887,6 +939,7 @@ const fixtureMetadataRows = ({
     ],
     ...exportedTypeTable(options, indexes, heapSizes, widths),
     ...specTables(options, indexes, heapSizes, widths),
+    ...nestedClassTable(options, widths),
     [
       40,
       [
@@ -959,6 +1012,13 @@ const buildManagedFixtureMetadata = (
       namespace: strings.add(namespace),
     }),
   );
+  const typeReferences = (options.typeReferences ?? []).map(
+    ({ namespace, name, enclosingRow }) => ({
+      name: strings.add(name),
+      namespace: strings.add(namespace),
+      ...(enclosingRow === undefined ? {} : { enclosingRow }),
+    }),
+  );
   const referenceNames = options.references ?? ["System.Runtime"];
   const referenceStringIndexes = referenceNames.map((name) =>
     strings.add(name),
@@ -1000,6 +1060,7 @@ const buildManagedFixtureMetadata = (
       pinvokeImportName,
       resourceName,
       exportedTypes,
+      typeReferences,
       tokenBlob,
       fieldSignature,
       methodSignature,
@@ -1273,4 +1334,30 @@ export const buildNativePeFixture = (): Buffer => {
   image.writeUInt32LE(0, cliDirectory);
   image.writeUInt32LE(0, cliDirectory + 4);
   return image;
+};
+
+export const fixtureTablesStream = (bytes: Buffer) => {
+  const pe = readManagedPeLayout(bytes);
+  if (pe.cli === null) throw new Error("Fixture omitted CLI metadata");
+  const root = pe.rvaToOffset(
+    pe.cli.metadata.rva,
+    pe.cli.metadata.size,
+    "cli.metadata",
+  );
+  const versionLength = bytes.readUInt32LE(root + 12);
+  const streamHeader = ((root + 16 + versionLength + 3) & ~3) + 4;
+  if (
+    bytes.toString(
+      "ascii",
+      streamHeader + 8,
+      bytes.indexOf(0, streamHeader + 8),
+    ) !== "#~"
+  )
+    throw new Error("Fixture first stream is not #~");
+  const tablesOffset = root + bytes.readUInt32LE(streamHeader);
+  const valid = bytes.readBigUInt64LE(tablesOffset + 8);
+  let count = 0;
+  for (let table = 0; table < 64; table += 1)
+    if ((valid & (1n << BigInt(table))) !== 0n) count += 1;
+  return { streamHeader, tablesOffset, extraDataOffset: 24 + count * 4 };
 };

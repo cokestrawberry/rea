@@ -152,9 +152,13 @@ overrides it. In MCP, pass `provider_id` to `open_binary`:
 The selected provider remains bound to the session until an explicit switch
 or close. Provider failures are returned with their original reason. For an
 `ambiguous` selection error, choose from `details.candidate_ids`; for
-`provider_unavailable`, run `rea doctor --provider ID --json` to diagnose the
-selected engine. See [task readiness](installation.md#check-readiness-for-your-task)
-and [provider selection](mcp-contracts.md#identity-and-discovery).
+`provider_unavailable`, follow `message`, `remediation.action`, and the original
+reasons in `details.rejections`. For Hopper, Ghidra, IDA, and JADX, run
+`rea doctor --provider ID --json` to diagnose the selected engine. Other adapters,
+such as `pwntools-elf`, report their configuration requirements directly and are
+not accepted by `doctor --provider`. See
+[task readiness](installation.md#check-readiness-for-your-task) and
+[provider selection](mcp-contracts.md#identity-and-discovery).
 
 The session reports work still in progress through `analysis_activity`.
 A client timeout can end its wait while the provider continues analyzing.
@@ -261,7 +265,9 @@ from observations of the current app. For a directory inside a Git checkout,
 it records the HEAD of the nearest enclosing repository; whether the working
 tree matches that commit remains unknown. It honors the source tree's `.gitignore`
 and applies default exclusions for common generated and dependency paths such
-as `node_modules/`, `dist/`, and `*.log`. Pattern-based exclusions record the
+as `node_modules/`, `dist/`, and `*.log`. A root `.gitignore` that is a symbolic
+link or not a regular file is not read, and the import records a limitation.
+Pattern-based exclusions record the
 matched pattern and whether it came from project, default, caller, or sensitive
 path policy. Links into excluded paths retain their internal target metadata;
 the exclusion explains why the target has no inventory entry, and the inventory

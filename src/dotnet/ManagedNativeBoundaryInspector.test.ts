@@ -138,6 +138,31 @@ describe("managed native boundary coded indexes", () => {
   });
 });
 
+it("retains an import with an empty ImportName and reports it as partial", () => {
+  const bytes = buildManagedPeFixture({ pinvoke: { importName: "" } });
+  const result = inspectManagedNativeBoundariesBytes(
+    bytes,
+    managedPeFixtureTarget(bytes),
+  );
+
+  expect(result.pinvoke_imports).toMatchObject([
+    { member_token: "0x06000001", import_name: "" },
+  ]);
+  expect(result.coverage).toMatchObject({
+    state: "partial",
+    issues: [
+      expect.objectContaining({
+        code: "invalid-row",
+        scope: "metadata.ImplMap:0x1c000001",
+        detail: expect.stringContaining("ImportName"),
+      }),
+    ],
+  });
+  expect(result.coverage.issues[0]?.offset).toBe(
+    (result.pinvoke_imports[0]?.row_offset ?? 0) + 4,
+  );
+});
+
 it.each([0, 2])(
   "retains imports and reports invalid ModuleRef row %i as partial",
   (scopeRow) => {

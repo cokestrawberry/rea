@@ -725,3 +725,36 @@ describe("managed application graph type selection", () => {
     });
   });
 });
+
+describe("managed application graph empty import name", () => {
+  it("projects a P/Invoke import with an empty ImportName using a null label", () => {
+    const bytes = buildManagedPeFixture({ pinvoke: { importName: "" } });
+    const binary = managedPeFixtureTarget(bytes, "/fixture/EmptyName.exe");
+    const boundaries = inspectManagedNativeBoundariesBytes(bytes, binary);
+    const projected = projectManagedApplicationGraphEvidence({
+      managed_native_boundaries: createEvidence(
+        binary,
+        MANAGED_STATIC_PROVIDER,
+        {
+          operation: "inspect_managed_native_boundaries",
+          parameters: {},
+          result: boundaries,
+          rawResult: null,
+          limitations: boundaries.limitations,
+          locations: [{ kind: "artifact-path", path: binary.path }],
+        },
+      ),
+    });
+    if (!projected.ok) throw projected.error;
+    const graph = parseJavaScriptApplicationGraph(
+      managedApplicationGraphResultSchema.parse(
+        parseEvidence(projected.value).normalized_result,
+      ).graph,
+    );
+
+    expect(
+      graph.nodes.find(({ kind }) => kind === "managed-pinvoke-import")
+        ?.observations[0],
+    ).toMatchObject({ label: null, properties: { import_name: "" } });
+  });
+});

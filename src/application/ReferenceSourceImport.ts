@@ -16,7 +16,10 @@ import type {
   ReferenceSourceRead,
   ReferenceSourceReaderError,
 } from "../reference/ReferenceSourceReaderTypes.js";
-import { parseReferenceSourceEntries } from "./ReferenceSourceImportEntries.js";
+import {
+  parseReferenceSourceEntries,
+  shouldRetainReferenceSourceBytes,
+} from "./ReferenceSourceImportEntries.js";
 import { readReferenceSourceVcs } from "./ReferenceSourceVcsAdapter.js";
 import type {
   ReferenceSourceImportError,
@@ -215,6 +218,7 @@ export const importReferenceSource = async (
     readReferenceSource(root, resources, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       shouldExclude,
+      shouldRetainBytes: shouldRetainReferenceSourceBytes,
     }),
     readReferenceSourceVcs(root, resources, options.signal),
   ]);
@@ -255,7 +259,10 @@ export const importReferenceSource = async (
     compareUnicodeCodePoints(left.path, right.path),
   );
   const sortedExclusions = sortExclusions(exclusions);
-  const sortedLimitations = [...limitations].sort(compareUnicodeCodePoints);
+  const sortedLimitations = [
+    ...prepared.value.limitations,
+    ...limitations,
+  ].sort(compareUnicodeCodePoints);
 
   const input: HistoricalSourceGraphInput = {
     schema: "HistoricalSourceGraph",

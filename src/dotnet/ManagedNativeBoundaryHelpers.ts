@@ -189,12 +189,21 @@ export const parseImplMaps = ({
         [4, 6],
         layout.rowCounts,
       );
+      const importNameOffset = cursor.offset;
       const importName = readMetadataString(
         bytes,
         layout,
         cursor.readIndex(layout.stringIndexSize),
         heapExtent,
       );
+      if (importName === "")
+        issues.push({
+          code: "invalid-row",
+          scope: `metadata.ImplMap:${metadataToken(28, row)}`,
+          offset: importNameOffset,
+          detail:
+            "ImplMap ImportName must reference a non-empty #Strings item, but it is empty",
+        });
       const importScopeOffset = cursor.offset;
       const importScopeRow = cursor.readIndex(layout.tableIndexSize(26));
       const moduleCount = layout.table(26)?.rowCount ?? 0;
