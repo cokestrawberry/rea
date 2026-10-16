@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -1001,7 +1002,7 @@ it("reports the pulled path when the file cannot be read back", async () => {
 it("pushes a file and verifies the device-side digest", async () => {
   const { binary, root } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
-if [ "$1" = "-s" ] && [ "$4" = "test" ]; then exit 1; fi
+if [ "$1" = "-s" ] && [ "$4" = "sh" ]; then echo absent; exit 0; fi
 if [ "$1" = "-s" ] && [ "$3" = "push" ]; then exit 0; fi
 if [ "$1" = "-s" ] && [ "$4" = "sha256sum" ]; then printf '%s  %s\\n' "8748b5d17d1ebcec7d46674fa6a8b92c0f95598a552f27c1c8a132eb58c04043" "$5"; exit 0; fi
 exit 1`,
@@ -1030,7 +1031,7 @@ exit 1`,
 it("reports a digest mismatch after push as a changed artifact", async () => {
   const { binary, root } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
-if [ "$1" = "-s" ] && [ "$4" = "test" ]; then exit 1; fi
+if [ "$1" = "-s" ] && [ "$4" = "sh" ]; then echo absent; exit 0; fi
 if [ "$1" = "-s" ] && [ "$3" = "push" ]; then exit 0; fi
 if [ "$1" = "-s" ] && [ "$4" = "sha256sum" ]; then printf '%s  %s\\n' "$(printf 'a%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64)" "$5"; exit 0; fi
 exit 1`,
@@ -1052,7 +1053,7 @@ exit 1`,
 it("refuses a push onto an existing device path without overwrite", async () => {
   const { binary, root } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
-if [ "$1" = "-s" ] && [ "$4" = "test" ]; then exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "sh" ]; then echo exists; exit 0; fi
 exit 1`,
   );
   const localFile = join(root, "payload.bin");
@@ -1072,6 +1073,100 @@ exit 1`,
     code: "unreadable_output",
   });
   expect(result.error.message).toContain("overwrite");
+});
+
+// Runs the probe script through `sh` on the host, as adb does on a device, so
+// the "device" filesystem is a real directory tree under the stub root.
+const writePushTargetStub = () =>
+  writeAdbStub(
+    (root) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "sh" ]; then shift 3; eval "$*"; exit $?; fi
+if [ "$1" = "-s" ] && [ "$3" = "push" ]; then : > "${root}/pushed"; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "sha256sum" ]; then printf '%s  %s\\n' "8748b5d17d1ebcec7d46674fa6a8b92c0f95598a552f27c1c8a132eb58c04043" "$5"; exit 0; fi
+exit 1`,
+  );
+
+it.each([false, true])(
+  "refuses a push whose device path is a directory instead of writing inside it (overwrite %s)",
+  async (overwrite) => {
+    const { binary, root } = await writePushTargetStub();
+    const localFile = join(root, "payload.bin");
+    await writeFile(localFile, "push-payload");
+    const deviceDirectory = join(root, "device-directory");
+    await mkdir(deviceDirectory);
+    const projected = await refusedBy(providerOver(binary), {
+      operation: "push_adb_file",
+      input: {
+        serial: "emulator-5554",
+        local_path: localFile,
+        device_path: deviceDirectory,
+        overwrite,
+      },
+    });
+    expect(projected).toMatchObject({
+      code: "invalid_request",
+      details: {
+        issues: [{ path: ["device_path"], reason: "invalid_value" }],
+      },
+    });
+    await expect(lstat(join(root, "pushed"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it("treats a dangling device symlink as an existing path that adb push would replace", async () => {
+  const { binary, root } = await writePushTargetStub();
+  const localFile = join(root, "payload.bin");
+  await writeFile(localFile, "push-payload");
+  const deviceLink = join(root, "device-link");
+  await symlink(join(root, "missing-target"), deviceLink);
+  const request = (overwrite: boolean): AdbRequest => ({
+    operation: "push_adb_file",
+    input: {
+      serial: "emulator-5554",
+      local_path: localFile,
+      device_path: deviceLink,
+      overwrite,
+    },
+  });
+  const refused = await refusedBy(providerOver(binary), request(false));
+  expect(refused).toMatchObject({ code: "unreadable_output" });
+  await expect(lstat(join(root, "pushed"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  const replaced = await evidenceResult(providerOver(binary), request(true));
+  expect(replaced).toMatchObject({
+    device_path: deviceLink,
+    overwritten: true,
+  });
+  await expect(lstat(join(root, "pushed"))).resolves.toBeDefined();
+});
+
+it("does not push when the target probe fails with a diagnosis", async () => {
+  const { binary, root } = await writeAdbStub(
+    (stubRoot) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "sh" ]; then printf '%s\\n' "error: closed" >&2; exit 1; fi
+if [ "$1" = "-s" ] && [ "$3" = "push" ]; then : > "${stubRoot}/pushed"; exit 0; fi
+exit 1`,
+  );
+  const localFile = join(root, "payload.bin");
+  await writeFile(localFile, "x");
+  const result = await providerOver(binary).execute({
+    operation: "push_adb_file",
+    input: {
+      serial: "emulator-5554",
+      local_path: localFile,
+      device_path: "/data/local/tmp/payload.bin",
+      overwrite: true,
+    },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error.message).toContain("error: closed");
+  await expect(lstat(join(root, "pushed"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
 });
 
 it.each([
@@ -1115,7 +1210,7 @@ it.each([
     const { binary, root } = await writeAdbStub(
       (stubRoot) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
 if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; fi
-if [ "$1" = "-s" ] && [ "$4" = "test" ]; then ${probe}; fi
+if [ "$1" = "-s" ] && [ "$4" = "sh" ]; then ${probe}; fi
 exit 0`,
     );
     const localFile = join(root, "payload.bin");
