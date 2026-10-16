@@ -5,6 +5,7 @@ import { err, ok, type Result } from "../domain/result.js";
 import {
   readRegularFile,
   RegularFileCleanupFailure,
+  type RegularFileReadOptions,
 } from "./RegularFileRead.js";
 
 export interface RecoveryBackupSelection {
@@ -28,6 +29,7 @@ const errorDetail = (cause: unknown): string =>
 export const selectCurrentRecoveryBackup = async (
   firstBackupPath: string,
   original: string | Buffer,
+  options: Pick<RegularFileReadOptions, "resources"> = {},
 ): Promise<Result<RecoveryBackupSelection, RecoveryBackupSelectionFailure>> => {
   const expected = Buffer.isBuffer(original)
     ? original
@@ -35,6 +37,7 @@ export const selectCurrentRecoveryBackup = async (
   let firstBackup: Buffer | undefined;
   try {
     firstBackup = await readRegularFile(firstBackupPath, {
+      ...options,
       symlinks: "reject",
     });
   } catch (cause: unknown) {
@@ -55,7 +58,10 @@ export const selectCurrentRecoveryBackup = async (
   const recoveryPath = `${firstBackupPath}.${digest}.recovery`;
   let recovery: Buffer | undefined;
   try {
-    recovery = await readRegularFile(recoveryPath, { symlinks: "reject" });
+    recovery = await readRegularFile(recoveryPath, {
+      ...options,
+      symlinks: "reject",
+    });
   } catch (cause: unknown) {
     if (cause instanceof RegularFileCleanupFailure) throw cause;
     if (!isMissing(cause))
@@ -92,17 +98,23 @@ export const preserveCurrentRecoveryBackup = async (
   source: string,
   firstBackupPath: string,
   original: string | Buffer,
+  options: Pick<RegularFileReadOptions, "resources"> = {},
 ): Promise<string | undefined> => {
   const selection = await selectCurrentRecoveryBackup(
     firstBackupPath,
     original,
+    options,
   );
   if (
     !selection.ok ||
     !(await preserveRecoveryBackup(source, selection.value.backupPath))
   )
     return undefined;
-  const verified = await selectCurrentRecoveryBackup(firstBackupPath, original);
+  const verified = await selectCurrentRecoveryBackup(
+    firstBackupPath,
+    original,
+    options,
+  );
   return verified.ok &&
     verified.value.present &&
     verified.value.backupPath === selection.value.backupPath

@@ -259,7 +259,9 @@ export const systemUninstallHost = (
         : item(client.name, "failed", blocker);
     },
     removeClient: (client) =>
-      removeClient(client, fileSystem, () => clientWriteBlocker(client)),
+      removeClient(client, fileSystem, resources, () =>
+        clientWriteBlocker(client),
+      ),
     inspectSkill: async () => {
       for (const destination of skillDestinations(
         home,
@@ -430,6 +432,7 @@ const clientRegistrationRemoval = (
 const removeClient = async (
   client: SetupClient,
   fileSystem: UninstallFileSystem,
+  resources: ArtifactResourceScope,
   writeBlocker?: () => string | undefined,
 ): Promise<UninstallItem> => {
   const read = await readClientConfiguration(client, fileSystem);
@@ -475,6 +478,7 @@ const removeClient = async (
     transactionPath,
     `${client.configPath}.rea.backup`,
     original,
+    { resources },
   );
   if (recoveryBackupPath === undefined)
     return item(
