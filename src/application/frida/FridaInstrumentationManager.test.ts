@@ -1112,6 +1112,51 @@ it("redacts remote credentials echoed by a target script", async () => {
   await manager.closeAll();
 });
 
+it.each([false, true])(
+  "preserves binary data after redacted keys collide, with siblings: %s",
+  async (siblings) => {
+    const bindings = new FakeDeviceManager();
+    const manager = new FridaInstrumentationManager({
+      deviceManager: bindings,
+    });
+    const started = await manager.startSession({
+      mode: "attach",
+      remote: { address: "127.0.0.1:27042", token: "secret" },
+      pid: 512,
+    });
+    if (!started.ok) throw started.error;
+    try {
+      const loaded = await manager.loadScript(started.value.sessionId, {
+        sourceKind: "inline",
+        source: "send('ready');",
+      });
+      if (!loaded.ok) throw loaded.error;
+      const script = bindings.device.session.scripts.at(-1);
+      if (script === undefined) throw new Error("script missing");
+      const data = Buffer.alloc(8 * 1024 * 1024, 0x62);
+      const payload = {
+        ...(siblings ? { before: "kept" } : {}),
+        secret: "a".repeat(8 * 1024 * 1024),
+        "[redacted]": "",
+        ...(siblings ? { after: "kept" } : {}),
+      };
+      script.message.emit({ type: "send", payload }, data);
+      const status = manager.status(started.value.sessionId);
+      expect(status?.messages.at(-1)).toMatchObject({
+        payload: {
+          ...(siblings ? { before: "kept", after: "kept" } : {}),
+          "[redacted]": "",
+        },
+        data_base64: data.toString("base64"),
+      });
+      expect(status?.messages.at(-1)).not.toHaveProperty("data_truncated");
+      expect(status?.messagesTruncated).toBe(false);
+    } finally {
+      await manager.closeAll();
+    }
+  },
+);
+
 it("bounds oversized Frida message metadata before retaining it", async () => {
   const bindings = new FakeDeviceManager();
   bindings.device.session.nextDescription = "d".repeat(1_000_000);

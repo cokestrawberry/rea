@@ -1295,20 +1295,28 @@ const boundedJsonValue = (
       }
       const output: Record<string, JsonValue> = {};
       let usedBytes = 2;
-      let entries = 0;
+      const entryBytes = new Map<string, number>();
       let truncated = false;
       for (const rawKey in value) {
         if (!Object.hasOwn(value, rawKey)) continue;
-        const separatorBytes = entries === 0 ? 0 : 1;
-        const keyLimit = Math.max(0, budget - usedBytes - separatorBytes - 10);
+        const keyLimit = Math.max(0, budget - 12);
         const boundedKey = boundedRedactedString(rawKey, keyLimit, secrets);
         if (boundedKey.truncated) {
           truncated = true;
           break;
         }
         const key = boundedKey.value;
+        const previousBytes = entryBytes.get(key);
+        const separatorBytes =
+          previousBytes === undefined && entryBytes.size > 0 ? 1 : 0;
         const keyBytes = jsonStringBytes(key) + 1;
-        const remaining = budget - usedBytes - separatorBytes - keyBytes - 1;
+        const remaining =
+          budget -
+          usedBytes +
+          (previousBytes ?? 0) -
+          separatorBytes -
+          keyBytes -
+          1;
         if (remaining < 8) {
           truncated = true;
           break;
@@ -1324,8 +1332,9 @@ const boundedJsonValue = (
           enumerable: true,
           writable: true,
         });
-        entries += 1;
-        usedBytes += separatorBytes + keyBytes + entry.bytes;
+        entryBytes.set(key, keyBytes + entry.bytes);
+        usedBytes +=
+          separatorBytes + keyBytes + entry.bytes - (previousBytes ?? 0);
         truncated ||= entry.truncated;
         if (entry.truncated) break;
       }
