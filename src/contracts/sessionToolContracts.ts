@@ -124,7 +124,7 @@ export const SESSION_TOOL_CONTRACTS = [
   ),
   session(
     "build_call_path",
-    "Build every shortest direct-callee path inline from complete analyze_function Evidence records using exact canonical addresses. Missing dossiers and provider mixing remain unknown; every node and edge cites source Evidence.",
+    "Build shortest direct-callee paths inline from complete analyze_function Evidence records using exact canonical addresses. Returned paths are bounded: shortest_path_count gives the exact total and paths_truncated reports omission. Missing dossiers and provider mixing remain unknown; every node and edge cites source Evidence.",
     callPathInputSchema,
   ),
   session(

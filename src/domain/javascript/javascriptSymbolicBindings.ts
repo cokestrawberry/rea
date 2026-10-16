@@ -12,7 +12,10 @@ import {
   indexJavaScriptElectronIdentitySteps,
   type JavaScriptElectronIdentity,
 } from "./javascriptSemanticAnalysis.js";
-import { symbolicLogicalRight } from "./javascriptSymbolicControlFlow.js";
+import {
+  symbolicLogicalRight,
+  LOGICAL_ASSIGNMENT_OPERATORS,
+} from "./javascriptSymbolicControlFlow.js";
 import {
   moduleFactory,
   modulePropertyName,
@@ -49,6 +52,9 @@ interface SymbolicReturnFlow {
   readonly fallsThrough: boolean;
 }
 const emptyEnvironment: SymbolicEnvironment = { values: new Map() };
+// Ends an argument list at the first spread whose length is unknown, so no
+// later argument is assigned a fixed position.
+const dynamicSpreadArguments = symbolicUnknown("dynamic spread arguments");
 const isObjectPrototypeSetter = (
   property: t.ObjectMethod | t.ObjectProperty,
   name: string,
@@ -396,6 +402,7 @@ export class JavaScriptSymbolicBindings {
     invocationNode?: t.Node,
   ): SymbolicEnvironment {
     const values = new Map<string, SymbolicValue>();
+    const lengthKnown = !args.includes(dynamicSpreadArguments);
     runtimeFunctionParameters(fn.node).forEach((param, index) => {
       const target = t.isRestElement(param) ? param.argument : param;
       if (!t.isIdentifier(target)) return;
@@ -408,8 +415,12 @@ export class JavaScriptSymbolicBindings {
         values.set(
           binding.bindingId,
           t.isRestElement(param)
-            ? { kind: "array", values: args.slice(index) }
-            : (args[index] ?? symbolicUnknown("runtime parameter")),
+            ? lengthKnown
+              ? { kind: "array", values: args.slice(index) }
+              : symbolicUnknown("rest after dynamic spread arguments")
+            : args[index] === dynamicSpreadArguments
+              ? symbolicUnknown("dynamic spread argument")
+              : (args[index] ?? symbolicUnknown("runtime parameter")),
         );
     });
     const scopeId =
@@ -428,12 +439,14 @@ export class JavaScriptSymbolicBindings {
     node: t.CallExpression | t.OptionalCallExpression,
     env: SymbolicEnvironment,
   ): readonly SymbolicValue[] {
+    let lengthKnown = true;
     return node.arguments.flatMap((a) => {
+      if (!lengthKnown) return [];
       if (!t.isSpreadElement(a)) return [this.evaluate(a, env)];
       const value = this.evaluate(a.argument, env);
-      return value.kind === "array"
-        ? value.values
-        : [symbolicUnknown("dynamic spread arguments")];
+      if (value.kind === "array") return value.values;
+      lengthKnown = false;
+      return [dynamicSpreadArguments];
     });
   }
 
@@ -458,7 +471,13 @@ export class JavaScriptSymbolicBindings {
     }
     if (t.isSequenceExpression(node))
       return this.evaluate(node.expressions.at(-1), env);
-    if (t.isAssignmentExpression(node)) return this.evaluate(node.right, env);
+    if (t.isAssignmentExpression(node)) {
+      if (node.operator === "=") return this.evaluate(node.right, env);
+      const operator = LOGICAL_ASSIGNMENT_OPERATORS[node.operator];
+      return operator === undefined
+        ? symbolicUnknown("compound assignment")
+        : this.#logical(operator, node.left, node.right, env);
+    }
     if (t.isAwaitExpression(node)) return this.evaluate(node.argument, env);
     if (t.isUnaryExpression(node)) {
       const value = this.evaluate(node.argument, env);
@@ -483,37 +502,37 @@ export class JavaScriptSymbolicBindings {
           ])
         : this.evaluate(truth ? node.consequent : node.alternate, env);
     }
-    if (t.isLogicalExpression(node)) {
-      const left = this.evaluate(node.left, env);
-      const right = symbolicLogicalRight(node.operator, left);
-      if (right !== undefined)
-        return right ? this.evaluate(node.right, env) : left;
-      const leftCondition: SymbolicCondition = {
-        node: node.left,
-        positive:
-          node.operator === "&&"
-            ? false
-            : node.operator === "||"
-              ? true
-              : "not-nullish",
-      };
-      const rightCondition: SymbolicCondition = {
-        node: node.left,
-        positive:
-          node.operator === "&&"
-            ? true
-            : node.operator === "||"
-              ? false
-              : "nullish",
-      };
-      return symbolicUnion([
-        symbolicCondition(left, leftCondition),
-        symbolicCondition(this.evaluate(node.right, env), rightCondition),
-      ]);
-    }
+    if (t.isLogicalExpression(node))
+      return this.#logical(node.operator, node.left, node.right, env);
     if (t.isCallExpression(node) || t.isOptionalCallExpression(node))
       return this.#call(node, env);
     return symbolicUnknown(`unsupported ${node.type}`);
+  }
+
+  #logical(
+    operator: t.LogicalExpression["operator"],
+    leftNode: t.Node,
+    rightNode: t.Node,
+    env: SymbolicEnvironment,
+  ): SymbolicValue {
+    const left = this.evaluate(leftNode, env);
+    const right = symbolicLogicalRight(operator, left);
+    if (right !== undefined)
+      return right ? this.evaluate(rightNode, env) : left;
+    const leftCondition: SymbolicCondition = {
+      node: leftNode,
+      positive:
+        operator === "&&" ? false : operator === "||" ? true : "not-nullish",
+    };
+    const rightCondition: SymbolicCondition = {
+      node: leftNode,
+      positive:
+        operator === "&&" ? true : operator === "||" ? false : "nullish",
+    };
+    return symbolicUnion([
+      symbolicCondition(left, leftCondition),
+      symbolicCondition(this.evaluate(rightNode, env), rightCondition),
+    ]);
   }
 
   #identifier(node: t.Identifier, env: SymbolicEnvironment): SymbolicValue {
@@ -977,7 +996,7 @@ export class JavaScriptSymbolicBindings {
     ) {
       this.#indexWrite(
         direct,
-        t.isAssignmentExpression(site) ? site.right : site,
+        t.isAssignmentExpression(site, { operator: "=" }) ? site.right : site,
         site,
       );
       return;
