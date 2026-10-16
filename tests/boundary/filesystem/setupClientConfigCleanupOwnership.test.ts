@@ -1,5 +1,6 @@
 import { mkdir, open as fsOpen, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -118,6 +119,45 @@ it("retains invalid UTF-8 diagnostics and the uninstall read owner when close fa
     await cleanupHeldHandle(host, release);
   }
 });
+
+it.each(["first", "recovery", "created"] as const)(
+  "retains an uninstall %s backup read owner until host cleanup",
+  async (kind) => {
+    const home = await createTestTempDirectory("rea-uninstall-backup-close-");
+    const path = join(home, "client.json");
+    const original =
+      '{"mcpServers":{"rea":{"command":"npx","args":["-y","rea-agents","mcp"]}}}\n';
+    const firstBackup = `${path}.rea.backup`;
+    const heldPath =
+      kind === "recovery"
+        ? `${firstBackup}.${createHash("sha256").update(original).digest("hex")}.recovery`
+        : firstBackup;
+    await writeFile(path, original);
+    if (kind !== "created") {
+      await writeFile(
+        firstBackup,
+        kind === "recovery" ? "earlier backup" : original,
+      );
+      if (kind === "recovery") await writeFile(heldPath, original);
+    }
+    const { closeAttempts, release } = holdReadHandle(
+      heldPath,
+      "held backup handle",
+    );
+    const host = systemUninstallHost(home, undefined, { HOME: home }, "linux");
+    try {
+      await expect(
+        host.removeClient({ name: "cursor", format: "json", configPath: path }),
+      ).rejects.toBeInstanceOf(RegularFileCleanupFailure);
+      expect(await readFile(path, "utf8")).toBe(original);
+      expect(await readFile(heldPath, "utf8")).toBe(original);
+      expect(closeAttempts).toHaveLength(2);
+      await expectCloseReclaimsHandle(host, closeAttempts, release);
+    } finally {
+      await cleanupHeldHandle(host, release);
+    }
+  },
+);
 
 describe("ZCode fallback cleanup ownership", () => {
   it.each(["preflight", "configure"])(

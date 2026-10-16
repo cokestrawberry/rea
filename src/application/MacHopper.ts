@@ -68,7 +68,8 @@ export type MacHopperInstallResult =
         | "publisher_verification_failed"
         | "destination_exists"
         | "copy"
-        | "launcher_missing";
+        | "launcher_missing"
+        | "cancelled";
       readonly cleanupFailure?: string;
     };
 
@@ -76,6 +77,7 @@ export type MacHopperInstallResult =
 export interface MacHopperInstallHost {
   download(
     url: string,
+    options: { readonly signal?: AbortSignal },
   ): Promise<{ readonly ok: boolean; readonly bytes: Uint8Array }>;
   createTemporaryDirectory(): Promise<string>;
   createMountDirectory(path: string): Promise<void>;
@@ -101,7 +103,10 @@ export interface MacHopperInstallHost {
 
 /** Download, verify, and install Hopper into the current user's Applications directory. */
 export const installMacHopper = async (
-  options: { readonly replaceExisting?: boolean } = {},
+  options: {
+    readonly replaceExisting?: boolean;
+    readonly signal?: AbortSignal;
+  } = {},
   host: MacHopperInstallHost = systemMacHopperInstallHost(
     homeDirectoryFromEnvironment(process.env, process.platform),
     process.env,
@@ -112,7 +117,7 @@ export const installMacHopper = async (
   let result: MacHopperInstallResult;
   try {
     result = await (async (): Promise<MacHopperInstallResult> => {
-      const metadata = await host.download(RELEASES_URL);
+      const metadata = await host.download(RELEASES_URL, options);
       if (!metadata.ok) return { status: "failed", reason: "release_metadata" };
       const parsed = releasesSchema.safeParse(parseJson(metadata.bytes));
       if (!parsed.success)
@@ -120,7 +125,7 @@ export const installMacHopper = async (
       const release = parsed.data["OS X"];
       if (!release.filename.startsWith(DOWNLOAD_PREFIX))
         return { status: "failed", reason: "release_metadata" };
-      const archive = await host.download(release.filename);
+      const archive = await host.download(release.filename, options);
       if (!archive.ok) return { status: "failed", reason: "download" };
       if (!integrityMatches(archive.bytes, release))
         return { status: "failed", reason: "integrity" };
@@ -134,6 +139,7 @@ export const installMacHopper = async (
       const mountPath = join(temporary, "mounted");
       await host.createMountDirectory(mountPath);
       await host.writePackage(packagePath, archive.bytes);
+      options.signal?.throwIfAborted();
       if (!(await host.mount(packagePath, mountPath)))
         return { status: "failed", reason: "mount" };
       mounted = true;
@@ -144,6 +150,7 @@ export const installMacHopper = async (
         return { status: "failed", reason: "bundle" };
       if (verification === "unverified_publisher")
         return { status: "failed", reason: "publisher_verification_failed" };
+      options.signal?.throwIfAborted();
       const stage = `${destination}.rea-stage`;
       if (
         !(await host.installBundle(
@@ -163,7 +170,10 @@ export const installMacHopper = async (
   } catch (cause: unknown) {
     // Install-stage failures share the download reason; the stage is cleaned below.
     void cause;
-    result = { status: "failed", reason: "download" };
+    result = {
+      status: "failed",
+      reason: "download",
+    };
   }
 
   let cleanupFailure: string | undefined;
@@ -185,6 +195,8 @@ export const installMacHopper = async (
     }
   }
 
+  if (result.status === "failed" && options.signal?.aborted)
+    result = { ...result, reason: "cancelled" };
   return cleanupFailure === undefined ? result : { ...result, cleanupFailure };
 };
 
