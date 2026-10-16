@@ -36,7 +36,7 @@ describe("readReferenceSource entries", () => {
     expect(
       result.value.entries.map((entry) =>
         entry.status === "read" && entry.kind === "file"
-          ? Buffer.from(entry.bytes).toString()
+          ? Buffer.from(entry.bytes ?? []).toString()
           : entry.status === "read"
             ? entry.kind
             : entry.code,

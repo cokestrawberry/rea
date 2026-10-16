@@ -945,7 +945,9 @@ describe("Ghidra result projection", () => {
       },
     });
   });
+});
 
+describe("Ghidra cancellation projection", () => {
   it("projects remote decompile cancellation as a provider-neutral interruption", async () => {
     const code = "decompile_cancelled";
     const tag = "AnalysisCancelledError";

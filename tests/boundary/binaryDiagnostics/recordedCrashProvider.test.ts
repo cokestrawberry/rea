@@ -271,30 +271,7 @@ it
       },
       { signal: controller.signal },
     );
-    if (
-      [
-        "success",
-        "unrecorded-pid",
-        "missing-prpsinfo",
-        "leader-not-a-thread",
-      ].includes(scenario)
-    ) {
-      if (!result.ok) throw result.error;
-      expect(result.value.debugger).toMatchObject({
-        status: "available",
-        historical_pid:
-          scenario === "success"
-            ? 123
-            : scenario === "leader-not-a-thread"
-              ? 456
-              : null,
-        maps: [{ permissions: null }],
-        diagnostics: { stdout: "debugger stage diagnostic" },
-      });
-    } else {
-      if (result.ok) throw new Error("Expected optional debugger failure");
-      expectOptionalContextFailure(scenario, result.error);
-    }
+    expectOptionalContextResult(scenario, result);
     expect(await readFile(path)).toEqual(bytes);
     if (
       scenario === "cleanup-failure" ||
@@ -320,6 +297,36 @@ it
     await expect(access(owned)).rejects.toMatchObject({ code: "ENOENT" });
   },
 );
+
+const expectOptionalContextResult = (
+  scenario: string,
+  result: Awaited<ReturnType<PwntoolsRecordedCrashProvider["inspect"]>>,
+) => {
+  if (
+    [
+      "success",
+      "unrecorded-pid",
+      "missing-prpsinfo",
+      "leader-not-a-thread",
+    ].includes(scenario)
+  ) {
+    if (!result.ok) throw result.error;
+    expect(result.value.debugger).toMatchObject({
+      status: "available",
+      historical_pid:
+        scenario === "success"
+          ? 123
+          : scenario === "leader-not-a-thread"
+            ? 456
+            : null,
+      maps: [{ permissions: null }],
+      diagnostics: { stdout: "debugger stage diagnostic" },
+    });
+  } else {
+    if (result.ok) throw new Error("Expected optional debugger failure");
+    expectOptionalContextFailure(scenario, result.error);
+  }
+};
 
 const expectOptionalContextFailure = (
   scenario: string,

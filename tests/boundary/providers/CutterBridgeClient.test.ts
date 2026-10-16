@@ -784,6 +784,20 @@ describe("CutterBridgeClient: scenario group 4", () => {
       ),
     ).toBe(true);
   });
+});
+
+describe("CutterBridgeClient: scenario group 5", () => {
+  let directory: string | undefined;
+  let server: ReturnType<typeof createServer> | undefined;
+
+  afterEach(async () => {
+    if (server !== undefined)
+      await new Promise<void>((resolve) => server?.close(() => resolve()));
+    if (directory !== undefined)
+      await rm(directory, { recursive: true, force: true });
+    server = undefined;
+    directory = undefined;
+  });
 
   it("returns unknown completion for invalid JSON and rejects a pre-aborted request", async () => {
     directory = await mkdtemp(join(tmpdir(), "rea-cutter-malformed-response-"));
@@ -823,20 +837,6 @@ describe("CutterBridgeClient: scenario group 4", () => {
         signal: controller.signal,
       }),
     ).rejects.toMatchObject({ name: "AbortError" });
-  });
-});
-
-describe("CutterBridgeClient: scenario group 5", () => {
-  let directory: string | undefined;
-  let server: ReturnType<typeof createServer> | undefined;
-
-  afterEach(async () => {
-    if (server !== undefined)
-      await new Promise<void>((resolve) => server?.close(() => resolve()));
-    if (directory !== undefined)
-      await rm(directory, { recursive: true, force: true });
-    server = undefined;
-    directory = undefined;
   });
 
   it("handles malformed framed JSON and fragmented response frames", async () => {

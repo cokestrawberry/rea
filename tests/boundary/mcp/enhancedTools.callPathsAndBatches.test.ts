@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { AnalysisOperationPort } from "../../../src/application/AnalysisProvider.js";
 import { createAnalysisExecution } from "../../../src/application/AnalysisProvider.js";
+import { EnhancedTools } from "../../../src/application/EnhancedTools.js";
 import {
   AnalysisCapabilityUnavailableError,
   AnalysisCancelledError,
