@@ -84,6 +84,49 @@ describe("CdpBrowserProvider: cancellation and session events", () => {
     expect(methods).not.toContain("Browser.close");
   });
 
+  it("keeps an observation window open beyond the native timer range", async () => {
+    const browser = await startFakeCdpBrowser();
+    trackBrowser(browser);
+    const controller = new AbortController();
+    let armed = (): void => {};
+    const windowArmed = new Promise<void>((resolve) => {
+      armed = resolve;
+    });
+    let settled = false;
+    const pending = new CdpBrowserProvider().observeSession(
+      observeWebSessionInputSchema.parse({
+        cdp_endpoint: browser.endpoint,
+        allowed_origins: [browser.allowedOrigin],
+        target_id: "allowed-page",
+        observation_ms: 2_147_483_648,
+      }),
+      {
+        signal: controller.signal,
+        progress: {
+          report(update) {
+            if (update.completed === 1) armed();
+            return Promise.resolve();
+          },
+        },
+      },
+    );
+    void pending.then(() => {
+      settled = true;
+    });
+
+    await windowArmed;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(settled).toBe(false);
+    controller.abort();
+    expect(await pending).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisCancelledError",
+        operation: "observe_web_session",
+      },
+    });
+  });
+
   it("projects capture-window cancellation onto bundle analysis", async () => {
     const browser = await startFakeCdpBrowser({
       pageScopedVersionWebSocket: true,
