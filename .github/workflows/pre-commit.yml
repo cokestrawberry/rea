@@ -1,0 +1,37 @@
+name: Pre-commit
+
+on:
+  pull_request:
+    branches: [main, "stage/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-commit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  HUSKY: "0"
+
+jobs:
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Cache npm package downloads
+        uses: ./.github/actions/npm-cache
+      - run: npm ci
+      - name: Run the pre-commit tasks on the PR's changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # --fail-on-changes turns the hook's in-place fixes into failures.
+        run: npx --no-install lint-staged --diff="${BASE_SHA}...HEAD" --fail-on-changes

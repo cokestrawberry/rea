@@ -21,6 +21,32 @@ afterEach(async () => {
 });
 
 describe("Hopper analysis profiles", () => {
+  it.each([
+    '/work/quoted"target',
+    "/work/back\\slash",
+    "/work/line\nbreak",
+    "/work/line\rbreak",
+  ])(
+    "rejects an unsafe macOS helper path during profile resolution: %s",
+    async (path) => {
+      const resolved = await resolveHopperAnalysisProfile(
+        { ...target("elf", "x86_64"), path },
+        {
+          launcherPath: "/missing/hopper",
+          loaderArgsOverride: [],
+          provider: HOPPER_PROVIDER_IDENTITY,
+          platform: "darwin",
+        },
+      );
+      expect(resolved).toMatchObject({
+        ok: false,
+        error: {
+          _tag: "AnalysisUnsupportedTargetError",
+          operation: "resolve_analysis_profile",
+        },
+      });
+    },
+  );
   it("does not map DOS MZ to the 32-bit Hopper loader", () => {
     expect(hopperLoaderArgsForTarget(target("dos-mz", "x86"))).toMatchObject({
       ok: false,

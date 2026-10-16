@@ -571,6 +571,129 @@ describe("GhidraClient startup lifecycle", () => {
     await client.close();
     await expect(waitForExit(process_)).resolves.toBe(true);
   });
+
+  it("keeps the shared startup running for a joined caller when the first caller cancels", async () => {
+    const launcher = new FixtureLauncher();
+    const client = clientFor(launcher);
+    const firstCaller = new AbortController();
+    const first = client.start(firstCaller.signal);
+    const joined = client.start(new AbortController().signal);
+
+    firstCaller.abort();
+
+    await expect(first).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
+    await expect(joined).resolves.toMatchObject({ ok: true });
+    expect(launcher.processes).toHaveLength(1);
+  });
+
+  it("releases a joined caller on its own cancellation while the startup continues", async () => {
+    const launcher = new FixtureLauncher();
+    let releaseLaunch: (() => void) | undefined;
+    const launchGate = new Promise<void>((resolve) => {
+      releaseLaunch = resolve;
+    });
+    const client = clientFor(
+      {
+        async launch(session) {
+          await launchGate;
+          return launcher.launch(session);
+        },
+      },
+      { startupTimeoutMs: 30_000 },
+    );
+    const first = client.start();
+    const joinedCaller = new AbortController();
+    const joined = client.start(joinedCaller.signal);
+
+    joinedCaller.abort();
+
+    await expect(joined).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
+    releaseLaunch?.();
+    await expect(first).resolves.toMatchObject({ ok: true });
+    expect(launcher.processes).toHaveLength(1);
+  });
+
+  it("cancels a caller joining an aborted startup before cleanup completes", async () => {
+    const launcher = new FixtureLauncher("silent");
+    const cleanupEntered = Promise.withResolvers<void>();
+    const cleanupRelease = Promise.withResolvers<void>();
+    const client = clientFor({
+      async launch(session) {
+        const launched = await launcher.launch(session);
+        return ok({
+          ...launched.value,
+          cleanup: async () => {
+            cleanupEntered.resolve();
+            await cleanupRelease.promise;
+            const child = launched.value.process;
+            const running =
+              child.exitCode === null && child.signalCode === null;
+            if (running) child.kill("SIGTERM");
+            await waitForExit(child);
+            return { cleaned: true as const, signaled: running };
+          },
+        });
+      },
+    });
+    try {
+      const firstCaller = new AbortController();
+      const first = client.start(firstCaller.signal);
+      await launcher.started;
+      firstCaller.abort();
+      await cleanupEntered.promise;
+      const lateCaller = new AbortController();
+      const late = client.start(lateCaller.signal);
+      lateCaller.abort();
+      await expect(late).resolves.toMatchObject({
+        ok: false,
+        error: { kind: "cancelled" },
+      });
+      expect(launcher.processes).toHaveLength(1);
+      cleanupRelease.resolve();
+      await expect(first).resolves.toMatchObject({
+        ok: false,
+        error: { kind: "cancelled" },
+      });
+      expect(launcher.processes).toHaveLength(1);
+    } finally {
+      cleanupRelease.resolve();
+    }
+  });
+
+  it("cancels the shared startup only after every waiting caller has cancelled", async () => {
+    const launcher = new FixtureLauncher("silent");
+    const client = clientFor(launcher, { startupTimeoutMs: 10_000 });
+    const firstCaller = new AbortController();
+    const secondCaller = new AbortController();
+    const first = client.start(firstCaller.signal);
+    const second = client.start(secondCaller.signal);
+    const process_ = await launcher.started;
+
+    firstCaller.abort();
+
+    await expect(first).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
+    expect(process_.exitCode).toBeNull();
+    expect(process_.signalCode).toBeNull();
+    secondCaller.abort();
+    await expect(second).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "cancelled" },
+    });
+    await expect(access(launcher.runtimeRoots[0] ?? "")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await client.close();
+    await expect(waitForExit(process_)).resolves.toBe(true);
+  });
 });
 
 describe("GhidraClient established requests", () => {

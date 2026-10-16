@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { chmod, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
+import { alterableAppleScriptLiteral } from "./HopperAnalysisProfile.js";
 
 import {
   HopperCancelledError,
@@ -273,12 +274,12 @@ export class HopperApplicationLauncher implements BridgeLauncher {
             ...(nativeHelperVerified
               ? { nativeHelperVerified: true as const }
               : {}),
-            // The vendor helper interpolates these values into AppleScript
-            // literals without escaping. Preserve them, but withhold the
-            // pre-handoff conclusion when they can alter that script.
+            // Launcher path and loader arguments are operator-configured and
+            // preserved; the pre-handoff conclusion is withheld when they can
+            // alter the helper's AppleScript.
             ...((this.dependencies.platform ?? process.platform) === "darwin" &&
-            ![this.options.launcherPath, ...argumentsForTarget].some((value) =>
-              /["\\\r\n]/u.test(value),
+            ![this.options.launcherPath, ...argumentsForTarget].some(
+              alterableAppleScriptLiteral,
             )
               ? { authorizationDenialBeforeHandoff: true as const }
               : {}),
