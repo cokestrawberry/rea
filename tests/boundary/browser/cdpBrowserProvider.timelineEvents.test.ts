@@ -26,7 +26,7 @@ describe("CdpBrowserProvider navigation timeline", () => {
     );
 
     if (!result.ok) throw result.error;
-    expect(result.value.timeline).toHaveLength(additionalEvents + 6);
+    expect(result.value.timeline).toHaveLength(additionalEvents + 7);
     expect(result.value.completeness.truncated_sections).not.toContain(
       "timeline",
     );
