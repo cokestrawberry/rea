@@ -1,6 +1,10 @@
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/server";
+import { execFile } from "node:child_process";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { expect, it as test, vi } from "vitest";
+import { readWithoutFifoWriter } from "../../fixtures/fifoInput.js";
 import {
   firmwareFixture,
   assertFirmwareCleanup,
@@ -695,6 +699,27 @@ it("preserves existing output and rejects invalid intervals before invoking extr
     error: { _tag: "AnalysisInputError" },
   });
   expect(fixture.launches).toHaveLength(previous);
+  await assertFirmwareCleanup(fixture.launches);
+});
+
+it("rejects a FIFO input as invalid without waiting for a writer or launching a tool", async () => {
+  const fixture = await firmwareFixture();
+  const fifoPath = join(fixture.root, "input.fifo");
+  await promisify(execFile)("mkfifo", [fifoPath]);
+  const outcome = await readWithoutFifoWriter(fifoPath, () =>
+    fixture.service.execute("inspect_firmware_regions", { path: fifoPath }),
+  );
+  expect(outcome.state).toBe("completed");
+  if (outcome.state !== "completed")
+    throw new Error("Firmware snapshot waited for a FIFO writer");
+  expect(outcome.result).toMatchObject({
+    ok: false,
+    error: {
+      _tag: "AnalysisInputError",
+      issues: [{ path: ["path"], reason: "invalid_value" }],
+    },
+  });
+  expect(fixture.launches).toHaveLength(0);
   await assertFirmwareCleanup(fixture.launches);
 });
 
