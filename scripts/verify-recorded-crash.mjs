@@ -131,6 +131,25 @@ try {
     const enriched = await basic.inspect(mode, spaced, {
       debuggerContext: true,
     });
+    const recordedPid = report.notes.find(
+      (note) => note.process_info !== undefined,
+    )?.process_info.historical_pid;
+    assert.notEqual(recordedPid, undefined);
+    assert.equal(enriched.debugger.historical_pid, recordedPid);
+    const noProcess = await basic.inspect(mode, fixtures["missing-prpsinfo"], {
+      debuggerContext: true,
+    });
+    assert.equal(noProcess.debugger.historical_pid, null);
+    const noLeader = await basic.inspect(
+      mode,
+      fixtures["missing-leader-status"],
+      { debuggerContext: true },
+    );
+    assert.equal(noLeader.debugger.historical_pid, recordedPid);
+    assert.ok(
+      noLeader.threads.every((thread) => thread.historical_pid !== recordedPid),
+    );
+    cases += 2;
     assert.deepEqual(enriched.threads, report.threads);
     assert.deepEqual(enriched.notes, report.notes);
     assert.ok(enriched.debugger.pwndbg_version.startsWith("2026.09.15"));

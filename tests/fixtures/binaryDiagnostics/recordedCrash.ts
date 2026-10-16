@@ -1,5 +1,6 @@
 import {
   RECORDED_LINUX_CORE_PROFILES,
+  RECORDED_LINUX_PRPSINFO,
   type RecordedCrash,
   type RecordedCrashArchitecture,
 } from "../../../src/domain/native/recordedCrash.js";
@@ -184,7 +185,11 @@ export const recordedCrashFixtureBytes = (value: RecordedCrash): Buffer => {
       start + 4,
     );
     bytes.writeUInt32LE(
-      note.type === "NT_PRSTATUS" ? 1 : 0x53494749,
+      note.type === "NT_PRSTATUS"
+        ? 1
+        : note.type === "NT_PRPSINFO"
+          ? 3
+          : 0x53494749,
       start + 8,
     );
     Buffer.from(note.owner_bytes_base64, "base64").copy(
@@ -236,3 +241,33 @@ export const recordedCrashDebuggerFixture = (): Extract<
   completeness: "unknown",
   diagnostics: { stdout: "", stderr: "", truncated: false },
 });
+
+/** Add process metadata independently of the recorded LWP set. */
+export const addRecordedCrashProcessInfo = (
+  value: RecordedCrash,
+  pid: number,
+): void => {
+  const segment = value.segments[0];
+  if (segment === undefined) throw new Error("Missing fixture note segment");
+  const start = Number(BigInt(segment.offset) + BigInt(segment.file_size));
+  const descriptor = Buffer.alloc(RECORDED_LINUX_PRPSINFO.bytes);
+  descriptor.writeInt32LE(pid, RECORDED_LINUX_PRPSINFO.pidOffset);
+  const size = NOTE_HEADER_BYTES + descriptor.length;
+  value.notes.push({
+    index: value.notes.length,
+    segment_index: segment.index,
+    type: "NT_PRPSINFO",
+    location: { offset: hex(start), bytes: hex(size) },
+    owner_location: { offset: hex(start + 12), bytes: "0x5" },
+    owner_bytes_base64: Buffer.from("CORE\0").toString("base64"),
+    owner_display: "CORE",
+    descriptor_location: {
+      offset: hex(start + NOTE_HEADER_BYTES),
+      bytes: hex(descriptor.length),
+    },
+    descriptor_bytes_base64: descriptor.toString("base64"),
+    process_info: { historical_pid: pid },
+  });
+  segment.file_size = hex(Number(BigInt(segment.file_size)) + size);
+  value.artifact.bytes = Math.max(value.artifact.bytes, start + size);
+};
