@@ -32,13 +32,16 @@ export const configureDetectedClients = async (options: {
   readonly command: readonly string[];
   readonly clients: Record<string, ClientConfigurationResult>;
   readonly appliedActions: string[];
+  readonly signal?: AbortSignal;
   readonly onProgress?: (event: SetupProgressEvent) => void;
 }): Promise<string | undefined> => {
   let failure: string | undefined;
   for (const client of options.detectedClients) {
+    if (options.signal?.aborted) return failure;
     const actionId = `configure_client:${client.name}`;
     const label = client.displayName ?? client.name;
     options.onProgress?.({ actionId, label, state: "started" });
+    if (options.signal?.aborted) return failure;
     const result = await options.host.configureClient(
       client,
       options.providerEnvironment,
