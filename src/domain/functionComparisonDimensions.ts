@@ -203,6 +203,20 @@ const compareStringsAndNames = (
   right: FunctionSnapshot,
   context: ComparisonContext,
 ): FunctionDimension => {
+  if (
+    [left, right].some((snapshot) =>
+      snapshot.dossier.referenced_names.some(({ value }) => isAutoName(value)),
+    )
+  )
+    return unresolvedDimension({
+      dimension: "strings_names",
+      links: context.links,
+      leftCount: null,
+      rightCount: null,
+      limitations: [
+        "Address-derived referenced names cannot be matched safely.",
+      ],
+    });
   const complete =
     swiftLiteralCoverage(left) === swiftLiteralCoverage(right) &&
     swiftLiteralCoverage(left) !== "partial";
@@ -267,6 +281,22 @@ const compareReferences = (
       rightProjection,
       context,
     );
+  if (
+    [...leftProjection, ...rightProjection].some(({ source, target }) =>
+      [source, target].some(
+        (name) => typeof name === "string" && isAutoName(name),
+      ),
+    )
+  )
+    return unresolvedDimension({
+      dimension: "references",
+      links: context.links,
+      leftCount: leftProjection.length,
+      rightCount: rightProjection.length,
+      limitations: [
+        "Address-derived reference endpoint names cannot be matched safely.",
+      ],
+    });
   if (
     canonicalJson(leftProjection, "Function comparison") !==
     canonicalJson(rightProjection, "Function comparison")
