@@ -19,6 +19,7 @@ import {
   type ToolUnavailabilityReason,
 } from "../contracts/toolOutputSchemaPrimitives.js";
 import type { ToolKind } from "../contracts/toolContractTypes.js";
+import type { EnhancedToolName } from "../contracts/enhancedInputs.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { isMachOFormat } from "../domain/binaryTargetTypes.js";
 import type { ProviderAvailability } from "./AnalysisProvider.js";
@@ -98,8 +99,16 @@ type AvailabilityContext = {
   readonly policy: AvailabilityPolicy;
 };
 
+type ModeRequirements = {
+  readonly name: string;
+  readonly requirements: readonly string[];
+};
 const ENHANCED_REQUIREMENTS: Readonly<
-  Record<string, readonly (string | readonly string[])[]>
+  Record<
+    EnhancedToolName,
+    | readonly (string | readonly string[])[]
+    | { readonly modes: readonly ModeRequirements[] }
+  >
 > = {
   trace_native_values: ["analyze_function", "resolve_native_call_targets"],
   trace_native_ui_action: [
@@ -127,6 +136,18 @@ const ENHANCED_REQUIREMENTS: Readonly<
     "xrefs",
     "resolve_containing_procedure",
   ],
+  trace_call_path: {
+    modes: [
+      {
+        name: "forward",
+        requirements: ["procedure_address", "procedure_callees"],
+      },
+      {
+        name: "backward",
+        requirements: ["procedure_address", "procedure_callers"],
+      },
+    ],
+  },
 };
 
 /** Contract kinds whose operations run on the active session target. */
@@ -293,7 +314,7 @@ const availabilityFor = (context: AvailabilityContext): Availability => {
   )
     return { reason: "available", remediation: null };
   if (context.name === "get_navigation_context")
-    return navigationContextAvailability(context.descriptors);
+    return modeAvailability(NAVIGATION_CONTEXT_MODES, context.descriptors);
   const javascriptApplication = javascriptApplicationAvailability(context);
   if (javascriptApplication !== null) return javascriptApplication;
   const failure = optionalProviderFailureFor(context);
@@ -612,7 +633,12 @@ const providerAvailability = ({
   kind,
   name,
 }: AvailabilityContext): Availability => {
-  if (kind === "enhanced") return composedAvailability(name, descriptors);
+  if (kind === "enhanced") {
+    const requirements = ENHANCED_REQUIREMENTS[name as EnhancedToolName];
+    return "modes" in requirements
+      ? modeAvailability(requirements.modes, descriptors)
+      : composedAvailabilityFor(requirements, descriptors);
+  }
   const descriptor = descriptors.get(name);
   if (
     descriptor === undefined &&
@@ -634,19 +660,6 @@ const providerAvailability = ({
         remediation:
           descriptor.reason ?? "Choose another target or configured provider.",
       };
-};
-
-const composedAvailability = (
-  name: string,
-  descriptors: ReadonlyMap<string, ProviderDescriptor>,
-): Availability => {
-  const requirements = ENHANCED_REQUIREMENTS[name];
-  if (requirements === undefined)
-    return {
-      reason: "provider_missing",
-      remediation: "No provider composition is declared for this operation.",
-    };
-  return composedAvailabilityFor(requirements, descriptors);
 };
 
 const composedAvailabilityFor = (
@@ -709,35 +722,34 @@ const composedAvailabilityFor = (
   return { reason: "available", remediation: null };
 };
 
-const navigationContextAvailability = (
+const modeAvailability = (
+  definitions: readonly ModeRequirements[],
   descriptors: ReadonlyMap<string, ProviderDescriptor>,
 ): Availability => {
-  const modeResults: NavigationModeResult[] = NAVIGATION_CONTEXT_MODES.map(
-    (mode) => {
-      const availability = composedAvailabilityFor(
-        mode.requirements,
-        descriptors,
-      );
-      if (availability.reason === "available")
-        return {
-          name: mode.name,
-          available: true,
-          reason: availability.reason,
-          missing_operations: [],
-          remediation: null,
-        };
+  const modeResults: NavigationModeResult[] = definitions.map((mode) => {
+    const availability = composedAvailabilityFor(
+      mode.requirements,
+      descriptors,
+    );
+    if (availability.reason === "available")
       return {
         name: mode.name,
-        available: false,
+        available: true,
         reason: availability.reason,
-        missing_operations: mode.requirements.filter((operation) => {
-          const descriptor = descriptors.get(operation);
-          return descriptor === undefined || descriptor.available === false;
-        }),
-        remediation: availability.remediation,
+        missing_operations: [],
+        remediation: null,
       };
-    },
-  );
+    return {
+      name: mode.name,
+      available: false,
+      reason: availability.reason,
+      missing_operations: mode.requirements.filter((operation) => {
+        const descriptor = descriptors.get(operation);
+        return descriptor === undefined || descriptor.available === false;
+      }),
+      remediation: availability.remediation,
+    };
+  });
   const modes: ToolAvailabilityMode[] = modeResults.map((mode) =>
     mode.available
       ? {

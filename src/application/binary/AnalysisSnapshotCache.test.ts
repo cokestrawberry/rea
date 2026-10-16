@@ -453,7 +453,7 @@ describe("analysis snapshot cache partitioning", () => {
     expect(
       new AnalysisSnapshotCache().import(tampered, undefined, () => {
         mergedEvidence = true;
-        return ok(0);
+        return ok({ metadataChanged: false });
       }).ok,
     ).toBe(false);
     expect(mergedEvidence).toBe(false);
@@ -500,6 +500,79 @@ describe("analysis snapshot cache partitioning", () => {
       ),
     ).toBeUndefined();
   });
+});
+
+describe("analysis snapshot import after Evidence replacement", () => {
+  const recordAddressName = (cache: AnalysisSnapshotCache, address: string) =>
+    cache.record({
+      target: ANALYSIS_SNAPSHOT_TARGET,
+      profile: ANALYSIS_SNAPSHOT_PROFILE,
+      operation: "address_name",
+      parameters: { address, document: "fixture" },
+      execution: createAnalysisExecution("main", ANALYSIS_SNAPSHOT_PROVIDER, {
+        subject: ANALYSIS_SNAPSHOT_TARGET,
+        analysisProfile: ANALYSIS_SNAPSHOT_PROFILE,
+        rawResult: "main",
+      }),
+    });
+  const replayAddressName = (cache: AnalysisSnapshotCache, address: string) =>
+    cache.lookup(
+      ANALYSIS_SNAPSHOT_TARGET,
+      ANALYSIS_SNAPSHOT_PROFILE,
+      "address_name",
+      { address, document: "fixture" },
+    );
+
+  it.each([
+    { metadataChanged: true, keepsStagedEntry: false },
+    { metadataChanged: false, keepsStagedEntry: true },
+  ])(
+    "keeps entries staged before the import only when Evidence metadata is unchanged ($metadataChanged)",
+    ({ metadataChanged, keepsStagedEntry }) => {
+      const source = new AnalysisSnapshotCache();
+      recordAddressName(source, "0x1000");
+      const exported = source.export(
+        ANALYSIS_SNAPSHOT_TARGET,
+        ANALYSIS_SNAPSHOT_PROFILE,
+        createEvidenceBundle([
+          createEvidence(ANALYSIS_SNAPSHOT_TARGET, ANALYSIS_SNAPSHOT_PROVIDER, {
+            operation: "address_name",
+            parameters: { address: "0x1000", document: "fixture" },
+            result: "main",
+            rawResult: "main",
+            analysisProfile: ANALYSIS_SNAPSHOT_PROFILE,
+          }),
+        ]),
+      );
+      if (!exported.ok) throw exported.error;
+
+      const cache = new AnalysisSnapshotCache();
+      recordAddressName(cache, "0x2000");
+      cache.recordWorkflow({
+        target: ANALYSIS_SNAPSHOT_TARGET,
+        profile: ANALYSIS_SNAPSHOT_PROFILE,
+        operation: "analyze_function",
+        parameters: { address: "0x2000", document: "fixture" },
+        execution: {
+          ...createAnalysisExecution("main", REA_WORKFLOW_PROVIDER, {
+            subject: ANALYSIS_SNAPSHOT_TARGET,
+            rawResult: "main",
+          }),
+          analysisProfile: workflowAnalysisProfile(ANALYSIS_SNAPSHOT_PROFILE),
+        },
+      });
+      const imported = cache.import(exported.value, undefined, () =>
+        ok({ metadataChanged }),
+      );
+
+      expect(imported.ok).toBe(true);
+      expect(replayAddressName(cache, "0x1000")).toBeDefined();
+      expect(replayAddressName(cache, "0x2000") !== undefined).toBe(
+        keepsStagedEntry,
+      );
+      expect(cache.workflowEntries()).toHaveLength(keepsStagedEntry ? 1 : 0);
+    },
+  );
 });
 
 describe("relationship coverage snapshot replay", () => {
@@ -570,7 +643,9 @@ describe("relationship coverage snapshot replay", () => {
       diagnostics: ["forged coverage"],
     };
     expect(
-      new AnalysisSnapshotCache().import(tampered, undefined, () => ok(0)).ok,
+      new AnalysisSnapshotCache().import(tampered, undefined, () =>
+        ok({ metadataChanged: false }),
+      ).ok,
     ).toBe(false);
 
     const legacy = structuredClone(exported.value);
@@ -592,7 +667,11 @@ describe("relationship coverage snapshot replay", () => {
     legacy.evidence_bundle = createEvidenceBundle([legacyEvidence]);
     parseAnalysisSnapshot(legacy);
     const replayCache = new AnalysisSnapshotCache();
-    expect(replayCache.import(legacy, undefined, () => ok(0)).ok).toBe(true);
+    expect(
+      replayCache.import(legacy, undefined, () =>
+        ok({ metadataChanged: false }),
+      ).ok,
+    ).toBe(true);
     expect(
       replayCache.lookup(
         ANALYSIS_SNAPSHOT_TARGET,

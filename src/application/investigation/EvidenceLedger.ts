@@ -276,12 +276,12 @@ export class EvidenceLedger {
     } catch (cause: unknown) {
       return err(new UnknownRegistryError("invalid-transition", { cause }));
     }
-    const existingUnknown = this.#unknownHeads.get(unknown.unknown_id);
-    if (existingUnknown !== undefined) {
-      if (
-        existingUnknown.revision !== 1 ||
-        existingUnknown.revision_digest !== unknown.revision_digest
-      )
+    if (this.#unknownHeads.has(unknown.unknown_id)) {
+      // The candidate is revision 1, so compare it with the stored revision 1, not the head.
+      const storedFirstRevision = this.#unknownRevisions.get(
+        unknownRevisionKey(unknown),
+      );
+      if (storedFirstRevision?.revision_digest !== unknown.revision_digest)
         return err(new UnknownRegistryError("already-exists"));
       const checked = this.#appendIncremental([evidence]);
       if (!checked.ok) return checked;
