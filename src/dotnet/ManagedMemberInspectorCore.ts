@@ -8,10 +8,7 @@ import type {
   ManagedParseIssue,
 } from "../domain/managed/managedArtifact.js";
 import { managedDecodeBudget } from "./ManagedDecodeBudget.js";
-import type {
-  ManagedMetadataLayout,
-  MetadataTableLayout,
-} from "./ManagedMetadataLayout.js";
+import type { ManagedMetadataLayout } from "./ManagedMetadataLayout.js";
 import {
   metadataRowCursor,
   metadataCodedToken,
@@ -20,10 +17,8 @@ import {
   readMetadataString,
   sha256Bytes,
 } from "./ManagedMetadataHeaps.js";
-import {
-  memberListIndexSize,
-  memberListTable,
-} from "./ManagedMemberPointers.js";
+import { memberListIndexSize } from "./ManagedMemberPointers.js";
+import { typeMemberList } from "./ManagedMemberOwnership.js";
 
 export type ManagedType = ManagedMemberInspection["types"][number];
 export type ManagedExportedType = NonNullable<
@@ -47,10 +42,6 @@ export type ManagedExceptionRegion =
 export interface TypeRange {
   readonly token: string;
   readonly fullName: string | null;
-  readonly fieldStart: number;
-  readonly fieldEnd: number;
-  readonly methodStart: number;
-  readonly methodEnd: number;
 }
 
 /**
@@ -78,22 +69,6 @@ export interface ParsedInstruction {
   readonly operand: string | null;
 }
 
-const rowRange = (
-  table: MetadataTableLayout | undefined,
-  start: number,
-  nextStart: number,
-): {
-  readonly first: number | null;
-  readonly last: number | null;
-  readonly count: number;
-} => {
-  const total = table?.rowCount ?? 0;
-  if (total === 0 || start === 0) return { first: null, last: null, count: 0 };
-  const end = Math.min(nextStart === 0 ? total + 1 : nextStart, total + 1);
-  if (start >= end) return { first: null, last: null, count: 0 };
-  return { first: start, last: end - 1, count: end - start };
-};
-
 export const fullName = (namespace: string, name: string): string =>
   namespace.length === 0 ? name : `${namespace}.${name}`;
 
@@ -103,8 +78,6 @@ const readTypeRange = (
   row: number,
   issues: ManagedParseIssue[],
 ): TypeRange => {
-  const methods = memberListTable(layout, 6);
-  const fields = memberListTable(layout, 4);
   const cursor = metadataRowCursor(bytes, layout, 2, row);
   cursor.readUInt32();
   const nameIndex = cursor.readIndex(layout.stringIndexSize);
@@ -123,29 +96,7 @@ const readTypeRange = (
         ),
       issues,
     ) ?? null;
-  cursor.readIndex(layout.codedIndexSize("TypeDefOrRef"));
-  const fieldStart = cursor.readIndex(memberListIndexSize(layout, 4));
-  const methodStart = cursor.readIndex(memberListIndexSize(layout, 6));
-  let nextField = (fields?.rowCount ?? 0) + 1;
-  let nextMethod = (methods?.rowCount ?? 0) + 1;
-  const typeTable = layout.table(2);
-  if (typeTable !== undefined && row < typeTable.rowCount) {
-    const next = metadataRowCursor(bytes, layout, 2, row + 1);
-    next.readUInt32();
-    next.readIndex(layout.stringIndexSize);
-    next.readIndex(layout.stringIndexSize);
-    next.readIndex(layout.codedIndexSize("TypeDefOrRef"));
-    nextField = next.readIndex(memberListIndexSize(layout, 4));
-    nextMethod = next.readIndex(memberListIndexSize(layout, 6));
-  }
-  return {
-    token: metadataToken(2, row),
-    fullName: declaredName,
-    fieldStart,
-    fieldEnd: nextField,
-    methodStart,
-    methodEnd: nextMethod,
-  };
+  return { token: metadataToken(2, row), fullName: declaredName };
 };
 
 export const typeRanges = (
@@ -160,17 +111,26 @@ export const typeRanges = (
   return ranges;
 };
 
+const decreasingListIssue = (
+  row: number,
+  column: "FieldList" | "MethodList",
+  start: number,
+  offset: number,
+): ManagedParseIssue => ({
+  code: "invalid-row",
+  scope: `metadata.TypeDef:${metadataToken(2, row)}`,
+  offset,
+  detail: `TypeDef ${column} ${String(start)} is below the previous TypeDef's ${column}; list positions belong to the first TypeDef whose run reaches them`,
+});
+
 export const parseTypes = (
   bytes: Buffer,
   layout: ManagedMetadataLayout,
-  ranges: readonly TypeRange[],
 ): {
   readonly types: readonly ManagedType[];
   readonly issues: readonly ManagedParseIssue[];
 } => {
   const typeTable = layout.table(2);
-  const fields = memberListTable(layout, 4);
-  const methods = memberListTable(layout, 6);
   const items: ManagedType[] = [];
   const issues: ManagedParseIssue[] = [];
   for (let row = 1; row <= (typeTable?.rowCount ?? 0); row += 1) {
@@ -193,19 +153,20 @@ export const parseTypes = (
       const extendsRaw = cursor.readIndex(
         layout.codedIndexSize("TypeDefOrRef"),
       );
+      const fieldOffset = cursor.offset;
       const fieldStart = cursor.readIndex(memberListIndexSize(layout, 4));
+      const methodOffset = cursor.offset;
       const methodStart = cursor.readIndex(memberListIndexSize(layout, 6));
-      const nextRange = ranges[row] ?? null;
-      const fieldRange = rowRange(
-        fields,
-        fieldStart,
-        nextRange?.fieldStart ?? 0,
-      );
-      const methodRange = rowRange(
-        methods,
-        methodStart,
-        nextRange?.methodStart ?? 0,
-      );
+      const fieldList = typeMemberList(bytes, layout, 4, row);
+      const methodList = typeMemberList(bytes, layout, 6, row);
+      if (fieldList.decreasing)
+        issues.push(
+          decreasingListIssue(row, "FieldList", fieldStart, fieldOffset),
+        );
+      if (methodList.decreasing)
+        issues.push(
+          decreasingListIssue(row, "MethodList", methodStart, methodOffset),
+        );
       const extendsReason = metadataCodedTokenInvalidReason(
         extendsRaw,
         2,
@@ -233,14 +194,14 @@ export const parseTypes = (
           layout.rowCounts,
         ),
         field_list: {
-          first_row: fieldRange.first,
-          last_row: fieldRange.last,
-          count: fieldRange.count,
+          first_row: fieldList.first,
+          last_row: fieldList.last,
+          count: fieldList.count,
         },
         method_list: {
-          first_row: methodRange.first,
-          last_row: methodRange.last,
-          count: methodRange.count,
+          first_row: methodList.first,
+          last_row: methodList.last,
+          count: methodList.count,
         },
       });
     }, issues);
