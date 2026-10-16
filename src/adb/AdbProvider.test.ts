@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { expect, onTestFinished, test } from "vitest";
 
 import { AdbProvider } from "./AdbProvider.js";
@@ -741,6 +742,7 @@ it("reports an uninstalled package from dumpsys refusal output", async () => {
 it("pulls one device file with a digest", async () => {
   const { binary, root } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ] && [ "$5" = "-f" ]; then exit 0; fi
 if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then printf 'file-bytes' > "$5"; exit 0; fi
 exit 1`,
   );
@@ -806,6 +808,153 @@ exit 0`,
     await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
   },
 );
+
+it("refuses a device path that is not a regular file before creating output or pulling", async () => {
+  const { binary, root } = await writeAdbStub(
+    (root) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ] && [ "$5" = "-f" ]; then exit 1; fi
+if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then : > "${join(root, "pull-ran")}"; exit 0; fi
+exit 1`,
+  );
+  const output = join(root, "pulls");
+  const result = await providerOver(binary).execute({
+    operation: "pull_adb_file",
+    input: {
+      serial: "emulator-5554",
+      device_path: "/sdcard/DCIM",
+      output_directory: output,
+    },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  const projected = projectAnalysisError(result.error);
+  expect(projected).toMatchObject({ code: "invalid_request" });
+  expect(projected.details).toMatchObject({
+    issues: [
+      {
+        path: ["device_path"],
+        reason: "invalid_value",
+        message: expect.stringContaining(
+          "not reported as a regular file",
+        ) as unknown,
+      },
+    ],
+  });
+  await expect(readFile(join(root, "pull-ran"))).rejects.toThrow();
+  await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("reports a failed regular-file probe instead of reading it as an absent path", async () => {
+  const { binary, root } = await writeAdbStub(
+    (root) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ]; then printf 'error: closed\\n' >&2; exit 1; fi
+if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then : > "${join(root, "pull-ran")}"; exit 0; fi
+exit 1`,
+  );
+  const result = await providerOver(binary).execute({
+    operation: "pull_adb_file",
+    input: {
+      serial: "emulator-5554",
+      device_path: "/sdcard/notes.txt",
+      output_directory: join(root, "pulls"),
+    },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error._tag).toBe("AnalysisProtocolError");
+  expect(result.error.message).toContain("closed");
+  await expect(readFile(join(root, "pull-ran"))).rejects.toThrow();
+});
+
+const pullFileStub = (pullBody: string) => () =>
+  `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ] && [ "$5" = "-f" ]; then exit 0; fi
+if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then ${pullBody}; fi
+exit 1`;
+
+const pullFileRequest = (output: string): AdbRequest => ({
+  operation: "pull_adb_file",
+  input: {
+    serial: "emulator-5554",
+    device_path: "/sdcard/big.bin",
+    output_directory: output,
+  },
+});
+
+it("reports the host file left by a failed pull without removing it", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(
+      `printf 'partial' > "$5"; printf 'error: closed\\n' >&2; exit 1`,
+    ),
+  );
+  const output = join(root, "pulls");
+  const result = await providerOver(binary).execute(pullFileRequest(output));
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error.partialObservation).toMatchObject({
+    provider_id: "adb",
+    operation: "pull_adb_file",
+    result: {
+      serial: "emulator-5554",
+      device_path: "/sdcard/big.bin",
+      local_path: join(output, "big.bin"),
+      digest_status: "unknown",
+    },
+  });
+  expect(await readFile(join(output, "big.bin"), "utf8")).toBe("partial");
+});
+
+it("reports no host file when a failed pull wrote none", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(`printf 'error: closed\\n' >&2; exit 1`),
+  );
+  const result = await providerOver(binary).execute(
+    pullFileRequest(join(root, "pulls")),
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error.partialObservation).toBeUndefined();
+});
+
+it("reports the host file left by a cancelled pull", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(`printf 'partial' > "$5"; exec sleep 30`),
+  );
+  const output = join(root, "pulls");
+  const localPath = join(output, "big.bin");
+  const controller = new AbortController();
+  const pending = providerOver(binary).execute(pullFileRequest(output), {
+    signal: controller.signal,
+  });
+  while ((await readFile(localPath, "utf8").catch(() => "")) !== "partial")
+    await delay(10);
+  controller.abort();
+  const result = await pending;
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(projectAnalysisError(result.error).code).toBe("cancelled");
+  expect(result.error.partialObservation).toMatchObject({
+    operation: "pull_adb_file",
+    result: { local_path: localPath, digest_status: "unknown" },
+  });
+});
+
+it("reports the pulled path when the file cannot be read back", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(`mkdir "$5"; exit 0`),
+  );
+  const output = join(root, "pulls");
+  const result = await providerOver(binary).execute(pullFileRequest(output));
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    code: "unreadable_output",
+  });
+  expect(result.error.partialObservation).toMatchObject({
+    operation: "pull_adb_file",
+    result: { local_path: join(output, "big.bin"), digest_status: "unknown" },
+  });
+});
 
 it("pushes a file and verifies the device-side digest", async () => {
   const { binary, root } = await writeAdbStub(
