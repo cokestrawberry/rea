@@ -25,6 +25,31 @@ const metadataLayout = (bytes: Buffer) => {
   );
 };
 
+/** Rewrite the fixture's three TypeDef list columns; returns each row's FieldList offset. */
+const writeTypeLists = (
+  bytes: Buffer,
+  fields: readonly number[],
+  methods: readonly number[],
+): readonly number[] => {
+  const layout = metadataLayout(bytes);
+  const types = layout.table(2);
+  if (types === undefined) throw new Error("Fixture omitted TypeDef");
+  return Array.from({ length: 3 }, (_, row) => {
+    const fieldOffset =
+      types.offset +
+      row * types.rowSize +
+      4 +
+      2 * layout.stringIndexSize +
+      layout.codedIndexSize("TypeDefOrRef");
+    bytes.writeUInt16LE(fields[row] ?? 0, fieldOffset);
+    bytes.writeUInt16LE(
+      methods[row] ?? 0,
+      fieldOffset + memberListIndexSize(layout, 4),
+    );
+    return fieldOffset;
+  });
+};
+
 describe("managed declaring type ownership", () => {
   it.prop([
     fc.tuple(
@@ -39,29 +64,23 @@ describe("managed declaring type ownership", () => {
     "retains first-match field and method owners for arbitrary metadata lists",
     ([fields, methods]) => {
       const bytes = buildManagedMemberPointerFixture();
-      const layout = metadataLayout(bytes);
-      const types = layout.table(2);
-      if (types === undefined) throw new Error("Fixture omitted TypeDef");
-      for (let row = 0; row < 3; row++) {
-        const fieldOffset =
-          types.offset +
-          row * types.rowSize +
-          4 +
-          2 * layout.stringIndexSize +
-          layout.codedIndexSize("TypeDefOrRef");
-        bytes.writeUInt16LE(fields[row] ?? 0, fieldOffset);
-        bytes.writeUInt16LE(
-          methods[row] ?? 0,
-          fieldOffset + memberListIndexSize(layout, 4),
-        );
-      }
+      writeTypeLists(bytes, fields, methods);
       const target = managedPeFixtureTarget(bytes);
       const members = inspectManagedMembersBytes(bytes, target);
       const artifact = inspectManagedArtifactBytes(bytes, target);
-      for (const [table, starts] of [
-        ["fields", fields],
-        ["methods", methods],
+      for (const [table, starts, list] of [
+        ["fields", fields, "field_list"],
+        ["methods", methods, "method_list"],
       ] as const) {
+        // Each type's list covers exactly the positions whose members it declares.
+        const declaring = members[table].map(
+          (member) => member.declaring_type_token,
+        );
+        expect(members.types.map((type) => type[list].count)).toEqual(
+          members.types.map(
+            (type) => declaring.filter((token) => token === type.token).length,
+          ),
+        );
         // The fixture's pointers reorder physical rows 1,2 to list positions 2,1.
         const expected = [2, 1].map((position) => {
           const owner = starts.findIndex(
@@ -79,6 +98,49 @@ describe("managed declaring type ownership", () => {
       );
     },
   );
+
+  it("reports a decreasing list as invalid and keeps type lists on member owners", () => {
+    const bytes = buildManagedMemberPointerFixture();
+    // FieldList of the third type drops below the second's; MethodList stays ascending.
+    const fieldListOffsets = writeTypeLists(bytes, [1, 2, 1], [1, 1, 2]);
+    const result = inspectManagedMembersBytes(
+      bytes,
+      managedPeFixtureTarget(bytes),
+    );
+
+    expect(
+      result.types.map(({ field_list, method_list }) => ({
+        field_list,
+        method_list,
+      })),
+    ).toEqual([
+      {
+        field_list: { first_row: 1, last_row: 1, count: 1 },
+        method_list: { first_row: null, last_row: null, count: 0 },
+      },
+      {
+        field_list: { first_row: null, last_row: null, count: 0 },
+        method_list: { first_row: 1, last_row: 1, count: 1 },
+      },
+      {
+        field_list: { first_row: 2, last_row: 2, count: 1 },
+        method_list: { first_row: 2, last_row: 2, count: 1 },
+      },
+    ]);
+    expect(result.fields.map((field) => field.declaring_type)).toEqual([
+      "Fixture.B",
+      "<Module>",
+    ]);
+    expect(result.coverage.state).toBe("partial");
+    expect(result.coverage.issues).toEqual([
+      {
+        code: "invalid-row",
+        scope: "metadata.TypeDef:0x02000003",
+        offset: fieldListOffsets[2],
+        detail: expect.stringContaining("TypeDef FieldList 1 is below"),
+      },
+    ]);
+  });
 
   it("indexes large unordered member lists once per layout", () => {
     const count = 100_000;

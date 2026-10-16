@@ -193,7 +193,7 @@ export const inspectManagedMembersBytes = (
       selection,
       unreadableNames,
     } = selectTypes(ranges, typeNames);
-    const parsedTypes = parseTypes(bytes, layout, ranges);
+    const parsedTypes = parseTypes(bytes, layout);
     appendManagedParseIssues(issues, parsedTypes.issues);
     const exportedTypes = parseExportedTypes(bytes, layout);
     appendManagedParseIssues(issues, exportedTypes.issues);

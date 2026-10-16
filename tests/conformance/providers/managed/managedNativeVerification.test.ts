@@ -275,6 +275,22 @@ it("retains every observed native candidate", () => {
   expect(result.pinvoke_imports[0]?.candidates).toHaveLength(2);
 });
 
+it("collects native symbols beyond the argument limit of push", () => {
+  const names = Array.from(
+    { length: 150_000 },
+    (_, index) => `symbol_${index}`,
+  );
+  const result = verifyManagedNativeBoundaries({
+    ...exampleInput(),
+    native_observations: [nativeEvidenceWithExports(names)],
+  });
+
+  expect(result.native_observations).toMatchObject({
+    accepted: 1,
+    symbols: names.length,
+  });
+}, 60_000);
+
 it("wraps verification in derived workflow Evidence", () => {
   const evidence = verifyManagedNativeBoundariesEvidence(exampleInput());
 
