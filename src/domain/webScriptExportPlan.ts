@@ -10,6 +10,8 @@ const hash = (text: string): string =>
   createHash("sha256").update(text).digest("hex");
 const PORTABLE_SEGMENT = /^[A-Za-z0-9_~.-]+$/u;
 const RESERVED_SEGMENT = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+// Common filesystem name limit; PORTABLE_SEGMENT is ASCII, so length equals bytes.
+const MAX_SEGMENT_LENGTH = 255;
 
 /** One planned file, or an explicit missing source with no filesystem effect. */
 export interface PlannedWebScript {
@@ -83,6 +85,7 @@ const candidatePath = (script: CapturedWebScript): CandidatePath => {
     parts.some(
       (part) =>
         !PORTABLE_SEGMENT.test(part) ||
+        part.length > MAX_SEGMENT_LENGTH ||
         part === "." ||
         part === ".." ||
         part.endsWith(".") ||

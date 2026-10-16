@@ -82,6 +82,8 @@ describe("captured script path projection", () => {
     "https://a.test/CON.js",
     "https://a.test/目录/main.js",
     "https://a.test/app",
+    `https://a.test/${"a".repeat(253)}.js`,
+    `https://a.test/${"a".repeat(256)}/main.js`,
   ])(
     "retains unrepresentable URLs without using them as filesystem paths: %s",
     (url) => {
@@ -100,6 +102,16 @@ describe("captured script path projection", () => {
       });
     },
   );
+
+  it("keeps a URL path segment at the filesystem name limit", () => {
+    const [{ record } = { record: undefined }] = planWebScriptExport([
+      source(`https://a.test/${"a".repeat(252)}.js`),
+    ]);
+    expect(record?.content).toMatchObject({
+      state: "exported",
+      layout: "url-path",
+    });
+  });
 
   it("keeps case-distinct URL paths until the destination collides", () => {
     const planned = planWebScriptExport([

@@ -385,7 +385,7 @@ const preview = (record: WebNetworkCaptureRecord, format: string) => {
 };
 
 /** Authenticate the retained report and its subject at one owning boundary. */
-const parseCaptureParent = (
+export const parseCaptureParent = (
   parent: AnalysisViewParent,
 ): Result<WebNetworkCapture, AnalysisError> => {
   const parsed = webNetworkCaptureSchema.safeParse(parent.normalizedResult);

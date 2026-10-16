@@ -1,15 +1,14 @@
-import { analysisViewInputError } from "./analysisViewErrors.js";
 import { z } from "zod";
 import { AnalysisUnsupportedTargetError } from "../analysisErrorCore.js";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { err, ok, type Result } from "../result.js";
-import { webNetworkCaptureSchema } from "../webNetworkCapture.js";
 import type {
   AnalysisViewParent,
   AnalysisViewRequest,
   UnsignedAnalysisView,
 } from "./analysisView.js";
 import { WebNetworkApiSurfaceAccumulator } from "./WebNetworkApiSurfaceAccumulator.js";
+import { parseCaptureParent } from "./webNetworkCaptureView.js";
 
 export const apiSurfaceViewSchema = z.strictObject({
   kind: z.literal("api-surface"),
@@ -102,19 +101,9 @@ export const projectWebNetworkApiSurfaceView = (
     );
   const admitted = accumulator.admitCaptureClone(parent.normalizedResult);
   if (!admitted.ok) return admitted;
-  const parsed = webNetworkCaptureSchema.safeParse(parent.normalizedResult);
-  if (!parsed.success)
-    return err(
-      analysisViewInputError([
-        {
-          path: ["source"],
-          reason: "invalid_value",
-          message:
-            "Parent Evidence result does not match inspect_web_network_capture.",
-        },
-      ]),
-    );
-  const capture = parsed.data;
+  const parsed = parseCaptureParent(parent);
+  if (!parsed.ok) return parsed;
+  const capture = parsed.value;
   if (capture.format !== "har")
     return unsupported(
       `api-surface does not support capture format ${capture.format}.`,

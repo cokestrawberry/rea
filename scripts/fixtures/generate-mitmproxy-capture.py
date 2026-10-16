@@ -65,7 +65,7 @@ class Generator:
         first.request = http.Request.make("POST", "http://example.test/a?token=ordinary", b"\x00\xffbody", [(b"Authorization", b"Bearer native-transport-secret"), (b"X-Duplicate", b"one"), (b"X-Duplicate", b"two")])
         first.request.path = "http://user:password@example.test/a?token=ordinary#fragment"
         first.response = http.Response.make(200, b"\x00\xfeanswer", [(b"Set-Cookie", b"session=cookie-secret"), (b"Location", b"https://redirect-user:redirect-password@example.test/b?token=ordinary")])
-        first.metadata = {"big_integer": 9007199254740993, "nonfinite": float("inf"), "isLosslessNumber": True, "value": "ordinary-extension", "response": {"headers": [["Authorization", "ordinary-extension-credential-name"]]}}
+        first.metadata = {"proxyauth": ("native-proxy-user", "native-proxy-password"), "big_integer": 9007199254740993, "nonfinite": float("inf"), "isLosslessNumber": True, "value": "ordinary-extension", "response": {"headers": [["Authorization", "ordinary-extension-credential-name"]]}}
         first.websocket = WebSocketData(messages=[WebSocketMessage(2, True, b"\x00\xfdmessage", 123.5)])
         first.backup()
         first.comment = "caller-selected-fixture"

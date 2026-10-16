@@ -205,7 +205,8 @@ SHA-256 and size remain available unless the digest itself is explicitly exclude
 resources follow the same explicit declarations without changing error types;
 sensitive issue pointers identify a real ancestor instead of a fabricated
 coordinate. Header/cookie authentication values and known
-transport URL userinfo are excluded structurally, including native backups.
+transport URL userinfo and native mitmproxy flow `metadata.proxyauth` are
+excluded structurally, including native backups.
 HAR redaction and API-surface projection share the same recorded-URL parser.
 Canonical userinfo spans are removed without rewriting the remaining source
 text. Credential-bearing spellings without a safe raw span, such as slashless

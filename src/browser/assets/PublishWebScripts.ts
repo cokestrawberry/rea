@@ -168,8 +168,10 @@ const publishPlannedScript = async (
     await write(record.content.relative_path);
     return record;
   } catch (cause: unknown) {
-    const collision = destinationCollisionReason(cause);
-    if (collision === undefined || record.content.layout !== "url-path")
+    const reason =
+      destinationCollisionReason(cause) ??
+      (isNameTooLong(cause) ? NAME_TOO_LONG_REASON : undefined);
+    if (reason === undefined || record.content.layout !== "url-path")
       throw cause;
     const relativePath = isolatedScriptPath(script, index);
     await write(relativePath);
@@ -179,7 +181,7 @@ const publishPlannedScript = async (
         ...record.content,
         relative_path: relativePath,
         layout: "isolated",
-        layout_reason: collision,
+        layout_reason: reason,
       },
     };
   }
@@ -197,6 +199,15 @@ const destinationCollisionReason = (cause: unknown): string | undefined =>
   cause.message.startsWith(DESTINATION_CASE_COLLISION_PREFIX)
     ? cause.message
     : undefined;
+
+const NAME_TOO_LONG_REASON =
+  "Destination filesystem rejected the URL path as too long (ENAMETOOLONG).";
+
+// The errno is on the raw mkdir error, or on the cause of the wrapped open failure.
+const isNameTooLong = (cause: unknown): boolean =>
+  cause instanceof Error &&
+  (("code" in cause && cause.code === "ENAMETOOLONG") ||
+    isNameTooLong(cause.cause));
 
 const message = (cause: unknown): string =>
   cause instanceof Error ? cause.message : "Unknown publication failure";
