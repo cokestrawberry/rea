@@ -94,6 +94,9 @@ export const RECORDED_LINUX_CORE_ARCHITECTURES = [
 export type RecordedCrashArchitecture =
   (typeof RECORDED_LINUX_CORE_ARCHITECTURES)[number];
 
+// ELF64 Elf_Prpsinfo layout in pyelftools: padding and flags precede uid/gid and PID.
+export const RECORDED_LINUX_PRPSINFO = { pidOffset: 24, bytes: 136 } as const;
+
 /**
  * ABI facts for one recorded-core architecture, measured from unchanged pwntools
  * 4.15.0 `elf_prstatus_*` and `user_regs_struct_*` structures and mirrored by
@@ -160,7 +163,7 @@ export const recordedCrashDebuggerSchema = z.discriminatedUnion("status", [
     pwndbg_version: z.string().min(1),
     connection: z.literal("core"),
     executable: z.null(),
-    historical_pid: signed32,
+    historical_pid: signed32.nullable(),
     reported_limits: z.strictObject({
       address_space_bytes: index,
       cpu_seconds: index,
@@ -226,6 +229,7 @@ const recordedCrashObjectSchema = z.strictObject({
       owner_display: z.string().nullable(),
       descriptor_location: range,
       descriptor_bytes_base64: base64,
+      process_info: z.strictObject({ historical_pid: signed32 }).optional(),
     }),
   ),
   note_padding: z.array(
@@ -310,6 +314,18 @@ export const recordedCrashSchema = recordedCrashObjectSchema.superRefine(
         fail("Recorded PT_LOAD file size exceeds memory size.");
     }
     for (const [position, note] of value.notes.entries()) {
+      const processNote =
+        note.type === "NT_PRPSINFO" &&
+        note.owner_bytes_base64 === LINUX_CORE_OWNER_BASE64;
+      if (
+        processNote !== (note.process_info !== undefined) ||
+        (processNote &&
+          BigInt(note.descriptor_location.bytes) <
+            BigInt(RECORDED_LINUX_PRPSINFO.bytes))
+      )
+        fail(
+          "Each supported PRPSINFO note requires its recorded process metadata.",
+        );
       const segment = value.segments[note.segment_index];
       if (position !== note.index || segment?.type !== "PT_NOTE") {
         fail("Invalid original note identity or segment reference.");

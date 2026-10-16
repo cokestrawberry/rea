@@ -988,8 +988,11 @@ unknown tiers and requires every canonical scope to be explicitly `true` or
 `false`; incomplete classification cannot silently omit verification lanes.
 The aggregate remains cancellable so superseded runs release their slots.
 Branch protection
-should require this aggregate, `Static checks`, `Portable tests`, and
-`Conventional PR title`. Title validation runs separately on PR opening,
+should require this aggregate, `Static checks`, `Portable tests`,
+`Conventional PR title`, and `pre-commit`. For PRs into `main` or
+`stage/**`, `pre-commit` runs the `.husky/pre-commit` lint-staged tasks on the
+files the PR changes and fails when a task would modify a file. Title
+validation runs separately on PR opening,
 reopening, commits, and edits; correcting a title refreshes only this lightweight
 check. It reads title text through an environment variable, executes no PR code,
 and has no token permissions. Its separate concurrency group cannot cancel
