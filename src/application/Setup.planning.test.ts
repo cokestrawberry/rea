@@ -45,6 +45,89 @@ describe("skill plan destinations", () => {
 });
 
 describe("setup workflow", () => {
+  it("stops client and skill changes after cancellation during Hopper installation", async () => {
+    const host = new FakeSetupHost("linux");
+    host.distribution = {
+      id: "ubuntu",
+      versionId: "24.04",
+      packageFamily: "deb",
+      hopperSetupSupported: true,
+    };
+    host.clients = [{ name: "codex", configPath: "/codex.toml" }];
+    const controller = new AbortController();
+    const install = host.installHopper;
+    host.installHopper = async (...args) => {
+      const result = await install(...args);
+      controller.abort();
+      return result;
+    };
+    const result = await runSetup(
+      {
+        ...options(true, true),
+        allDetectedClients: true,
+        signal: controller.signal,
+      },
+      host,
+    );
+    expect(result).toMatchObject({
+      status: "cancelled",
+      code: "setup_cancelled",
+      appliedActions: ["installed_hopper"],
+    });
+    expect(host.configurations).toBe(0);
+    expect(host.skillInstalls).toBe(0);
+  });
+  it("stops a pre-aborted setup before approval and mutations", async () => {
+    const host = new FakeSetupHost();
+    host.clients = [{ name: "codex", configPath: "/codex.toml" }];
+    const controller = new AbortController();
+    controller.abort();
+    let confirmations = 0;
+    const result = await runSetup(
+      { ...options(false), structured: false, signal: controller.signal },
+      host,
+      async () => {
+        confirmations += 1;
+        return true;
+      },
+    );
+    expect(result).toMatchObject({
+      status: "cancelled",
+      code: "setup_cancelled",
+      appliedActions: [],
+    });
+    expect(confirmations).toBe(0);
+    expect(host.configurations).toBe(0);
+    expect(host.skillInstalls).toBe(0);
+    expect(host.hopperInstalls).toBe(0);
+  });
+
+  it("stops remaining client and skill changes after cancellation", async () => {
+    const host = new FakeSetupHost();
+    host.hopper = "/Applications/Hopper";
+    host.clients = [
+      { name: "codex", configPath: "/codex.toml" },
+      { name: "cursor", configPath: "/cursor.json" },
+    ];
+    const controller = new AbortController();
+    const configure = host.configureClient;
+    host.configureClient = async (...args) => {
+      const result = await configure(...args);
+      controller.abort();
+      return result;
+    };
+    const result = await runSetup(
+      { ...options(true), allDetectedClients: true, signal: controller.signal },
+      host,
+    );
+    expect(result).toMatchObject({
+      status: "cancelled",
+      code: "setup_cancelled",
+      appliedActions: ["configured_codex"],
+    });
+    expect(host.configurations).toBe(1);
+    expect(host.skillInstalls).toBe(0);
+  });
   it("returns a complete plan without mutation", async () => {
     const host = new FakeSetupHost();
     host.clients = [{ name: "cursor", configPath: "/cursor.json" }];
@@ -169,6 +252,21 @@ describe("setup workflow", () => {
     expect(host.hopperInstalls).toBe(1);
     expect(result.status).toBe("ready");
     expect(result.remediation).toBeUndefined();
+  });
+
+  it("passes the caller cancellation signal to the Hopper installer", async () => {
+    const host = new FakeSetupHost("linux");
+    host.distribution = {
+      id: "ubuntu",
+      versionId: "24.04",
+      packageFamily: "deb",
+      hopperSetupSupported: true,
+    };
+    const controller = new AbortController();
+
+    await runSetup({ ...options(true, true), signal: controller.signal }, host);
+
+    expect(host.hopperSignals).toEqual([controller.signal]);
   });
 
   it("reuses existing Hopper without selecting every detected client", async () => {

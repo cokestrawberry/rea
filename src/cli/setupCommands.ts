@@ -18,6 +18,7 @@ import {
 import { PRODUCT_IDENTITY } from "../identity.js";
 import { logCliCommand } from "../cliLogging.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
+import { withCommandCancellation } from "./commandCancellation.js";
 import type { Logger } from "pino";
 import type { CliInstance } from "./types.js";
 import { SUPPORTED_CLIENT_DEFINITIONS } from "../application/SupportedClients.js";
@@ -88,11 +89,14 @@ const registerSetupCommand = (
     }),
     alias: { yes: "y" },
     run: ({ options, formatExplicit }) =>
-      logCliCommand(
-        logger,
-        CLI_COMMANDS.setup,
-        () => runSetupCommand({ options, formatExplicit }, environment),
-        isSetupFailure,
+      withCommandCancellation((signal) =>
+        logCliCommand(
+          logger,
+          CLI_COMMANDS.setup,
+          () =>
+            runSetupCommand({ options, formatExplicit }, environment, signal),
+          isSetupFailure,
+        ),
       ),
   });
 };
@@ -207,6 +211,7 @@ const runSetupCommand = async (
     readonly formatExplicit: boolean;
   },
   environment: Readonly<NodeJS.ProcessEnv>,
+  signal: AbortSignal,
 ) => {
   const { options } = input;
   const interactive = setupIsInteractive(options, input.formatExplicit);
@@ -218,7 +223,7 @@ const runSetupCommand = async (
       import("../doctorRuntime.js"),
     ]);
   const result = await runSetup(
-    setupRunOptions(input, interactive, hasExplicitScope),
+    { ...setupRunOptions(input, interactive, hasExplicitScope), signal },
     systemSetupHost(createSystemDoctorHost(environment), environment),
     interactive
       ? (actions, context) =>
