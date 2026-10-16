@@ -48,7 +48,7 @@ it("keeps persistent GDB sessions unavailable on Windows", async () => {
   const gdb = await createGdbManagerForInjectedPlatform({
     environment: { REA_GDB_COMMAND: "/missing/gdb" },
     platform: "win32",
-  }).start();
+  }).start(undefined, { inferiorTty: "/dev/pts/42" });
 
   expect(gdb.ok).toBe(false);
   if (!gdb.ok) {
@@ -79,6 +79,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match) process.stdout.write(match[1] + (line.includes("list-thread-groups") ? "^done,groups=[]\\n" : "^done\\n"));
   }
 });
@@ -92,7 +93,9 @@ process.stdin.on("data", (chunk) => {
     managers.push(manager);
     suppliedEnvironment.PATH = join(directory, "mutated-bin");
 
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok, started.ok ? undefined : started.error.message).toBe(
       true,
     );
@@ -118,6 +121,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match && line.includes("auto-load off")) {
       process.stdout.write("~\\"GDB startup diagnostic\\n\\"\\n");
       process.exit(7);
@@ -133,7 +137,9 @@ process.stdin.on("data", (chunk) => {
     });
     managers.push(manager);
 
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
 
     expect(started.ok).toBe(false);
     if (!started.ok) {
@@ -176,7 +182,8 @@ process.stdout.write("(gdb)\\n");
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
-    const match = /^(\\d+)/.exec(line); if (!match) continue;
+    const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; } if (!match) continue;
     if (line.includes("auto-load off")) process.stdout.write("~\\"automatic loading rejected\\n\\"\\n" + match[1] + "^error,msg=\\"unsupported\\"\\n");
     else if (line.includes("list-thread-groups")) process.stdout.write(match[1] + "^done,groups=[]\\n");
   }
@@ -194,7 +201,9 @@ process.stdin.on("data", (chunk) => {
     });
     managers.push(manager);
 
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
 
     expect(started).toMatchObject({
       ok: false,
@@ -232,6 +241,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match && line.includes("auto-load off")) {
       const output = Buffer.concat([
         Buffer.from("~startup invalid byte "),
@@ -255,7 +265,9 @@ process.stdin.on("data", (chunk) => {
     });
     managers.push(manager);
 
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
 
     expect(started.ok).toBe(false);
     if (!started.ok) {
@@ -296,6 +308,7 @@ process.stdin.on("data", (chunk) => {
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match) process.stdout.write(match[1] + "^done\\n");
   }
 });
@@ -308,9 +321,13 @@ process.stdin.on("data", (chunk) => {
     });
     managers.push(manager);
 
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
-    const overflow = await manager.start();
+    const overflow = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(overflow).toMatchObject({
       ok: false,
       error: {
@@ -327,7 +344,9 @@ process.stdin.on("data", (chunk) => {
     ).toHaveLength(1);
     const cancelled = new AbortController();
     cancelled.abort();
-    const cancelledAtCapacity = await manager.start(cancelled.signal);
+    const cancelledAtCapacity = await manager.start(cancelled.signal, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(cancelledAtCapacity).toMatchObject({
       ok: false,
       error: { _tag: "AnalysisCancelledError" },
@@ -348,6 +367,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match) process.stdout.write(match[1] + "^done\\n");
   }
 });
@@ -377,11 +397,17 @@ process.stdin.on("data", (chunk) => {
     });
     managers.push(manager);
 
-    const first = await manager.start();
+    const first = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(first.ok).toBe(true);
-    const secondStart = manager.start();
+    const secondStart = manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     await secondSpawnEntered;
-    const third = await manager.start();
+    const third = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(third).toMatchObject({
       ok: false,
       error: {
@@ -447,7 +473,7 @@ process.stdin.resume();
     });
     managers.push(manager);
 
-    const starting = manager.start();
+    const starting = manager.start(undefined, { inferiorTty: "/dev/pts/42" });
     let pidText: string | undefined;
     for (
       let attempt = 0;
@@ -483,7 +509,9 @@ process.stdin.resume();
     expect(await readFile(signalPath, "utf8")).toBe("SIGTERM");
     await expectOwnedProcessExited(pidText);
     expect(manager.status("unknown-session")).toBeUndefined();
-    await expect(manager.start()).resolves.toMatchObject({
+    await expect(
+      manager.start(undefined, { inferiorTty: "/dev/pts/42" }),
+    ).resolves.toMatchObject({
       ok: false,
       error: { _tag: "AnalysisCancelledError" },
     });
@@ -515,6 +543,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match) process.stdout.write(match[1] + "^done\\n");
   }
 });
@@ -525,7 +554,9 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -554,6 +585,7 @@ process.stdin.on("data", (chunk) => {
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match && line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
     else if (match) process.stdout.write("~\\"partial output\\n\\"\\n");
   }
@@ -567,7 +599,9 @@ setTimeout(() => process.exit(0), 250).unref();
       commandTimeoutMs: 40,
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -610,6 +644,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   for (const line of chunk.split("\\n")) {
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (!match) continue;
     if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
     else process.stdout.write("~\\"partial console record\\n\\"\\n@target partial\\n&log partial\\n");
@@ -628,7 +663,9 @@ setTimeout(() => process.exit(0), 250);
       }),
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -679,7 +716,8 @@ process.stdin.on("data", (chunk) => {
   for (;;) {
     const boundary = input.indexOf("\\n"); if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
-    const match = /^(\\d+)/.exec(line); if (!match) continue;
+    const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; } if (!match) continue;
     if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
     else if (line.includes("first")) {
       firstActive = true;
@@ -697,7 +735,9 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const first = manager.execute(started.value.session_id, "first");
@@ -733,7 +773,8 @@ process.stdin.on("data", (chunk) => {
   for (;;) {
     const boundary = input.indexOf("\\n"); if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
-    const match = /^(\\d+)/.exec(line); if (!match) continue;
+    const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; } if (!match) continue;
     if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
     else {
       process.stdout.write(Array.from({ length: 300 }, (_, index) => "=thread-created,id=\\"" + index + "\\"\\n").join(""));
@@ -748,7 +789,9 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -807,6 +850,7 @@ process.stdin.on("data", (chunk) => {
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match && line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
     else if (match) process.stdout.write("~\\"partial before cancellation\\n\\"\\n@target before cancellation\\n");
   }
@@ -818,7 +862,9 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const controller = new AbortController();
@@ -923,6 +969,7 @@ process.stdin.on("data", (chunk) => {
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (match) process.stdout.write(match[1] + "^done\\n");
   }
 });
@@ -933,7 +980,9 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -962,8 +1011,9 @@ process.stdin.on("data", (chunk) => {
     const boundary = input.indexOf("\\n"); if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
-    if (match && line.includes("auto-load off")) {
-      process.stdout.write(match[1] + "^done\\n");
+    if (match && (line.includes("auto-load off") || line.includes("inferior-tty-set"))) process.stdout.write(match[1] + "^done\\n");
+    if (match && line.includes("inferior-tty-show")) {
+      process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n");
       closeSync(0);
       writeFileSync(${JSON.stringify(stdinClosed)}, "closed");
     }
@@ -1000,7 +1050,9 @@ setInterval(() => {}, 1000);
     let sessionId: string | undefined;
     let originalError: { cleanupIncomplete: boolean } | undefined;
     try {
-      const started = await manager.start();
+      const started = await manager.start(undefined, {
+        inferiorTty: "/dev/pts/42",
+      });
       expect(started.ok).toBe(true);
       if (!started.ok) return;
       sessionId = started.value.session_id;
@@ -1059,7 +1111,8 @@ process.stdin.on("data", (chunk) => {
     const boundary = input.indexOf("\\n");
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
-    const match = /^(\\d+)/.exec(line); if (!match) continue;
+    const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; } if (!match) continue;
     if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
     else if (line.includes("first command")) process.stdout.write("~first-command-only\\n" + match[1] + "^done\\n");
     else process.stdout.write("~second-command-partial\\n@target-partial\\n@target-tail\\n&log-partial\\n&log-tail\\n~second-command-tail\\n", () => process.exit(7));
@@ -1072,7 +1125,9 @@ process.stdin.on("data", (chunk) => {
       environment: { REA_GDB_COMMAND: provider },
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
 
@@ -1163,7 +1218,8 @@ process.stdin.on("data", (chunk) => {
     const boundary = input.indexOf("\\n");
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
-    const match = /^(\\d+)/.exec(line); if (!match) continue;
+    const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; } if (!match) continue;
     if (line.includes("auto-load off")) process.stdout.write(match[1] + "^done\\n");
   }
 });
@@ -1179,7 +1235,9 @@ setTimeout(() => process.exit(0), 250);
       }),
     });
     managers.push(manager);
-    const started = await manager.start();
+    const started = await manager.start(undefined, {
+      inferiorTty: "/dev/pts/42",
+    });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     const controller = new AbortController();
