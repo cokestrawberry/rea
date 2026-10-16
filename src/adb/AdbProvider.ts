@@ -762,6 +762,7 @@ export class AdbProvider {
         if (!ran.ok) return ran;
         const { devices, unparsedLines, daemonStarted } = parseAdbDevicesOutput(
           ran.value.stdout,
+          ran.value.stderr,
         );
         if (unparsedLines.length > 0)
           return err(
@@ -771,7 +772,11 @@ export class AdbProvider {
           );
         return ok(
           createAnalysisExecution(
-            { client, devices, may_have_started_adb_server: daemonStarted },
+            {
+              client,
+              devices,
+              may_have_started_adb_server: daemonStarted,
+            },
             provider,
             {
               limitations: [
@@ -1330,7 +1335,27 @@ export class AdbProvider {
       },
       signal,
     );
-    if (!paths.ok) return paths;
+    const notInstalled = (cause?: AnalysisError) =>
+      err(
+        new AnalysisUnsupportedTargetError(
+          operation,
+          serial,
+          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
+          cause === undefined ? undefined : { cause },
+        ),
+      );
+    if (!paths.ok) {
+      // Android 7+ `pm path` exits 1 with no output for an unknown package.
+      const failure =
+        paths.error instanceof AnalysisProtocolError
+          ? execFileOutputFailure(paths.error.cause)
+          : undefined;
+      return failure?.code === 1 &&
+        failure.stdout.trim() === "" &&
+        failure.stderr.trim() === ""
+        ? notInstalled(paths.error)
+        : paths;
+    }
     const parsed = parsePmPathOutput(paths.value.stdout);
     const capturedOutput = {
       stdout: paths.value.stdout,
@@ -1359,13 +1384,7 @@ export class AdbProvider {
       );
     }
     if (parsed.paths.length === 0 && parsed.unparsedLines.length === 0)
-      return err(
-        new AnalysisUnsupportedTargetError(
-          operation,
-          serial,
-          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
-        ),
-      );
+      return notInstalled();
     if (parsed.unparsedLines.length > 0)
       return err(
         new AnalysisProtocolError(
@@ -1638,6 +1657,37 @@ export class AdbProvider {
           },
         ]),
       );
+    const regularFile = await runAdb(
+      operation,
+      input.serial,
+      selection.binary,
+      adbArguments(input.serial, ["shell", "test", "-f", input.device_path]),
+      { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
+      signal,
+    );
+    if (!regularFile.ok) {
+      // `test -f` exits 1 without output for any path it cannot confirm as a
+      // regular file. Any other failure leaves the path's type unknown.
+      const failure =
+        regularFile.error instanceof AnalysisProtocolError
+          ? execFileOutputFailure(regularFile.error.cause)
+          : undefined;
+      if (
+        failure?.code !== 1 ||
+        failure.stdout !== "" ||
+        failure.stderr !== ""
+      )
+        return regularFile;
+      return err(
+        new AnalysisInputError(operation, undefined, [
+          {
+            path: ["device_path"],
+            reason: "invalid_value",
+            message: `The device path ${JSON.stringify(input.device_path)} is not reported as a regular file by the device shell (it may be absent, a directory, or hidden from the shell user); pull_adb_file copies one regular file.`,
+          },
+        ]),
+      );
+    }
     const directory = await prepareOutputDirectory(
       operation,
       input.output_directory,
@@ -1646,6 +1696,19 @@ export class AdbProvider {
     const localPath = join(directory.value, derived.fileName);
     const existing = await refuseExistingTarget(operation, localPath);
     if (existing !== undefined) return err(existing);
+    // adb creates localPath itself, so a file found there after a failure
+    // belongs to this pull and is reported rather than removed.
+    const retained: AdbAcquiredFilePartialObservation = {
+      provider_id: "adb",
+      operation,
+      result: {
+        client,
+        serial: input.serial,
+        local_path: localPath,
+        device_path: input.device_path,
+        digest_status: "unknown",
+      },
+    };
     const pulled = await runAdb(
       operation,
       input.serial,
@@ -1654,7 +1717,15 @@ export class AdbProvider {
       { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
       signal,
     );
-    if (!pulled.ok) return pulled;
+    if (!pulled.ok) {
+      const left = await lstat(localPath).then(
+        () => true,
+        (cause: unknown) =>
+          !(cause instanceof Error && Reflect.get(cause, "code") === "ENOENT"),
+      );
+      if (left) pulled.error.retainPartialObservation(retained);
+      return pulled;
+    }
     try {
       const digest = await hashAdbFile(localPath, operation, signal);
       return ok(
@@ -1677,24 +1748,14 @@ export class AdbProvider {
       );
     } catch (cause) {
       if (cause instanceof AnalysisCancelledError) {
-        cause.retainPartialObservation({
-          provider_id: "adb",
-          operation,
-          result: {
-            client,
-            serial: input.serial,
-            local_path: localPath,
-            device_path: input.device_path,
-            digest_status: "unknown",
-          },
-        });
+        cause.retainPartialObservation(retained);
         return err(cause);
       }
       return err(
         new AnalysisOutputError(
           operation,
           `The pulled file could not be read back after pulling: ${localPath}`,
-          { cause },
+          { cause, partialObservation: retained },
         ),
       );
     }
@@ -1910,12 +1971,14 @@ export class AdbProvider {
           apk_path: apkPath,
           bytes: digest.bytes,
           sha256: digest.sha256,
-          replaced: input.replace,
+          replace_requested: input.replace,
+          replaced: null,
         },
         provider,
         {
           limitations: [
             "Install changes device state; the installed APK's digest is the host file's digest",
+            "Whether an existing package was replaced is unknown; replace_requested records only the adb install mode",
           ],
         },
       ),

@@ -10,6 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { expect, onTestFinished, test } from "vitest";
 
 import { AdbProvider } from "./AdbProvider.js";
@@ -92,11 +93,71 @@ it("inspects the adb client without contacting the server", async () => {
   expect(result.contacted_adb_server).toBe(false);
 });
 
+it("fails closed when adb exits successfully without a recognized version", async () => {
+  const stdout = `unexpected adb output ${"x".repeat(700)}\n`;
+  const stderr = `probe stderr ${"y".repeat(700)}\n`;
+  const { binary } = await writeAdbStub(
+    () => `printf '%s' '${stdout}'; printf '%s' '${stderr}' >&2; exit 0`,
+  );
+  await expect(
+    providerOver(binary).inspectAvailability(),
+  ).resolves.toMatchObject({
+    status: "unavailable",
+    code: "version_unresolved",
+    diagnostics: {
+      version_probe: "unrecognized_output",
+      stdout,
+      stderr,
+    },
+  });
+});
+
+it("accepts adb's recognized protocol version when the build version is absent", async () => {
+  const { binary } = await writeAdbStub(
+    () => `printf 'Android Debug Bridge version 1.0.41\\n'`,
+  );
+  await expect(
+    providerOver(binary).inspectAvailability(),
+  ).resolves.toMatchObject({
+    status: "available",
+  });
+});
+
 it("lists devices with inferred kinds and observed daemon startup", async () => {
   const { binary } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
 if [ "$1" = "devices" ]; then
   printf '* daemon not running; starting now at tcp:5037\\n* daemon started successfully\\n'
+  printf 'List of devices attached\\n'
+  printf 'emulator-5554          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:1\\n'
+  exit 0
+fi`,
+  );
+  const result = await evidenceResult(providerOver(binary), {
+    operation: "list_adb_devices",
+    input: {},
+  });
+  expect(result.may_have_started_adb_server).toBe(true);
+  expect(result.devices).toEqual([
+    {
+      serial: "emulator-5554",
+      state: "device",
+      transport: "tcp",
+      product: "sdk_gphone64_x86_64",
+      model: "sdk_gphone64_x86_64",
+      device: "emu64xa",
+      transport_id: 1,
+      kind: "emulator",
+      kind_basis: "emulator_serial_prefix",
+    },
+  ]);
+});
+
+it("observes daemon startup when notices are printed to stderr", async () => {
+  const { binary } = await writeAdbStub(
+    () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "devices" ]; then
+  printf '* daemon not running; starting now at tcp:5037\\n* daemon started successfully\\n' >&2
   printf 'List of devices attached\\n'
   printf 'emulator-5554          device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:1\\n'
   exit 0
@@ -462,21 +523,43 @@ it.each([
   },
 );
 
-it("reports an uninstalled package from empty pm path output", async () => {
+it.each([0, 1])(
+  "reports an uninstalled package from empty pm path output with exit code %i",
+  async (exitCode) => {
+    const { binary } = await writeAdbStub(
+      () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then exit ${String(exitCode)}; fi`,
+    );
+    const projected = await refusedBy(providerOver(binary), {
+      operation: "pull_adb_package",
+      input: {
+        serial: "emulator-5554",
+        package: "com.absent",
+        output_directory: "/tmp/rea-adb-absent",
+      },
+    });
+    expect(projected).toMatchObject({ code: "unsupported_target" });
+    expect(projected.message).toContain("no APK paths");
+  },
+);
+
+it("keeps a pm path failure that prints an error as a protocol failure", async () => {
   const { binary } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
-if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then exit 0; fi`,
+if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then printf 'Error: pm crashed\\n' >&2; exit 1; fi`,
   );
-  const projected = await refusedBy(providerOver(binary), {
+  const result = await providerOver(binary).execute({
     operation: "pull_adb_package",
     input: {
       serial: "emulator-5554",
-      package: "com.absent",
-      output_directory: "/tmp/rea-adb-absent",
+      package: "com.example",
+      output_directory: "/tmp/rea-adb-failed",
     },
   });
-  expect(projected).toMatchObject({ code: "unsupported_target" });
-  expect(projected.message).toContain("no APK paths");
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error._tag).toBe("AnalysisProtocolError");
+  expect(result.error.message).toContain("pm crashed");
 });
 
 it.each([
@@ -702,6 +785,7 @@ it("reports an uninstalled package from dumpsys refusal output", async () => {
 it("pulls one device file with a digest", async () => {
   const { binary, root } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ] && [ "$5" = "-f" ]; then exit 0; fi
 if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then printf 'file-bytes' > "$5"; exit 0; fi
 exit 1`,
   );
@@ -767,6 +851,153 @@ exit 0`,
     await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
   },
 );
+
+it("refuses a device path that is not a regular file before creating output or pulling", async () => {
+  const { binary, root } = await writeAdbStub(
+    (root) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ] && [ "$5" = "-f" ]; then exit 1; fi
+if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then : > "${join(root, "pull-ran")}"; exit 0; fi
+exit 1`,
+  );
+  const output = join(root, "pulls");
+  const result = await providerOver(binary).execute({
+    operation: "pull_adb_file",
+    input: {
+      serial: "emulator-5554",
+      device_path: "/sdcard/DCIM",
+      output_directory: output,
+    },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  const projected = projectAnalysisError(result.error);
+  expect(projected).toMatchObject({ code: "invalid_request" });
+  expect(projected.details).toMatchObject({
+    issues: [
+      {
+        path: ["device_path"],
+        reason: "invalid_value",
+        message: expect.stringContaining(
+          "not reported as a regular file",
+        ) as unknown,
+      },
+    ],
+  });
+  await expect(readFile(join(root, "pull-ran"))).rejects.toThrow();
+  await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("reports a failed regular-file probe instead of reading it as an absent path", async () => {
+  const { binary, root } = await writeAdbStub(
+    (root) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ]; then printf 'error: closed\\n' >&2; exit 1; fi
+if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then : > "${join(root, "pull-ran")}"; exit 0; fi
+exit 1`,
+  );
+  const result = await providerOver(binary).execute({
+    operation: "pull_adb_file",
+    input: {
+      serial: "emulator-5554",
+      device_path: "/sdcard/notes.txt",
+      output_directory: join(root, "pulls"),
+    },
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error._tag).toBe("AnalysisProtocolError");
+  expect(result.error.message).toContain("closed");
+  await expect(readFile(join(root, "pull-ran"))).rejects.toThrow();
+});
+
+const pullFileStub = (pullBody: string) => () =>
+  `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ] && [ "$5" = "-f" ]; then exit 0; fi
+if [ "$1" = "-s" ] && [ "$3" = "pull" ]; then ${pullBody}; fi
+exit 1`;
+
+const pullFileRequest = (output: string): AdbRequest => ({
+  operation: "pull_adb_file",
+  input: {
+    serial: "emulator-5554",
+    device_path: "/sdcard/big.bin",
+    output_directory: output,
+  },
+});
+
+it("reports the host file left by a failed pull without removing it", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(
+      `printf 'partial' > "$5"; printf 'error: closed\\n' >&2; exit 1`,
+    ),
+  );
+  const output = join(root, "pulls");
+  const result = await providerOver(binary).execute(pullFileRequest(output));
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error.partialObservation).toMatchObject({
+    provider_id: "adb",
+    operation: "pull_adb_file",
+    result: {
+      serial: "emulator-5554",
+      device_path: "/sdcard/big.bin",
+      local_path: join(output, "big.bin"),
+      digest_status: "unknown",
+    },
+  });
+  expect(await readFile(join(output, "big.bin"), "utf8")).toBe("partial");
+});
+
+it("reports no host file when a failed pull wrote none", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(`printf 'error: closed\\n' >&2; exit 1`),
+  );
+  const result = await providerOver(binary).execute(
+    pullFileRequest(join(root, "pulls")),
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error.partialObservation).toBeUndefined();
+});
+
+it("reports the host file left by a cancelled pull", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(`printf 'partial' > "$5"; exec sleep 30`),
+  );
+  const output = join(root, "pulls");
+  const localPath = join(output, "big.bin");
+  const controller = new AbortController();
+  const pending = providerOver(binary).execute(pullFileRequest(output), {
+    signal: controller.signal,
+  });
+  while ((await readFile(localPath, "utf8").catch(() => "")) !== "partial")
+    await delay(10);
+  controller.abort();
+  const result = await pending;
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(projectAnalysisError(result.error).code).toBe("cancelled");
+  expect(result.error.partialObservation).toMatchObject({
+    operation: "pull_adb_file",
+    result: { local_path: localPath, digest_status: "unknown" },
+  });
+});
+
+it("reports the pulled path when the file cannot be read back", async () => {
+  const { binary, root } = await writeAdbStub(
+    pullFileStub(`mkdir "$5"; exit 0`),
+  );
+  const output = join(root, "pulls");
+  const result = await providerOver(binary).execute(pullFileRequest(output));
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    code: "unreadable_output",
+  });
+  expect(result.error.partialObservation).toMatchObject({
+    operation: "pull_adb_file",
+    result: { local_path: join(output, "big.bin"), digest_status: "unknown" },
+  });
+});
 
 it("pushes a file and verifies the device-side digest", async () => {
   const { binary, root } = await writeAdbStub(
@@ -964,6 +1195,39 @@ if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; printf '%s\
     expect(projected).toMatchObject({ code: "unsupported_target" });
     expect(projected.message).toContain(state);
     expect(projected.message).not.toContain("already exists");
+    expect(await readFile(join(root, "calls"), "utf8")).toBe("shell\n");
+  },
+);
+
+it.each([
+  ["stderr diagnostic", "printf 'error: closed\\n' >&2; exit 1", false],
+  ["stderr diagnostic", "printf 'error: closed\\n' >&2; exit 1", true],
+  ["stdout output", "printf 'unexpected\\n'; exit 1", false],
+  ["exit code other than 1", "exit 2", false],
+] as const)(
+  "does not read a push existence probe failure with a %s as an absent path (overwrite %s)",
+  async (_label, probe, overwrite) => {
+    const { binary, root } = await writeAdbStub(
+      (stubRoot) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ]; then ${probe}; fi
+exit 0`,
+    );
+    const localFile = join(root, "payload.bin");
+    await writeFile(localFile, "x");
+    const result = await providerOver(binary).execute({
+      operation: "push_adb_file",
+      input: {
+        serial: "emulator-5554",
+        local_path: localFile,
+        device_path: "/data/local/tmp/payload.bin",
+        overwrite,
+      },
+    });
+    // Existence is unknown, so the probe failure is reported and no push runs.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error._tag).toBe("AnalysisProtocolError");
     expect(await readFile(join(root, "calls"), "utf8")).toBe("shell\n");
   },
 );
@@ -1257,15 +1521,21 @@ exit 1`,
   const apk = join(root, "app.apk");
   await writeFile(apk, "apk");
   const digest = createHash("sha256").update("apk").digest("hex");
-  const installed = await evidenceResult(providerOver(binary), {
+  const execution = await providerOver(binary).execute({
     operation: "install_adb_package",
     input: { serial: "emulator-5554", apk_path: apk, replace: false },
   });
-  expect(installed).toMatchObject({
+  expect(execution.ok).toBe(true);
+  if (!execution.ok) throw execution.error;
+  expect(execution.value.result).toMatchObject({
     bytes: 3,
     sha256: digest,
-    replaced: false,
+    replace_requested: false,
+    replaced: null,
   });
+  expect(execution.value.limitations).toContain(
+    "Whether an existing package was replaced is unknown; replace_requested records only the adb install mode",
+  );
 
   const { binary: failing } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi

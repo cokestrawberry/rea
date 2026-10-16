@@ -280,6 +280,33 @@ focused suite also exercises affected MCP routes and the Python Cutter bridge.
 Contract, integration, and real-provider lanes complement these focused tests;
 simulated providers do not establish real-provider behavior.
 
+Required CI retains fresh reverse-tools coverage and preflights both canonical
+Stryker configurations with `--dryRunOnly`. These preflights resolve the owned
+targets, instrument the source, and execute the real initial tests. Invalid
+configuration, target resolution, and initial test failures still fail the job.
+Preflights execute no mutants and produce no mutation-outcome report. Both fast
+feedback and full qualification, including exact-revision release qualification,
+require coverage and both preflights. A failed, canceled, skipped or missing
+selected quality job still fails the required gate.
+
+The separate **Mutation sweep** workflow runs both complete configurations daily
+and on manual dispatch, in two isolated jobs. It is a maintenance check outside
+the PR and release publication gates. `ci:full` requests full regression,
+coverage and provider qualification; it does not request a complete mutation
+sweep. Use the Mutation sweep workflow to request that result. Targets,
+checkers, concurrency, deadlines and the existing non-blocking mutation-score
+threshold are unchanged. `npm run test:mutation:reverse-tools` also retains both
+complete passes for local callers.
+
+The two passes write separate JSON and HTML reports under `reports/mutation/`:
+`reverse-tools` and `reverse-tools-semantics`. Required CI retains focused
+coverage; the sweep retains each configuration's JSON/HTML reports separately.
+Both retain available diagnostics for seven days after failure and skip uploads
+on cancellation. Artifact names identify the tier or configuration and run
+attempt. A successful sweep requires both jobs and their nonempty reports;
+partial diagnostics and preflights do not establish complete mutation outcomes
+or qualify the release revision for mutation coverage.
+
 Fast CI starts the source-only projects after classification, independently of
 build and static checks, and runs five built-dependent shards after the build.
 The six test jobs still select every portable test. Full qualification keeps six
@@ -988,8 +1015,11 @@ unknown tiers and requires every canonical scope to be explicitly `true` or
 `false`; incomplete classification cannot silently omit verification lanes.
 The aggregate remains cancellable so superseded runs release their slots.
 Branch protection
-should require this aggregate, `Static checks`, `Portable tests`, and
-`Conventional PR title`. Title validation runs separately on PR opening,
+should require this aggregate, `Static checks`, `Portable tests`,
+`Conventional PR title`, and `pre-commit`. For PRs into `main` or
+`stage/**`, `pre-commit` runs the `.husky/pre-commit` lint-staged tasks on the
+files the PR changes and fails when a task would modify a file. Title
+validation runs separately on PR opening,
 reopening, commits, and edits; correcting a title refreshes only this lightweight
 check. It reads title text through an environment variable, executes no PR code,
 and has no token permissions. Its separate concurrency group cannot cancel
