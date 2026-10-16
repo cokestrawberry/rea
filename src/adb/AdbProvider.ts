@@ -61,6 +61,7 @@ import {
   parseGetpropOutput,
   parsePackageListOutput,
   parsePmPathOutput,
+  stderrReportsDaemonStart,
 } from "./AdbDeviceOutput.js";
 import { adbHostFileName } from "./AdbHostFileName.js";
 import {
@@ -273,6 +274,17 @@ const packageChangeRefusal = (
           cause: error,
         }),
       );
+};
+
+/** A `test -e` run that exited 1 without any output found the path absent. */
+const probeReportsAbsence = (error: AnalysisError): boolean => {
+  if (!(error instanceof AnalysisProtocolError)) return false;
+  const failure = execFileOutputFailure(error.cause);
+  return (
+    failure?.code === 1 &&
+    failure.stdout.trim() === "" &&
+    failure.stderr.trim() === ""
+  );
 };
 
 const clientIdentityResult = (
@@ -764,7 +776,12 @@ export class AdbProvider {
           );
         return ok(
           createAnalysisExecution(
-            { client, devices, may_have_started_adb_server: daemonStarted },
+            {
+              client,
+              devices,
+              may_have_started_adb_server:
+                daemonStarted || stderrReportsDaemonStart(ran.value.stderr),
+            },
             provider,
             {
               limitations: [
@@ -1323,7 +1340,27 @@ export class AdbProvider {
       },
       signal,
     );
-    if (!paths.ok) return paths;
+    const notInstalled = (cause?: AnalysisError) =>
+      err(
+        new AnalysisUnsupportedTargetError(
+          operation,
+          serial,
+          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
+          cause === undefined ? undefined : { cause },
+        ),
+      );
+    if (!paths.ok) {
+      // Android 7+ `pm path` exits 1 with no output for an unknown package.
+      const failure =
+        paths.error instanceof AnalysisProtocolError
+          ? execFileOutputFailure(paths.error.cause)
+          : undefined;
+      return failure?.code === 1 &&
+        failure.stdout.trim() === "" &&
+        failure.stderr.trim() === ""
+        ? notInstalled(paths.error)
+        : paths;
+    }
     const parsed = parsePmPathOutput(paths.value.stdout);
     const capturedOutput = {
       stdout: paths.value.stdout,
@@ -1352,13 +1389,7 @@ export class AdbProvider {
       );
     }
     if (parsed.paths.length === 0 && parsed.unparsedLines.length === 0)
-      return err(
-        new AnalysisUnsupportedTargetError(
-          operation,
-          serial,
-          `Package Manager reported no APK paths for ${packageName}; it may not be installed for user 0`,
-        ),
-      );
+      return notInstalled();
     if (parsed.unparsedLines.length > 0)
       return err(
         new AnalysisProtocolError(
@@ -1774,13 +1805,10 @@ export class AdbProvider {
       { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
       signal,
     );
-    // `test -e` exits nonzero with no adb diagnosis when the path is absent.
-    // Any other probe failure leaves existence unknown, so it is reported as
-    // is rather than read as an existing path or followed by a push.
-    if (
-      !existsProbe.ok &&
-      !(existsProbe.error instanceof AnalysisProtocolError)
-    )
+    // `test -e` exits 1 with no output when the path is absent. Any other probe
+    // failure leaves existence unknown, so it is reported as is rather than
+    // read as an absent path or followed by a push.
+    if (!existsProbe.ok && !probeReportsAbsence(existsProbe.error))
       return existsProbe;
     const deviceExists = existsProbe.ok;
     if (deviceExists && !input.overwrite)

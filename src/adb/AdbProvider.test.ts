@@ -122,6 +122,24 @@ fi`,
   ]);
 });
 
+it("reports daemon startup that adb announces on stderr", async () => {
+  const { binary } = await writeAdbStub(
+    () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "devices" ]; then
+  printf '* daemon not running; starting now at tcp:5037\\n* daemon started successfully\\n' >&2
+  printf 'List of devices attached\\n'
+  printf 'emulator-5554          device transport_id:1\\n'
+  exit 0
+fi`,
+  );
+  const result = await evidenceResult(providerOver(binary), {
+    operation: "list_adb_devices",
+    input: {},
+  });
+  expect(result.may_have_started_adb_server).toBe(true);
+  expect(result.devices).toHaveLength(1);
+});
+
 it("refuses device listings with an invalid state token", async () => {
   const malformedLine = "serial deviceXYZ  ";
   const { binary } = await writeAdbStub(
@@ -462,21 +480,43 @@ it.each([
   },
 );
 
-it("reports an uninstalled package from empty pm path output", async () => {
+it.each([0, 1])(
+  "reports an uninstalled package from empty pm path output with exit code %i",
+  async (exitCode) => {
+    const { binary } = await writeAdbStub(
+      () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then exit ${String(exitCode)}; fi`,
+    );
+    const projected = await refusedBy(providerOver(binary), {
+      operation: "pull_adb_package",
+      input: {
+        serial: "emulator-5554",
+        package: "com.absent",
+        output_directory: "/tmp/rea-adb-absent",
+      },
+    });
+    expect(projected).toMatchObject({ code: "unsupported_target" });
+    expect(projected.message).toContain("no APK paths");
+  },
+);
+
+it("keeps a pm path failure that prints an error as a protocol failure", async () => {
   const { binary } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
-if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then exit 0; fi`,
+if [ "$1" = "-s" ] && [ "$4" = "pm" ] && [ "$5" = "path" ]; then printf 'Error: pm crashed\\n' >&2; exit 1; fi`,
   );
-  const projected = await refusedBy(providerOver(binary), {
+  const result = await providerOver(binary).execute({
     operation: "pull_adb_package",
     input: {
       serial: "emulator-5554",
-      package: "com.absent",
-      output_directory: "/tmp/rea-adb-absent",
+      package: "com.example",
+      output_directory: "/tmp/rea-adb-failed",
     },
   });
-  expect(projected).toMatchObject({ code: "unsupported_target" });
-  expect(projected.message).toContain("no APK paths");
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error._tag).toBe("AnalysisProtocolError");
+  expect(result.error.message).toContain("pm crashed");
 });
 
 it.each([
@@ -1018,6 +1058,39 @@ if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; printf '%s\
     expect(projected).toMatchObject({ code: "unsupported_target" });
     expect(projected.message).toContain(state);
     expect(projected.message).not.toContain("already exists");
+    expect(await readFile(join(root, "calls"), "utf8")).toBe("shell\n");
+  },
+);
+
+it.each([
+  ["stderr diagnostic", "printf 'error: closed\\n' >&2; exit 1", false],
+  ["stderr diagnostic", "printf 'error: closed\\n' >&2; exit 1", true],
+  ["stdout output", "printf 'unexpected\\n'; exit 1", false],
+  ["exit code other than 1", "exit 2", false],
+] as const)(
+  "does not read a push existence probe failure with a %s as an absent path (overwrite %s)",
+  async (_label, probe, overwrite) => {
+    const { binary, root } = await writeAdbStub(
+      (stubRoot) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
+if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; fi
+if [ "$1" = "-s" ] && [ "$4" = "test" ]; then ${probe}; fi
+exit 0`,
+    );
+    const localFile = join(root, "payload.bin");
+    await writeFile(localFile, "x");
+    const result = await providerOver(binary).execute({
+      operation: "push_adb_file",
+      input: {
+        serial: "emulator-5554",
+        local_path: localFile,
+        device_path: "/data/local/tmp/payload.bin",
+        overwrite,
+      },
+    });
+    // Existence is unknown, so the probe failure is reported and no push runs.
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error._tag).toBe("AnalysisProtocolError");
     expect(await readFile(join(root, "calls"), "utf8")).toBe("shell\n");
   },
 );

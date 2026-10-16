@@ -30,6 +30,16 @@ export interface AdbDeviceEntry {
 
 const DEVICE_LINE = /^(\S+)\s+(.*)$/u;
 
+const isDaemonStartedNotice = (line: string): boolean =>
+  line.startsWith("* daemon") && line.includes("started successfully");
+
+/**
+ * Report whether adb's stderr announces a daemon start. Current adb writes the
+ * notice to stderr; the stdout parser keeps recognizing it for older adb.
+ */
+export const stderrReportsDaemonStart = (stderr: string): boolean =>
+  stderr.split(/\r?\n/u).some(isDaemonStartedNotice);
+
 const metadataValue = (remainder: string, key: string): string | null => {
   const match = new RegExp(`(?:^|\\s)${key}:(\\S+)`, "u").exec(remainder);
   return match === null ? null : match[1]!;
@@ -54,7 +64,7 @@ export const parseAdbDevicesOutput = (
     const line = rawLine.trimEnd();
     if (line === "" || line.startsWith("List of devices attached")) continue;
     if (line.startsWith("* daemon")) {
-      if (line.includes("started successfully")) daemonStarted = true;
+      if (isDaemonStartedNotice(line)) daemonStarted = true;
       continue;
     }
     const match = DEVICE_LINE.exec(line);
