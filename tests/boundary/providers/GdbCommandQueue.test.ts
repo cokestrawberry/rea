@@ -40,6 +40,7 @@ process.stdin.on("data", async (chunk) => {
     if (boundary < 0) break;
     const line = input.slice(0, boundary); input = input.slice(boundary + 1);
     const match = /^(\\d+)/.exec(line);
+    if (match && line.includes("-inferior-tty-show")) { process.stdout.write(match[1] + "^done,inferior_tty_terminal=\\"/dev/pts/42\\"\\n"); continue; }
     if (!match) continue;
     if (line.includes("-interpreter-exec console") && firstConsoleCommand) {
       firstConsoleCommand = false;
@@ -60,7 +61,9 @@ process.stdin.on("data", async (chunk) => {
     environment: { REA_GDB_COMMAND: provider },
   });
   managers.push(manager);
-  const started = await manager.start();
+  const started = await manager.start(undefined, {
+    inferiorTty: "/dev/pts/42",
+  });
   expect(started.ok).toBe(true);
   if (!started.ok) return;
 
