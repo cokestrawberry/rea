@@ -177,7 +177,7 @@ class ReaJadxBridge {
   private record DirectInvokes(List<Map<String, Object>> sites, boolean exhaustive) {}
 
   /** Raw DEX invokes within one JADX using method; offsets are code units from its code start. */
-  private static DirectInvokes directInvokes(JavaMethod source, MethodInfo target, InvokeBudget budget) {
+  private static DirectInvokes directInvokes(JavaMethod source, MethodNode target, InvokeBudget budget) {
     MethodNode node = source.getMethodNode();
     ICodeReader code = node.getCodeReader();
     if (code == null) return null;
@@ -190,7 +190,15 @@ class ReaJadxBridge {
       if (!opcode.name().startsWith("INVOKE_")) return;
       IMethodRef ref = insn.getIndexAsMethod();
       ref.load();
-      if (!MethodInfo.fromRef(node.root(), ref).getRawFullId().equals(target.getRawFullId())) return;
+      // JADX records a use under the superclass method that a subclass-qualified ref resolves to.
+      MethodInfo invoked = MethodInfo.fromRef(node.root(), ref);
+      if (!invoked.getShortId().equals(target.getMethodInfo().getShortId())) return;
+      MethodNode resolved = node.root().resolveMethod(invoked);
+      if (resolved == null) {
+        exhaustive[0] = false;
+        return;
+      }
+      if (resolved != target) return;
       Map<String, Object> site = Map.of(
           "dex_entry", node.getInputFileName(),
           "source_raw_method_id", node.getMethodInfo().getRawFullId(),
@@ -251,10 +259,10 @@ class ReaJadxBridge {
       uses = method(cls, selectedMethod).getUseIn();
     }
     // REA consumes all references without materializing source line information.
-    MethodInfo targetInfo = selectedMethod == null ? null : method(cls, selectedMethod).getMethodNode().getMethodInfo();
+    MethodNode targetNode = selectedMethod == null ? null : method(cls, selectedMethod).getMethodNode();
     List<Map<String, Object>> items = uses.stream().map(node -> {
       Map<String, Object> item = new LinkedHashMap<>(current.describeUsage(node, false));
-      if (targetInfo != null && node instanceof JavaMethod) {
+      if (targetNode != null && node instanceof JavaMethod) {
         item.put("direct_invokes", List.of());
         item.put("direct_invokes_exhaustive", false);
       }
@@ -266,11 +274,11 @@ class ReaJadxBridge {
       result.put("overload_index", overloadIndex);
       result.put("reported_signature", selectedMethod.summary().get("signature"));
     }
-    if (targetInfo != null) {
+    if (targetNode != null) {
       InvokeBudget budget = new InvokeBudget(MAX_XREF_TEXT_BYTES - escapedJsonBytes(result));
       for (int index = 0; index < uses.size(); index++) {
         if (!(uses.get(index) instanceof JavaMethod source)) continue;
-        DirectInvokes invokes = directInvokes(source, targetInfo, budget);
+        DirectInvokes invokes = directInvokes(source, targetNode, budget);
         Map<String, Object> item = items.get(index);
         if (invokes == null) {
           item.remove("direct_invokes");

@@ -66,6 +66,8 @@ The client checks the final encoded request against the bridge's 16 MiB frame
 limit before dispatch; an oversized command does not retain a cleanup owner.
 Discovery admits at most 256 descriptor candidates and reads and probes at most
 eight concurrently. A larger directory reports `bridge_directory_capacity_exceeded`.
+With `json: true`, integers outside the JavaScript safe integer range appear in
+`output` as exact decimal strings instead of rounded numbers.
 
 Terminal receipts are recovered before another command, including from a new CLI
 invocation. A signed status response also confirms completion of older bridge
