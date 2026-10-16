@@ -46,7 +46,7 @@ it("omits an expanding chunk whole and retains a later smaller normalized chunk"
   ]);
   expect(renderedChunks).toEqual(["z"]);
   expect(journal).toEqual([["frames", 0]]);
-  expect(captureRetention()).toEqual({
+  expect(captureRetention.retention()).toEqual({
     raw_terminal: {
       budget_bytes: 1_000,
       observed_bytes: 4,

@@ -205,6 +205,59 @@ it("marks redacted scripted input as an interaction unknown", () => {
   });
 });
 
+it("reports withheld terminal output instead of a budget omission", () => {
+  const capture = emptyCapture();
+  const details = truncationDetails([], [], []);
+  const result = buildCaptureResult({
+    frames: [],
+    exit: { exitCode: 0, reason: "exited" },
+    samples: [],
+    before: {
+      files: [],
+      truncated: false,
+      completeRoots: [],
+      coverage: emptyFilesystemCoverage(),
+    },
+    after: {
+      files: [],
+      truncated: false,
+      completeRoots: [],
+      coverage: emptyFilesystemCoverage(),
+    },
+    truncationDetails: {
+      ...details,
+      raw_terminal: {
+        ...details.raw_terminal,
+        observed_bytes: 5,
+        observed_frames: 1,
+      },
+    },
+    scenario: parseProcessScenario({
+      ...base,
+      events: [{ type: "input", at_ms: 0, data: "a\tb\n", sensitive: true }],
+    }),
+    rootPid: 1,
+    samplingPartial: false,
+    renderedFrames: [],
+    interactions: [],
+    checkpoints: capture.filesystem_checkpoints,
+    settlement: {
+      state: capture.settlement.state,
+      elapsed_ms: capture.settlement.elapsed_ms,
+    },
+    manifest: capture.manifest,
+    eventJournal: [],
+  });
+
+  expect(result.truncated).toBe(true);
+  expect(result.limitations).toContainEqual(
+    expect.stringContaining("were withheld"),
+  );
+  expect(result.limitations).not.toContainEqual(
+    expect.stringContaining("exceeded output_bytes"),
+  );
+});
+
 it("collects and deduplicates children from every Linux thread", async () => {
   const signal = new AbortController().signal;
   expect(

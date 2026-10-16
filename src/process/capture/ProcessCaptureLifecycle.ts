@@ -44,6 +44,10 @@ import {
 import { PROCESS_PROVIDER } from "../../domain/process/processEvidenceProvider.js";
 import { TerminalRenderer } from "./TerminalRenderer.js";
 import {
+  createSensitiveOutputRedactor,
+  sensitiveTerminalInput,
+} from "./SensitiveTerminalInput.js";
+import {
   hasCaptureTruncation,
   type NormalizedTerminalRetention,
   type TerminalRetention,
@@ -298,7 +302,8 @@ export const buildCaptureResult = (
     (event) => event.type === "input" && event.sensitive,
   );
   const sensitiveInputUnknown =
-    "Sensitive scripted input values are redacted from process capture Evidence.";
+    "Contiguous literal sensitive scripted input values are redacted. Rendered frames containing a sensitive value are withheld; output after redaction flush is counted but not retained.";
+  const terminalWithheld = !sensitiveTerminalInput(options.scenario).redactable;
   const filesystemObservationUnknown =
     "No filesystem observation paths were selected; filesystem effects remain unknown.";
   const hasFilesystemObservations =
@@ -360,9 +365,10 @@ export const buildCaptureResult = (
       "Inherited host environment variables are not recorded and may affect results.",
       ...(!hasFilesystemObservations ? [filesystemObservationUnknown] : []),
       ...filesystemUnknowns,
-      ...captureCoverageUnknowns(options.truncationDetails).map(
-        ({ reason }) => reason,
-      ),
+      ...captureCoverageUnknowns(
+        options.truncationDetails,
+        terminalWithheld,
+      ).map(({ reason }) => reason),
       ...(hasSensitiveScriptedInput ? [sensitiveInputUnknown] : []),
     ],
     residual_unknowns: [
@@ -399,15 +405,17 @@ export const buildCaptureResult = (
       ...(hasSensitiveScriptedInput
         ? [{ scope: "interaction" as const, reason: sensitiveInputUnknown }]
         : []),
-      ...captureCoverageUnknowns(options.truncationDetails).filter(
-        ({ scope }) => scope !== "terminal",
-      ),
+      ...captureCoverageUnknowns(
+        options.truncationDetails,
+        terminalWithheld,
+      ).filter(({ scope }) => scope !== "terminal"),
     ],
   };
 };
 
 const captureCoverageUnknowns = (
   details: ProcessCaptureTruncationDetails,
+  terminalWithheld: boolean,
 ): UnverifiedProcessCapture["residual_unknowns"] => {
   const unknowns: Array<UnverifiedProcessCapture["residual_unknowns"][number]> =
     [];
@@ -416,10 +424,11 @@ const captureCoverageUnknowns = (
   )
     unknowns.push({
       scope: "terminal",
-      reason:
-        (details.normalized_terminal?.omitted_frames ?? 0) > 0
+      reason: terminalWithheld
+        ? "Raw PTY output was withheld because a sensitive input echo cannot be matched exactly. See truncation_details.raw_terminal."
+        : (details.normalized_terminal?.omitted_frames ?? 0) > 0
           ? "Raw PTY chunks were omitted because original input exceeded output_bytes or an ordered normalization stage exceeded its remaining bound; final normalized sizes for the latter omissions are unknown. Rendered states also lack those inputs. See raw_terminal and normalized_terminal retention details, including the normalized omission count."
-          : "Raw PTY chunks exceeded output_bytes and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
+          : "Terminal fragments exceeded output_bytes or arrived after redaction flush and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
     });
   if (
     details.rendered_terminal.observed_frames >
@@ -430,7 +439,7 @@ const captureCoverageUnknowns = (
       reason:
         (details.rendered_terminal.unknown_size_frames ?? 0) > 0
           ? "Rendered frames were omitted because a normalization stage exceeded the remaining output_bytes budget; final rendered byte totals are unknown for those frames. See truncation_details.rendered_terminal."
-          : "Cumulative rendered state and visible-line bytes exceeded output_bytes; whole rendered frames were omitted. Raw PTY coverage is reported separately. See truncation_details.rendered_terminal.",
+          : "Cumulative rendered state and visible-line bytes exceeded output_bytes; whole rendered frames were omitted. Frames containing a sensitive input value are also omitted. Raw PTY coverage is reported separately. See truncation_details.rendered_terminal.",
     });
   for (const [name, coverage] of [
     ["before", details.filesystem_before],
@@ -1323,8 +1332,15 @@ export const cleanupReportFailure = (
         .join("; ");
 };
 
+/** Raw PTY retention accounting and the release of redaction-held output. */
+export interface TerminalFrameCapture {
+  readonly retention: () => TerminalCaptureRetention;
+  /** Close retention and release output held back at a chunk boundary. */
+  readonly flush: () => void;
+}
+
 export const captureTerminalFrames = (options: {
-  readonly terminal: IPty;
+  readonly terminal: Pick<IPty, "onData">;
   readonly scenario: ProcessScenario;
   readonly frames: TerminalFrame[];
   readonly started: number;
@@ -1335,21 +1351,23 @@ export const captureTerminalFrames = (options: {
     maxBytes: number,
   ) => BoundedProcessTextNormalization;
   readonly recordEvent: RecordProcessCaptureEvent;
-}): (() => TerminalCaptureRetention) => {
+}): TerminalFrameCapture => {
+  const sensitive = sensitiveTerminalInput(options.scenario);
+  const redactor = createSensitiveOutputRedactor(
+    sensitive.redactable ? sensitive.values : [],
+  );
   let rawBytes = 0;
   let normalizedBytes = 0;
   let observedBytes = 0;
   let observedFrames = 0;
   let normalizedOmittedFrames = 0;
-  options.terminal.onData((data) => {
-    options.onOutput();
+  let closed = false;
+  const retain = (data: string, atMs: number): void => {
     const bytes = Buffer.byteLength(data);
     observedBytes += bytes;
     observedFrames += 1;
     const budget = options.scenario.limits.output_bytes;
-    if (bytes > budget - rawBytes) {
-      return;
-    }
+    if (!sensitive.redactable || bytes > budget - rawBytes) return;
     const normalized = options.normalizeText(data, budget - normalizedBytes);
     if (normalized.state === "over_budget") {
       normalizedOmittedFrames += 1;
@@ -1357,10 +1375,6 @@ export const captureTerminalFrames = (options: {
     }
     rawBytes += bytes;
     normalizedBytes += normalized.utf8Bytes;
-    const atMs = normalizeProcessElapsedTime(
-      monotonicProcessCaptureClock() - options.started,
-      options.scenario.normalization.time_bucket_ms,
-    );
     const sequence = options.frames.length;
     options.frames.push({
       sequence,
@@ -1370,21 +1384,43 @@ export const captureTerminalFrames = (options: {
     });
     options.renderer.write(data, atMs);
     options.recordEvent("frames", sequence);
+  };
+  options.terminal.onData((data) => {
+    options.onOutput();
+    if (closed) {
+      observedBytes += Buffer.byteLength(data);
+      observedFrames += 1;
+      return;
+    }
+    const atMs = normalizeProcessElapsedTime(
+      monotonicProcessCaptureClock() - options.started,
+      options.scenario.normalization.time_bucket_ms,
+    );
+    const visible = redactor.push(data, atMs);
+    if (visible.data !== "") retain(visible.data, visible.atMs);
   });
-  return () => ({
-    raw_terminal: {
-      budget_bytes: options.scenario.limits.output_bytes,
-      observed_bytes: observedBytes,
-      retained_bytes: rawBytes,
-      observed_frames: observedFrames,
-      retained_frames: options.frames.length,
+  return {
+    retention: () => ({
+      raw_terminal: {
+        budget_bytes: options.scenario.limits.output_bytes,
+        observed_bytes: observedBytes,
+        retained_bytes: rawBytes,
+        observed_frames: observedFrames,
+        retained_frames: options.frames.length,
+      },
+      normalized_terminal: {
+        budget_bytes: options.scenario.limits.output_bytes,
+        retained_bytes: normalizedBytes,
+        omitted_frames: normalizedOmittedFrames,
+      },
+    }),
+    flush: () => {
+      if (closed) return;
+      closed = true;
+      const tail = redactor.flush();
+      if (tail.data !== "") retain(tail.data, tail.atMs);
     },
-    normalized_terminal: {
-      budget_bytes: options.scenario.limits.output_bytes,
-      retained_bytes: normalizedBytes,
-      omitted_frames: normalizedOmittedFrames,
-    },
-  });
+  };
 };
 
 export interface TerminalCaptureRetention {
