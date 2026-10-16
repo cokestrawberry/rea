@@ -45,6 +45,10 @@ export interface InteractionEvent {
   readonly type: "input" | "resize" | "signal";
   readonly data: string;
   readonly outcome: "dispatched" | "target_exited" | "failed";
+  readonly signal_delivery?: {
+    readonly delivery: "signaled" | "gone" | "identity-changed" | "unverified";
+    readonly reason?: string | undefined;
+  };
 }
 
 /** Observed finalization attempts after a deadline fired. */
@@ -505,6 +509,17 @@ const processCaptureShapeSchema = z.strictObject({
       type: z.enum(["input", "resize", "signal"]),
       data: z.string(),
       outcome: z.enum(["dispatched", "target_exited", "failed"]),
+      signal_delivery: z
+        .object({
+          delivery: z.enum([
+            "signaled",
+            "gone",
+            "identity-changed",
+            "unverified",
+          ]),
+          reason: z.string().optional(),
+        })
+        .exactOptional(),
     }),
   ),
   exit: z.object({

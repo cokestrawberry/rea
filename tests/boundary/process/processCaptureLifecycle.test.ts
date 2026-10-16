@@ -961,6 +961,68 @@ itWithCaptureCapability(
 );
 
 itWithCaptureCapability(
+  "sends the zero-interval deadline kill and a scripted signal through the retained identity",
+  async () => {
+    const calls: string[] = [];
+    const finalizationHost: FinalizationHost = {
+      observe: async () => ({ state: "readable" as const, identity: "launch" }),
+      signal: async (_pid, identity, signal) => {
+        calls.push(`${identity}:${signal}`);
+        return signal === "SIGKILL" ? "unverified" : "identity-changed";
+      },
+    };
+    const root = await createTestTempDirectory("rea-zero-interval-host-");
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: [finalizationFixture, "ignoring", root],
+        working_directory: root,
+        filesystem_observation_paths: [root],
+        events: [{ type: "signal", at_ms: 0, signal: "SIGINT" }],
+        idle_timeout_ms: 10_000,
+        timeout_ms: 500,
+      }),
+      undefined,
+      process.platform,
+      process.env,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      finalizationHost,
+    );
+
+    if (result.ok) throw new Error("expected an unobserved exit");
+    if (!(result.error instanceof ProcessCaptureError)) throw result.error;
+    if (result.error.cleanupIncomplete)
+      expectUnverifiedHostCleanup(result.error);
+    expect(
+      calls,
+      "the scripted signal and the deadline kill both used the identity-checked host",
+    ).toEqual(["launch:SIGINT", "launch:SIGKILL"]);
+    const partial = result.error.partialObservation;
+    if (partial === undefined || !("observations" in partial))
+      throw new Error("expected incomplete process observations");
+    expect(
+      partial.observations.interaction_events,
+      "a scripted signal that was not delivered is not recorded as dispatched",
+    ).toMatchObject({
+      state: "available",
+      value: [{ type: "signal", data: "SIGINT", outcome: "failed" }],
+    });
+    expect(
+      partial.observations.exit.state,
+      "no exit is invented when the deadline kill was not delivered",
+    ).toBe("unavailable");
+    expect(
+      partial.observations,
+      "a scenario without an interval carries no finalization record",
+    ).not.toHaveProperty("finalization");
+  },
+  15_000,
+);
+
+itWithCaptureCapability(
   "classifies cancellation raised by the initial filesystem snapshot",
   async () => {
     const root = await createTestTempDirectory("rea-snapshot-initial-cancel-");
@@ -1114,6 +1176,55 @@ itWithCaptureCapability(
     );
     expect(resized).toBeDefined();
     expect(resized?.lines.join("\n")).toContain("input:answer unicode:雪");
+    expect(capture.exit.code).toBe(0);
+  },
+);
+
+itWithCaptureCapability(
+  "withholds sensitive rendered text reconstructed across ANSI sequences",
+  async () => {
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: ["-e", "process.stdout.write('sword\\x1b[31mfish')"],
+        working_directory: dirname(processFixture),
+        events: [
+          { type: "input", at_ms: 0, data: "swordfish\n", sensitive: true },
+        ],
+      }),
+    );
+    const { capture } = captureObservations(result);
+    expect(JSON.stringify(capture.rendered_frames)).not.toContain("swordfish");
+    expect(
+      capture.truncation_details?.rendered_terminal.observed_frames,
+    ).toBeGreaterThan(capture.rendered_frames.length);
+    expect(capture.limitations.join(" ")).toContain("sensitive input value");
+  },
+);
+
+itWithCaptureCapability(
+  "redacts a sensitive scripted input from PTY echo and rendered terminal state",
+  async () => {
+    const result = await captureProcessScenario(
+      parseProcessScenario({
+        executable: process.execPath,
+        arguments: [processFixture, "interactive"],
+        working_directory: dirname(processFixture),
+        events: [
+          { type: "resize", at_ms: 0, columns: 100, rows: 40 },
+          { type: "input", at_ms: 0, data: "answer\n", sensitive: true },
+        ],
+        timeout_ms: 20_000,
+        idle_timeout_ms: 10_000,
+      }),
+    );
+    const { capture } = captureObservations(result);
+    expect(capture.frames.map(({ data }) => data).join("")).toContain(
+      "input:<redacted-input> unicode:雪",
+    );
+    expect(
+      JSON.stringify([capture.frames, capture.rendered_frames]),
+    ).not.toContain("answer");
     expect(capture.exit.code).toBe(0);
   },
 );
