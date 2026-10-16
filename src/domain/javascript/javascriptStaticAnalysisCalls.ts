@@ -15,7 +15,7 @@ import {
   endpointArgument as endpointArgumentHelper,
   prefixedArgument,
   range,
-  rangeForOffsets,
+  rangeForText,
   sourceSlice,
   staticPath,
   staticPathResolutionContext,
@@ -537,11 +537,14 @@ export const addSourceMapDirectives = (
   for (const comment of comments) {
     const start = comment.start;
     const end = comment.end;
+    const loc = comment.loc;
     if (
       start === undefined ||
       start === null ||
       end === undefined ||
-      end === null
+      end === null ||
+      loc === undefined ||
+      loc === null
     )
       continue;
     // The parser owns comment boundaries. Exclude only the closing block
@@ -574,7 +577,11 @@ export const addSourceMapDirectives = (
       terminator === -1 ? commentSource.length : declaredStart + terminator;
     if (declaredEnd === declaredStart) continue;
     const declared = commentSource.slice(declaredStart, declaredEnd);
-    const location = rangeForOffsets(source, start, start + declaredEnd);
+    // Babel owns the start coordinates; only the directive text is measured.
+    const location = rangeForText(
+      { line: loc.start.line, column: loc.start.column },
+      commentSource.slice(0, declaredEnd),
+    );
     addFindingOnce(accumulator, `source-map\0${declared}`, () =>
       accumulator.sourceMaps.push({ declared_url: declared, location }),
     );

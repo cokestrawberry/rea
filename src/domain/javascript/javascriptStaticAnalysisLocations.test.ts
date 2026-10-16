@@ -50,6 +50,25 @@ describe("source map directive coordinates", () => {
     ]);
   });
 
+  it("locates every directive in a source with many comments within the test timeout", () => {
+    const count = 60_000;
+    const lines = Array.from(
+      { length: count },
+      (_, index) => `//# sourceMappingURL=${index}.map`,
+    );
+    const { source_map_urls: sourceMapUrls } = analyzeJavaScriptStaticSource(
+      lines.join("\n"),
+    );
+    expect(sourceMapUrls).toHaveLength(count);
+    expect(sourceMapUrls.at(-1)).toEqual({
+      declared_url: `${count - 1}.map`,
+      location: {
+        start: { line: count, column: 0 },
+        end: { line: count, column: lines[count - 1]?.length },
+      },
+    });
+  });
+
   it("preserves the first location when a URL is repeated across terminators", () => {
     const source = `const marker = "😀";\r  ${directive}\u2028${directive}`;
     expect(analyzeJavaScriptStaticSource(source).source_map_urls).toEqual([
