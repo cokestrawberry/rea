@@ -61,6 +61,7 @@ import {
   parseGetpropOutput,
   parsePackageListOutput,
   parsePmPathOutput,
+  stderrReportsDaemonStart,
 } from "./AdbDeviceOutput.js";
 import { adbHostFileName } from "./AdbHostFileName.js";
 import {
@@ -764,7 +765,12 @@ export class AdbProvider {
           );
         return ok(
           createAnalysisExecution(
-            { client, devices, may_have_started_adb_server: daemonStarted },
+            {
+              client,
+              devices,
+              may_have_started_adb_server:
+                daemonStarted || stderrReportsDaemonStart(ran.value.stderr),
+            },
             provider,
             {
               limitations: [
