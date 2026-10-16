@@ -415,7 +415,9 @@ export class JavaScriptSymbolicBindings {
             ? lengthKnown
               ? { kind: "array", values: args.slice(index) }
               : symbolicUnknown("rest after dynamic spread arguments")
-            : (args[index] ?? symbolicUnknown("runtime parameter")),
+            : args[index] === dynamicSpreadArguments
+              ? symbolicUnknown("dynamic spread argument")
+              : (args[index] ?? symbolicUnknown("runtime parameter")),
         );
     });
     const scopeId =

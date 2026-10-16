@@ -92,6 +92,23 @@ it("substitutes numeric modules, named exports and captured wrapper arguments", 
 
 it.each([
   [
+    "an ordinary value returned from an unresolved spread",
+    `function pick(x) { return x; }
+     function collect(...rest) { return rest[0]; }
+     inspect(collect("app:quit", pick(...extra)));`,
+    { kind: "literal", value: "app:quit" },
+  ],
+  [
+    "a returned unknown value in an ordinary rest array",
+    `function pick(x) { return x; }
+     function collect(...rest) { return rest; }
+     inspect(collect("app:quit", pick(...extra)));`,
+    {
+      kind: "array",
+      values: [{ kind: "literal", value: "app:quit" }, { kind: "unknown" }],
+    },
+  ],
+  [
     "a parameter after an unresolved spread",
     `function wrap(first, second, third) { return third; }
      inspect(wrap("ui", ...extra, "app:quit"));`,
