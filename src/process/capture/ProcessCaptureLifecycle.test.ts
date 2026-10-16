@@ -4,10 +4,13 @@ import type { IPty } from "@lydell/node-pty";
 import { parseProcessScenario } from "../../domain/process/processScenario.js";
 import type {
   ProcessCaptureFinalization,
+  TerminalFrame,
 } from "../../domain/process/processCapture.js";
 import {
   awaitTerminalExit,
+  captureTerminalFrames,
 } from "./ProcessCaptureLifecycle.js";
+import { TerminalRenderer } from "./TerminalRenderer.js";
 import type { ProcessTimer } from "./ProcessTimer.js";
 import { monotonicProcessCaptureClock } from "./ProcessCaptureClock.js";
 import type { ScenarioSignalDeliveries } from "./ProcessCaptureJournal.js";
@@ -630,4 +633,112 @@ it("never publishes an unverified attempt without a reason, also while it is in 
     result.finalization?.signals[0]?.reason?.length,
     "the in-flight attempt is never published without a reason",
   ).toBeGreaterThan(0);
+});
+
+const captureOutput = async (
+  inputs: readonly { data: string; sensitive: boolean }[],
+  chunks: readonly string[],
+  afterFlush: readonly string[] = [],
+) => {
+  let emit: (data: string) => void = () => undefined;
+  const terminal: Pick<IPty, "onData"> = {
+    onData: (next) => {
+      emit = next;
+      return { dispose: () => undefined };
+    },
+  };
+  const frames: TerminalFrame[] = [];
+  const renderer = new TerminalRenderer({
+    columns: 40,
+    rows: 5,
+    scrollback: 10,
+    maxBytes: 10_000,
+    normalize: (value) => ({
+      state: "normalized",
+      value,
+      utf8Bytes: Buffer.byteLength(value),
+    }),
+  });
+  const capture = captureTerminalFrames({
+    terminal,
+    scenario: parseProcessScenario({
+      executable: "unused",
+      events: inputs.map((input, index) => ({
+        type: "input",
+        at_ms: index,
+        ...input,
+      })),
+    }),
+    frames,
+    started: monotonicProcessCaptureClock(),
+    onOutput: () => undefined,
+    renderer,
+    normalizeText: (value) => ({
+      state: "normalized",
+      value,
+      utf8Bytes: Buffer.byteLength(value),
+    }),
+    recordEvent: () => undefined,
+  });
+  for (const chunk of chunks) emit(chunk);
+  capture.flush();
+  for (const chunk of afterFlush) emit(chunk);
+  const rendered = await renderer.frames();
+  await renderer.dispose();
+  return { frames, rendered, retention: capture.retention().raw_terminal };
+};
+
+it("redacts a sensitive input echoed across PTY chunks before retaining or rendering it", async () => {
+  const { frames, rendered, retention } = await captureOutput(
+    [{ data: "swordfish\r", sensitive: true }],
+    ["sword", "fish\r\n"],
+  );
+
+  expect(frames.map(({ data }) => data)).toEqual(["<redacted-input>\r\n"]);
+  expect(rendered.at(-1)?.lines.join("\n")).toContain("<redacted-input>");
+  expect(JSON.stringify([frames, rendered])).not.toContain("sword");
+  expect(
+    retention,
+    "a chunk held for redaction is merged into the next frame, not omitted",
+  ).toMatchObject({ observed_frames: 1, retained_frames: 1 });
+});
+
+it("keeps output held at a chunk boundary when it never completes a sensitive value", async () => {
+  const { frames } = await captureOutput(
+    [{ data: "swordfish\r", sensitive: true }],
+    ["pass: swor"],
+  );
+
+  expect(frames.map(({ data }) => data)).toEqual(["pass: ", "swor"]);
+});
+
+it("withholds terminal output when a sensitive input cannot be matched in its echo", async () => {
+  const { frames, rendered, retention } = await captureOutput(
+    [{ data: "a\tb\n", sensitive: true }],
+    ["a\tb\r\n"],
+  );
+
+  expect(frames).toEqual([]);
+  expect(rendered).toEqual([]);
+  expect(retention).toMatchObject({
+    observed_frames: 1,
+    retained_frames: 0,
+    retained_bytes: 0,
+  });
+});
+
+it("counts output after flush without retaining or rendering it", async () => {
+  const { frames, rendered, retention } = await captureOutput(
+    [{ data: "swordfish\r", sensitive: true }],
+    ["sword"],
+    ["fish"],
+  );
+  expect(frames.map(({ data }) => data)).toEqual(["sword"]);
+  expect(JSON.stringify(rendered)).not.toContain("fish");
+  expect(retention).toMatchObject({
+    observed_bytes: 9,
+    retained_bytes: 5,
+    observed_frames: 2,
+    retained_frames: 1,
+  });
 });

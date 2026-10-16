@@ -27,6 +27,7 @@ import {
   createBoundedProcessTextNormalizer,
   type BoundedProcessTextNormalization,
 } from "./ProcessNormalization.js";
+import { sensitiveTerminalInput } from "./SensitiveTerminalInput.js";
 import { selectCapturedProcessGroupIds } from "../ProcessOwnershipProcessTree.js";
 import {
   awaitTerminalExit,
@@ -34,6 +35,7 @@ import {
   cleanupReportFailure,
   captureTerminalFrames,
   createProcessCaptureObservationBuffer,
+  type TerminalFrameCapture,
   createRunManifest,
   observeLaunchedExecutable,
   observeSelectedExecutable,
@@ -49,7 +51,6 @@ import {
   type ProcessCaptureResourceCleanupOptions,
   ProcessCaptureResourceScope,
   type RootSignaller,
-  type TerminalCaptureRetention,
 } from "./ProcessCaptureLifecycle.js";
 import {
   assertNotCancelled,
@@ -83,7 +84,7 @@ interface StartedCaptureRuntime {
   readonly startedAt: Date;
   readonly executableIdentity: ReturnType<typeof observeLaunchedExecutable>;
   readonly lastOutput: () => number;
-  readonly terminalRetention: () => TerminalCaptureRetention;
+  readonly rawTerminal: TerminalFrameCapture;
   readonly stopSampler: ReturnType<typeof startProcessSampler>;
   readonly signalRoot: RootSignaller;
   readonly scenarioSignals: ReturnType<typeof scheduleScenarioInteractions>;
@@ -226,6 +227,7 @@ const createTerminalRenderer = (
     scrollback: scenario.terminal.scrollback,
     maxBytes: scenario.limits.output_bytes,
     normalize: normalizeText,
+    sensitiveValues: sensitiveTerminalInput(scenario).values,
     recordEvent,
   });
 
@@ -295,7 +297,7 @@ const startCaptureRuntime = async (
       scenario.executable,
       selectedExecutable,
     );
-    const terminalRetention = captureTerminalFrames({
+    const rawTerminal = captureTerminalFrames({
       ...options,
       terminal,
       started,
@@ -325,7 +327,7 @@ const startCaptureRuntime = async (
       startedAt,
       executableIdentity,
       lastOutput: () => lastOutput,
-      terminalRetention,
+      rawTerminal,
       stopSampler,
       signalRoot,
       scenarioSignals,
@@ -497,6 +499,7 @@ const completeCapture = async (options: {
   const sampling = await runtime.stopSampler();
   const samplingPartial = sampling.partial;
   await settleProcessCaptureJournal(options.eventJournal);
+  runtime.rawTerminal.flush();
   assertNotCancelled(options.signal);
   let after: Awaited<ReturnType<typeof snapshotRoots>>;
   try {
@@ -577,7 +580,7 @@ const completeCapture = async (options: {
     before: options.before,
     after,
     truncationDetails: {
-      ...runtime.terminalRetention(),
+      ...runtime.rawTerminal.retention(),
       rendered_terminal: runtime.renderer.retention(),
       filesystem_before: options.before.coverage,
       filesystem_after: after.coverage,
@@ -779,6 +782,7 @@ const runProcessScenario = async (
     });
   } catch (cause: unknown) {
     executionFailure = normalizeCaptureFailure(cause, signal);
+    runtime?.rawTerminal.flush();
     if (
       runtime !== undefined &&
       observations.rendered_frames.state === "unavailable" &&
