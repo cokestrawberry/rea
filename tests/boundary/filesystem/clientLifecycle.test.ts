@@ -125,7 +125,9 @@ describe("client configuration filesystem lifecycle", () => {
       ),
     ).toEqual({ status: "unchanged" });
   });
+});
 
+describe("client registration alignment", () => {
   it("does not rewrite an equivalent Codex registration with reordered environment keys", async () => {
     const home = await createTestTempDirectory("rea-toml-");
     roots.push(home);
@@ -217,7 +219,11 @@ describe("client configuration filesystem lifecycle", () => {
         },
       });
       await writeFile(configPath, original);
-      const client = { name: "gemini_cli", configPath, format: "json" } as const;
+      const client = {
+        name: "gemini_cli",
+        configPath,
+        format: "json",
+      } as const;
 
       expect(
         await configureClientConfiguration(client, {}, ["rea", "mcp"]),
@@ -233,7 +239,9 @@ describe("client configuration filesystem lifecycle", () => {
       ).toEqual({ status: "unchanged" });
     },
   );
+});
 
+describe("TOML configuration symlinks", () => {
   it("updates a symlink target without replacing the TOML config symlink", async () => {
     const home = await createTestTempDirectory("rea-toml-symlink-");
     roots.push(home);
@@ -1956,7 +1964,9 @@ describe("client configuration filesystem failure reporting", () => {
       expect(JSON.stringify(result)).not.toContain("SECRET");
     },
   );
+});
 
+describe("client configuration recovery backups", () => {
   it("keeps the current configuration in a recovery backup beside an earlier backup", async () => {
     const { home, config } = await uninstallFixture();
     const current = await readFile(config);
@@ -2019,7 +2029,9 @@ describe("client configuration filesystem failure reporting", () => {
       detail: `Configuration could not be updated or restored. Restore ${recoveryBackupPath(config, current)} manually, then rerun uninstall.`,
     });
   });
+});
 
+describe("managed path removal reporting", () => {
   it("reports a managed-path removal failure", async () => {
     const home = await createTestTempDirectory("rea-uninstall-remove-");
     roots.push(home);
