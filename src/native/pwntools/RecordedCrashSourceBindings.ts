@@ -1,6 +1,7 @@
 import { AnalysisOutputError } from "../../domain/analysisErrorCore.js";
 import {
   RECORDED_LINUX_CORE_PROFILES,
+  RECORDED_LINUX_PRPSINFO,
   type RecordedCrash,
 } from "../../domain/native/recordedCrash.js";
 
@@ -56,6 +57,20 @@ export function validateRecordedCrashSources(
           { capturedOutput: diagnostics },
         );
     }
+  }
+  for (const note of report.notes) {
+    const processNote =
+      note.type === "NT_PRPSINFO" &&
+      note.owner_bytes_base64 === Buffer.from("CORE\0").toString("base64");
+    if (processNote !== (note.process_info !== undefined)) fail();
+    if (
+      note.process_info !== undefined &&
+      note.process_info.historical_pid !==
+        descriptor(note.index, RECORDED_LINUX_PRPSINFO.bytes).readInt32LE(
+          RECORDED_LINUX_PRPSINFO.pidOffset,
+        )
+    )
+      fail();
   }
   for (const signal of report.signals) {
     const bytes = descriptor(signal.note_index, 32);

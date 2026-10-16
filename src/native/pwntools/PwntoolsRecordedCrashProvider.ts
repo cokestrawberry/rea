@@ -126,7 +126,23 @@ export class PwntoolsRecordedCrashProvider
               options,
               runCommand,
             });
-            const enriched = validate(context);
+            const recordedPids = new Set(
+              value.notes.flatMap((note) =>
+                note.process_info === undefined
+                  ? []
+                  : [note.process_info.historical_pid],
+              ),
+            );
+            // A missing or conflicting PRPSINFO PID cannot authenticate GDB's substitute.
+            const enriched = validate(
+              context.status === "available" &&
+                (recordedPids.size !== 1 ||
+                  context.historical_pid === null ||
+                  context.historical_pid === 0 ||
+                  !recordedPids.has(context.historical_pid))
+                ? { ...context, historical_pid: null }
+                : context,
+            );
             if (!enriched.success)
               throw new AnalysisOutputError(
                 "inspect_recorded_crash",
