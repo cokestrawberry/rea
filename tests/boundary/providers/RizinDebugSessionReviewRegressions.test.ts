@@ -41,12 +41,16 @@ const startRizinWithProvider = async (
   };
 };
 
-const startRizinWithOwnedStop = async (provider: string) => {
+const startRizinWithOwnedStop = async (
+  provider: string,
+  frameTimeoutMs?: number,
+) => {
   let debuggerProcess: ProviderProcessHandle | undefined;
   const manager = new RizinDebugSessionManager(
     { ...process.env, REA_RIZIN_COMMAND: provider },
     {
       platform: "linux",
+      ...(frameTimeoutMs === undefined ? {} : { frameTimeoutMs }),
       spawnProcess: async (options) => {
         const launched = await spawnOwnedProviderProcess(options);
         debuggerProcess = launched.process;
@@ -392,6 +396,90 @@ process.stdin.on("data", (chunk) => {
     if (!closed.ok)
       expect(closed.error.message).toContain("no owner proof confirms");
     expect(manager.status(sessionId)).toBeDefined();
+  },
+);
+
+const createStalledCommandProvider = async (
+  stallMs: number,
+): Promise<string> => {
+  directory = await mkdtemp(join(tmpdir(), "rea-rizin-stalled-command-"));
+  const provider = join(directory, "fake-rizin-stalled-command.mjs");
+  await writeFile(
+    provider,
+    `#!/usr/bin/env node
+await import("node:fs/promises").then((fs) => fs.writeFile(${JSON.stringify(join(directory, "pid"))}, String(process.pid)));
+process.stdout.write("\\0");
+let input = "";
+let stalledUntil = 0;
+const pending = [];
+const pump = () => {
+  while (pending.length > 0) {
+    const wait = stalledUntil - Date.now();
+    if (wait > 0) { setTimeout(pump, wait); return; }
+    const line = pending.shift();
+    if (line === "slow") stalledUntil = Date.now() + ${stallMs};
+    else if (line === "olj") process.stdout.write("[]\\0");
+    else if (line.startsWith("!echo ")) process.stdout.write(line.slice(6) + "\\0");
+  }
+};
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+  for (;;) {
+    const boundary = input.indexOf("\\n"); if (boundary < 0) break;
+    pending.push(input.slice(0, boundary)); input = input.slice(boundary + 1);
+  }
+  pump();
+});
+`,
+  );
+  await chmod(provider, 0o700);
+  return provider;
+};
+
+it.skipIf(process.platform === "win32")(
+  "stops a Rizin session after resynchronizing a command whose marker arrives late",
+  async () => {
+    const provider = await createStalledCommandProvider(300);
+    const { manager, sessionId } = await startRizinWithOwnedStop(provider, 50);
+
+    const result = await manager.execute(sessionId, "slow");
+
+    expect(result.ok, result.ok ? "" : result.error.message).toBe(true);
+    if (result.ok) {
+      expect(result.value.result).toMatchObject({
+        output_truncated: true,
+        completion_status: "unknown",
+      });
+      expect(result.value.evidence.limitations).toContain(
+        "The owned debugger session was stopped because output correlation could no longer be guaranteed.",
+      );
+    }
+    await expectOwnedProcessExited(
+      await readFile(join(directory ?? "", "pid"), "utf8"),
+    );
+    expect(manager.status(sessionId)?.state).toBe("closed");
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "retains a Rizin session whose protocol cannot be resynchronized",
+  async () => {
+    const provider = await createStalledCommandProvider(86_400_000);
+    const { manager, sessionId, exitDebugger } = await startRizinWithOwnedStop(
+      provider,
+      50,
+    );
+
+    const result = await manager.execute(sessionId, "slow");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.cleanupIncomplete).toBe(true);
+      expect(result.error.cleanupResources).toEqual([sessionId]);
+    }
+    expect(manager.status(sessionId)?.state).toBe("closed");
+    await exitDebugger();
   },
 );
 
