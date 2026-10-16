@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { FakeSetupHost } from "../../src/application/Setup.fixture.js";
-import type {
-  SetupConfirmation,
-  SetupHost,
-} from "../../src/application/SetupTypes.js";
+import type { SetupHost } from "../../src/application/SetupTypes.js";
+import type { confirmInteractiveSetup } from "../../src/cli/interactiveSetup.js";
 import { registerSetupCommands } from "../../src/cli/setupCommands.js";
 import type { CliInstance } from "../../src/cli/types.js";
 import { CLI_COMMANDS } from "../../src/cliCommandNames.js";
@@ -12,7 +10,7 @@ import { silentLogger } from "../../src/logger.js";
 
 const state = vi.hoisted(() => ({
   host: undefined as SetupHost | undefined,
-  confirm: vi.fn<SetupConfirmation>(),
+  confirm: vi.fn<typeof confirmInteractiveSetup>(),
 }));
 vi.mock("../../src/application/SetupHost.js", async (original) => ({
   ...(await original<typeof import("../../src/application/SetupHost.js")>()),
@@ -105,7 +103,7 @@ const runInteractiveSetup = async (options: {
   });
   const call = state.confirm.mock.calls[0];
   if (call === undefined) throw new Error("setup did not request consent");
-  const [actions, context] = call;
+  const [actions, , context] = call;
   return { stage: context?.stage, kinds: actions.map(({ kind }) => kind) };
 };
 
