@@ -8,6 +8,7 @@ import type {
   BrowserNetworkBody,
   BrowserNetworkHeaders,
 } from "../../domain/browserNetworkEvidence.js";
+import { parseRecordedTransportUrl } from "../../domain/recordedTransportUrl.js";
 import type { BrowserScenarioSecrets } from "../BrowserScenarioSecrets.js";
 import { withPlaywrightExecutionBoundary } from "../PlaywrightExecutionBoundary.js";
 
@@ -29,6 +30,17 @@ const credentialHeaders = new Set([
   "cookie",
   "set-cookie",
 ]);
+
+const transportUrlHeaders = new Set(["location", "referer", "origin"]);
+
+/** Null when the userinfo boundary cannot be established, so no URL text is retained. */
+const withoutUrlUserinfo = (value: string): string | null => {
+  const { credentials } = parseRecordedTransportUrl(value);
+  if (credentials === "ambiguous") return null;
+  return credentials === null
+    ? value
+    : value.slice(0, credentials.start) + value.slice(credentials.end);
+};
 
 const errorMessage = (
   cause: unknown,
@@ -68,14 +80,21 @@ export const captureNetworkHeaders = async (
       state: "captured",
       items: headers.map(({ name, value }) => {
         const safeName = secrets.redact(name);
-        const credential = credentialHeaders.has(name.toLowerCase());
-        const safeValue = credential
+        const lowerName = name.toLowerCase();
+        const transportSafe = credentialHeaders.has(lowerName)
           ? null
-          : secrets.redactBytes(Buffer.from(value)).toString("utf8");
+          : transportUrlHeaders.has(lowerName)
+            ? withoutUrlUserinfo(value)
+            : value;
+        const safeValue =
+          transportSafe === null
+            ? null
+            : secrets.redactBytes(Buffer.from(transportSafe)).toString("utf8");
         return {
           name: safeName,
           value: safeValue,
-          redacted: credential || safeName !== name || safeValue !== value,
+          redacted:
+            safeValue === null || safeName !== name || safeValue !== value,
         };
       }),
     };
