@@ -158,7 +158,9 @@ describe("reconstruction coverage closure", () => {
       reasons: [expect.objectContaining({ code: "verifier-result-stale" })],
     });
   });
+});
 
+describe("reconstruction coverage package proofs", () => {
   it("fails closed when a failed package proof covers the same artifact as a passing one", () => {
     const workspace = completeReconstructionCoverageData();
     const contradicted = createReconstructionCoverageData({
