@@ -36,6 +36,7 @@ import { err, ok, type Result } from "../domain/result.js";
 import {
   unknownFridaScript,
   unknownFridaSession,
+  FridaSessionDetachedError,
 } from "../application/frida/fridaInputErrors.js";
 
 const MAX_SESSION_CAPTURE_BYTES = 16 * 1024 * 1024;
@@ -377,8 +378,10 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
     if (signal?.aborted)
       return err(cancelledOperation("load_frida_script", signal));
     const managed = this.#sessions.get(sessionId);
-    if (managed === undefined || managed.state === "detached")
+    if (managed === undefined)
       return err(unknownFridaSession("load_frida_script", sessionId));
+    if (isDetached(managed))
+      return err(new FridaSessionDetachedError("load_frida_script", sessionId));
 
     let scriptSource: string;
     try {
@@ -499,8 +502,12 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
     sessionId: string,
   ): Promise<Result<null, AnalysisError>> {
     const managed = this.#sessions.get(sessionId);
-    if (managed === undefined || managed.state === "detached")
+    if (managed === undefined)
       return err(unknownFridaSession("resume_frida_session", sessionId));
+    if (isDetached(managed))
+      return err(
+        new FridaSessionDetachedError("resume_frida_session", sessionId),
+      );
     if (managed.mode !== "spawn" || managed.state !== "paused")
       return err(
         new AnalysisCapabilityUnavailableError(
@@ -656,8 +663,7 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
       return err(unknownFridaSession("close_frida_session", sessionId));
     const scriptFailures = new Map<string, string>();
     const cleanupFailures: string[] = [];
-    let parentSessionReleased =
-      managed.state === "detached" || managed.session.isDetached();
+    let parentSessionReleased = isDetached(managed);
     const shouldResumePausedSpawn =
       managed.mode === "spawn" &&
       ((!parentSessionReleased && managed.state === "paused") ||
@@ -679,8 +685,7 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
       cleanupFailures.push(
         `Unable to detach Frida session: ${sanitizeError(cause, managed.remote)}`,
       );
-      parentSessionReleased =
-        managed.state === "detached" || managed.session.isDetached();
+      parentSessionReleased = isDetached(managed);
     }
     if (parentSessionReleased) {
       for (const entry of [...managed.scripts.values()]) {
@@ -1450,6 +1455,9 @@ const providerError = (
         }),
   });
 };
+
+const isDetached = (managed: ManagedSession): boolean =>
+  managed.state === "detached" || managed.session.isDetached();
 
 const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
