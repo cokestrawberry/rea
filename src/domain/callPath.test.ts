@@ -292,7 +292,9 @@ describe("call path topology and capacity", () => {
     });
     expect(result.paths).toHaveLength(2);
   });
+});
 
+describe("call path limitations and deep graphs", () => {
   it("keeps uncovered dead ends in search limitations when a path is found", () => {
     const result = run([
       observe("0x1000", ["0x2000", "0x5000"]),

@@ -265,7 +265,9 @@ describe("residual unknown dependency histories", () => {
       ).unknown_id,
     ).not.toBe(normalized.unknown_id);
   });
+});
 
+describe("residual unknown revisions", () => {
   it("uses immutable CAS revisions and rejects a stale concurrent writer atomically", () => {
     const store = ledger();
     const created = store.recordUnknown(
