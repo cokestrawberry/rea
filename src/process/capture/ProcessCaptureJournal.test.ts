@@ -45,7 +45,11 @@ const scheduleSignalEvent = (
     rows: 24,
     scrollback: 0,
     maxBytes: 1_000,
-    normalize: (value) => value,
+    normalize: (value) => ({
+      state: "normalized",
+      value,
+      utf8Bytes: Buffer.byteLength(value),
+    }),
   });
   const deliveries = scheduleScenarioInteractions({
     scenario: parseProcessScenario({

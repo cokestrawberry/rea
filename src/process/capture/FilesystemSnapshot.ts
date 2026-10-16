@@ -55,7 +55,10 @@ const attempt = async <T>(
   signal?: AbortSignal,
 ): Promise<Result<T, string>> => {
   try {
-    return ok(await operation());
+    signal?.throwIfAborted();
+    const result = await operation();
+    signal?.throwIfAborted();
+    return ok(result);
   } catch (cause: unknown) {
     signal?.throwIfAborted();
     const systemCode = fileUnavailableSystemCode(cause);
@@ -66,10 +69,15 @@ const attempt = async <T>(
 
 const lstatIfPresent = async (
   path: string,
+  previouslyObservedRoot: boolean,
   signal?: AbortSignal,
 ): Promise<Result<Stats | undefined, string>> => {
   const stats = await attempt(() => lstat(path), signal);
-  return !stats.ok && stats.error === "ENOENT" ? ok(undefined) : stats;
+  return !stats.ok &&
+    (stats.error === "ENOENT" ||
+      (previouslyObservedRoot && stats.error === "ENOTDIR"))
+    ? ok(undefined)
+    : stats;
 };
 
 /** Reports a complete digest or an explicit per-file reason hashing was omitted. */
@@ -184,7 +192,11 @@ export const hashFile = async (
 export const snapshotRoots = async (
   scenario: ProcessScenario,
   signal?: AbortSignal,
+  previous?: ProcessFilesystemSnapshot,
 ): Promise<ProcessFilesystemSnapshot> => {
+  // A prior root entry establishes same-run admission. Preserve initial
+  // obstruction errors; a later non-directory ancestor makes it absent.
+  const previousPaths = new Set(previous?.files.map(({ path }) => path));
   const entries: FileState[] = [];
   const completeRoots: string[] = [];
   let remainingBytes = scenario.limits.file_bytes;
@@ -228,7 +240,11 @@ export const snapshotRoots = async (
         enumerationReasons.add("depth_limit");
       return false;
     }
-    const present = await lstatIfPresent(path, signal);
+    const present = await lstatIfPresent(
+      path,
+      previousPaths.has(`${rootAlias}:.`),
+      signal,
+    );
     if (!present.ok) {
       markDirectoryUnavailable(containingAlias, present.error);
       return false;
@@ -375,7 +391,11 @@ export const snapshotRoots = async (
   };
   for (const [index, root] of scenario.filesystem_observation_paths.entries()) {
     const alias = `root_${String(index)}`;
-    const present = await lstatIfPresent(root, signal);
+    const present = await lstatIfPresent(
+      root,
+      previousPaths.has(`${alias}:.`),
+      signal,
+    );
     if (present.ok && present.value === undefined) {
       completeRoots.push(alias);
       continue;

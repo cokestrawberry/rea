@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import type { TerminalRetention } from "../../domain/process/processCaptureCoverage.js";
+import type { BoundedProcessTextNormalization } from "./ProcessNormalization.js";
 
 import type {
   RecordProcessCaptureEvent,
@@ -24,8 +25,7 @@ interface TerminalRendererOptions {
   readonly normalize: (
     value: string,
     maxBytes: number,
-    onOmitted?: (bytes: number) => void,
-  ) => string | undefined;
+  ) => BoundedProcessTextNormalization;
   readonly recordEvent?: RecordProcessCaptureEvent;
 }
 
@@ -46,6 +46,7 @@ export class TerminalRenderer {
   #observedBytes = 0;
   #observedFrames = 0;
   #truncated = false;
+  #unknownSizeFrames = 0;
 
   constructor(private readonly options: TerminalRendererOptions) {
     this.#terminal = new HeadlessPackage.Terminal({
@@ -101,6 +102,9 @@ export class TerminalRenderer {
       retained_bytes: this.#capturedBytes,
       observed_frames: this.#observedFrames,
       retained_frames: this.#frames.length,
+      ...(this.#unknownSizeFrames === 0
+        ? {}
+        : { unknown_size_frames: this.#unknownSizeFrames }),
     };
   }
 
@@ -122,48 +126,50 @@ export class TerminalRenderer {
   #capture(atMs: number): void {
     const buffer = this.#terminal.buffer.active;
     const lines: string[] = [];
-    let remainingBytes = this.options.maxBytes - this.#capturedBytes;
     this.#observedFrames += 1;
-    const omit = (bytes: number): void => {
-      this.#observedBytes +=
-        this.options.maxBytes - this.#capturedBytes - remainingBytes + bytes;
-      this.#truncated = true;
-    };
+    let remainingBytes = this.options.maxBytes - this.#capturedBytes;
+    let bytes = 0;
     for (let row = 0; row < this.#terminal.rows; row += 1) {
       const line = buffer.getLine(buffer.viewportY + row);
-      // Trailing blank cells carry no information beyond `columns`; dropping
-      // them keeps sparse screens from costing a full row per blank line.
-      const normalized = this.options.normalize(
-        (line?.translateToString(false, 0, this.#terminal.cols) ?? "").padEnd(
-          this.#terminal.cols,
-          " ",
-        ),
-        remainingBytes + this.#terminal.cols * 3,
-        omit,
+      const paddedLine = (
+        line?.translateToString(false, 0, this.#terminal.cols) ?? ""
+      ).padEnd(this.#terminal.cols, " ");
+      const trailingSpaceBytes = Buffer.byteLength(
+        paddedLine.match(TRAILING_SPACES)?.[0] ?? "",
       );
-      if (normalized === undefined) return;
-      const text = normalized.replace(TRAILING_SPACES, "");
-      if (Buffer.byteLength(text) > remainingBytes) {
-        omit(Buffer.byteLength(text));
+      const normalized = this.options.normalize(
+        paddedLine,
+        Math.min(Number.MAX_SAFE_INTEGER, remainingBytes + trailingSpaceBytes),
+      );
+      if (normalized.state === "over_budget") {
+        this.#unknownSizeFrames += 1;
+        this.#truncated = true;
         return;
       }
-      remainingBytes -= Buffer.byteLength(text);
-      lines.push(text);
+      const normalizedLine = normalized.value.replace(TRAILING_SPACES, "");
+      const lineBytes = Buffer.byteLength(normalizedLine);
+      if (lineBytes > remainingBytes) {
+        this.#unknownSizeFrames += 1;
+        this.#truncated = true;
+        return;
+      }
+      remainingBytes -= lineBytes;
+      bytes += lineBytes;
+      // Trailing blank cells carry no information beyond `columns`; dropping
+      // them keeps sparse screens from costing a full row per blank line.
+      lines.push(normalizedLine);
     }
-    const serializedState = this.options.normalize(
+    const normalizedState = this.options.normalize(
       this.#serializeAddon.serialize(),
       remainingBytes,
-      omit,
     );
-    if (serializedState === undefined) return;
-    const bytes =
-      Buffer.byteLength(serializedState) +
-      lines.reduce((total, line) => total + Buffer.byteLength(line), 0);
-    this.#observedBytes += bytes;
-    if (this.#capturedBytes + bytes > this.options.maxBytes) {
+    if (normalizedState.state === "over_budget") {
+      this.#unknownSizeFrames += 1;
       this.#truncated = true;
       return;
     }
+    bytes += normalizedState.utf8Bytes;
+    this.#observedBytes += bytes;
     this.#capturedBytes += bytes;
     const sequence = this.#frames.length;
     this.#frames.push({
@@ -175,7 +181,7 @@ export class TerminalRenderer {
       cursor_y: buffer.cursorY,
       active_buffer: buffer.type,
       lines,
-      serialized_state: serializedState,
+      serialized_state: normalizedState.value,
     });
     this.options.recordEvent?.("rendered_frames", sequence);
   }
