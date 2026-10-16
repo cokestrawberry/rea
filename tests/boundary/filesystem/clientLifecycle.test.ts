@@ -1,7 +1,6 @@
-import { constants as fsConstants } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   chmod,
-  copyFile,
   lstat,
   mkdir,
   readFile,
@@ -1871,33 +1870,46 @@ describe("client configuration filesystem failure reporting", () => {
       "Configuration could not be backed up, so no change was made. Check file permissions, then rerun uninstall.",
     ],
     [
-      "update",
-      "Configuration could not be updated. The original was restored and its `.rea.backup` was retained. Repair the configuration or restore the backup, then rerun uninstall.",
+      "write",
+      (backup: string) =>
+        `Configuration could not be updated and was not changed. Its backup was retained at ${backup}. Repair the configuration, then rerun uninstall.`,
+    ],
+    [
+      "readback",
+      (backup: string) =>
+        `Configuration could not be updated. The original was restored and its backup was retained at ${backup}. Repair the configuration or restore the backup, then rerun uninstall.`,
     ],
     [
       "restore",
-      "Configuration could not be updated or restored. Restore its `.rea.backup` manually, then rerun uninstall.",
+      (backup: string) =>
+        `Configuration could not be updated or restored. Restore ${backup} manually, then rerun uninstall.`,
     ],
   ] as const)(
     "reports an actionable client %s failure",
-    async (failure, detail) => {
+    async (failure, expected) => {
       const { home, config } = await uninstallFixture();
+      if (failure === "backup") await mkdir(`${config}.rea.backup`);
+      const detail =
+        typeof expected === "string"
+          ? expected
+          : expected(`${config}.rea.backup`);
       let writes = 0;
+      let written = false;
       const fileSystem: UninstallFileSystem = {
         ...testFileSystem,
         readText: (path) =>
-          failure === "read" && path === config
+          (failure === "read" || written) && path === config
             ? Promise.reject(new Error("SECRET read failure"))
             : readFile(path, "utf8"),
-        copy: (source, destination) =>
-          failure === "backup"
-            ? Promise.reject(new Error("SECRET backup failure"))
-            : copyFile(source, destination, fsConstants.COPYFILE_EXCL),
         writeText: async (path, contents) => {
           writes += 1;
-          if ((failure === "update" && writes === 1) || failure === "restore")
+          if (
+            (failure === "write" && writes === 1) ||
+            (failure === "restore" && writes === 2)
+          )
             throw new Error("SECRET write failure");
           await writeFile(path, contents);
+          written = true;
         },
       };
       const result = await runUninstall(
@@ -1912,23 +1924,67 @@ describe("client configuration filesystem failure reporting", () => {
     },
   );
 
+  it("keeps the current configuration in a recovery backup beside an earlier backup", async () => {
+    const { home, config } = await uninstallFixture();
+    const current = await readFile(config);
+    const initial = '{"existing":true}\n';
+    await writeFile(`${config}.rea.backup`, initial);
+    const host = systemUninstallHost(home, testFileSystem);
+
+    const result = await host.removeClient(cursorClient(config));
+
+    expect(result.status).toBe("removed");
+    expect(await readFile(`${config}.rea.backup`, "utf8")).toBe(initial);
+    expect(await readFile(recoveryBackupPath(config, current))).toEqual(
+      current,
+    );
+  });
+
   it("restores the current configuration without replacing its initial backup", async () => {
     const { home, config } = await uninstallFixture();
-    const current = await readFile(config, "utf8");
+    const current = await readFile(config);
     const initial = '{"existing":true}\n';
     await writeFile(`${config}.rea.backup`, initial);
     let writes = 0;
-    const result = await systemUninstallHost(home, {
+    const host = systemUninstallHost(home, {
       ...testFileSystem,
       writeText: async (path, contents) => {
         writes += 1;
-        await writeFile(path, contents);
-        if (writes === 1) throw new Error("update failed after writing");
+        await writeFile(path, writes === 1 ? "not json" : contents);
       },
-    }).removeClient({ name: "cursor", format: "json", configPath: config });
+    });
+
+    const result = await host.removeClient(cursorClient(config));
+
     expect(result.status).toBe("failed");
-    expect(await readFile(config, "utf8")).toBe(current);
+    expect(await readFile(config)).toEqual(current);
     expect(await readFile(`${config}.rea.backup`, "utf8")).toBe(initial);
+    expect(await readFile(recoveryBackupPath(config, current))).toEqual(
+      current,
+    );
+  });
+
+  it("directs a failed restore to the recovery backup of the current configuration", async () => {
+    const { home, config } = await uninstallFixture();
+    const current = await readFile(config);
+    await writeFile(`${config}.rea.backup`, '{"existing":true}\n');
+    let writes = 0;
+    const host = systemUninstallHost(home, {
+      ...testFileSystem,
+      writeText: async (path) => {
+        writes += 1;
+        if (writes > 1) throw new Error("disk full");
+        await writeFile(path, "not json");
+      },
+    });
+
+    const result = await host.removeClient(cursorClient(config));
+
+    expect(result).toEqual({
+      name: "cursor",
+      status: "failed",
+      detail: `Configuration could not be updated or restored. Restore ${recoveryBackupPath(config, current)} manually, then rerun uninstall.`,
+    });
   });
 
   it("reports a managed-path removal failure", async () => {
@@ -2028,13 +2084,17 @@ describe("skill root client identifier labels", () => {
 
 const testFileSystem: UninstallFileSystem = {
   readText: (path) => readFile(path, "utf8"),
-  copy: (source, destination) =>
-    copyFile(source, destination, fsConstants.COPYFILE_EXCL),
   writeText: (path, contents) => writeFile(path, contents),
   stat: (path) => lstat(path),
   realpath: (path) => realpath(path),
   remove: (path) => rm(path, { recursive: true }),
 };
+
+const cursorClient = (configPath: string) =>
+  ({ name: "cursor", format: "json", configPath }) as const;
+
+const recoveryBackupPath = (config: string, original: Buffer): string =>
+  `${config}.rea.backup.${createHash("sha256").update(original).digest("hex")}.recovery`;
 
 const uninstallFixture = async (): Promise<{
   readonly home: string;
