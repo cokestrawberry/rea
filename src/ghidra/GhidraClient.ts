@@ -138,6 +138,7 @@ export class GhidraClient {
   });
   readonly #responseBuffer = new GhidraResponseBuffer({
     onLine: (line) => this.#responseRouter.route(line),
+    onOverflow: (error) => this.#abortProtocol(error.message, error),
   });
   readonly #onSocketData = (chunk: string): void =>
     this.#responseBuffer.push(chunk);

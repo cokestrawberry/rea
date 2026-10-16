@@ -1084,6 +1084,19 @@ const projectPrimarySessionError = (
       failure.cause.reason,
       context,
     );
+  if (failure.cause instanceof AnalysisResourceConstraintError)
+    return new AnalysisResourceConstraintError(
+      operation,
+      failure.cause.resource,
+      failure.cause.reason,
+      failure.cause.reportedLimits,
+      {
+        ...context,
+        ...(failure.cause.remediationAction === undefined
+          ? {}
+          : { remediationAction: failure.cause.remediationAction }),
+      },
+    );
   if (
     operation === "annotate_native_function" &&
     failure.kind === "remote" &&

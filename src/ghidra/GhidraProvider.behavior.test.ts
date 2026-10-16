@@ -35,6 +35,7 @@ import { silentLogger } from "../logger.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { ProviderStartupDeadline } from "../process/ProviderDeadline.js";
+import { ProviderResponseLineLimitError } from "../process/ProviderResponseLineLimit.js";
 
 const INSTALL = "/opt/ghidra_12.1.4_PUBLIC";
 afterEach(() => vi.restoreAllMocks());
@@ -874,6 +875,42 @@ describe("Ghidra result projection", () => {
       });
     },
   );
+
+  it("projects a bridge response line limit as a resource constraint", async () => {
+    const limit = new ProviderResponseLineLimitError("Ghidra", 1024);
+    const ghidra = provider(installationHost(), () => ({
+      start: () => Promise.resolve(ok(sessionInfo())),
+      callTool: () =>
+        Promise.resolve(
+          err(
+            new GhidraSessionError(
+              "protocol",
+              limit.message,
+              {},
+              { cause: limit },
+            ),
+          ),
+        ),
+      close: () => Promise.resolve(ok(null)),
+    }));
+    const client = await createElfClient(ghidra);
+    const result = await client.execute("list_procedures", {});
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisResourceConstraintError",
+        operation: "list_procedures",
+        resource: "memory",
+        reportedLimits: limit.reportedLimits,
+        remediationAction: limit.remediationAction,
+      },
+    });
+    if (!result.ok)
+      expect(projectAnalysisError(result.error)).toMatchObject({
+        code: "resource_constraint",
+        remediation: { action: limit.remediationAction },
+      });
+  });
 
   it("preserves the rejected name constraint and function address", async () => {
     const message =
