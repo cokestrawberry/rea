@@ -264,7 +264,7 @@ interface GdbSession {
   readonly inferiorStateUnknown: () => boolean;
   readonly verifyInferiorsEndedAfterExit: () => Promise<boolean>;
   readonly knownInferiorIdentities: Map<string, OwnedInferiorIdentity>;
-  readonly inferiorTty: string | undefined;
+  readonly inferiorTty: string;
   readonly maxCommandOutputBytes: number;
   readonly stdoutSettled: Promise<void>;
   readonly settleStdout: () => void;
@@ -278,6 +278,7 @@ interface GdbSession {
   bufferTail: Buffer | undefined;
   bufferTailBytes: number;
   bufferBytes: number;
+  discardingOversizedLine: boolean;
   invalidUtf8Observed: boolean;
   promptTail: string;
   ready: boolean;
@@ -361,18 +362,15 @@ export class GdbSessionManager {
   }
 
   async start(
-    signal?: AbortSignal,
-    options: { readonly inferiorTty?: string } = {},
+    signal: AbortSignal | undefined,
+    options: { readonly inferiorTty: string },
   ): Promise<
     Result<
       { readonly session_id: string; readonly mi_version: "mi3" | "mi2" },
       AnalysisError
     >
   > {
-    if (
-      options.inferiorTty !== undefined &&
-      (options.inferiorTty.length === 0 || options.inferiorTty.includes("\0"))
-    )
+    if (options.inferiorTty.length === 0 || options.inferiorTty.includes("\0"))
       return err(
         new AnalysisInputError("start_gdb_session", undefined, [
           {
@@ -411,7 +409,7 @@ export class GdbSessionManager {
 
   async #startWithReservation(
     signal: AbortSignal,
-    options: { readonly inferiorTty?: string } = {},
+    options: { readonly inferiorTty: string },
   ): Promise<
     Result<
       { readonly session_id: string; readonly mi_version: "mi3" | "mi2" },
@@ -450,7 +448,7 @@ export class GdbSessionManager {
   async #startReserved(
     releaseReservation: () => void,
     signal: AbortSignal,
-    options: { readonly inferiorTty?: string } = {},
+    options: { readonly inferiorTty: string },
   ): Promise<
     Result<
       { readonly session_id: string; readonly mi_version: "mi3" | "mi2" },
@@ -481,7 +479,7 @@ export class GdbSessionManager {
     miVersion: "mi3" | "mi2",
     releaseReservation: () => void,
     signal: AbortSignal,
-    inferiorTty?: string,
+    inferiorTty: string,
   ): Promise<
     Result<
       { readonly session_id: string; readonly mi_version: "mi3" | "mi2" },
@@ -550,6 +548,7 @@ export class GdbSessionManager {
       bufferTail: undefined,
       bufferTailBytes: 0,
       bufferBytes: 0,
+      discardingOversizedLine: false,
       invalidUtf8Observed: false,
       promptTail: "",
       ready: false,
@@ -636,45 +635,42 @@ export class GdbSessionManager {
           `GDB rejected the required automatic-loading disable command (${autoLoad.mi}); the session was not started.`,
         );
       }
-      if (inferiorTty !== undefined) {
-        const configured = await this.#request(
-          session,
-          `-inferior-tty-set ${miQuote(inferiorTty)}`,
-          signal,
+      const configured = await this.#request(
+        session,
+        `-inferior-tty-set ${miQuote(inferiorTty)}`,
+        signal,
+        "start_gdb_session",
+      );
+      if (
+        configured.completion_status !== "complete" ||
+        configured.output_truncated ||
+        !/^\d+\^done(?:,|$)/u.test(configured.mi)
+      )
+        throw new AnalysisCapabilityUnavailableError(
+          "gdb",
           "start_gdb_session",
+          "GDB did not confirm the inferior TTY configuration.",
         );
-        if (
-          configured.completion_status !== "complete" ||
-          configured.output_truncated ||
-          !/^\d+\^done(?:,|$)/u.test(configured.mi)
-        )
-          throw new AnalysisCapabilityUnavailableError(
-            "gdb",
-            "start_gdb_session",
-            "GDB did not confirm the inferior TTY configuration.",
-          );
-        const observed = await this.#request(
-          session,
-          "-inferior-tty-show",
-          signal,
+      const observed = await this.#request(
+        session,
+        "-inferior-tty-show",
+        signal,
+        "start_gdb_session",
+      );
+      const reportedTty =
+        observed.completion_status === "complete" && !observed.output_truncated
+          ? miStringField(observed.mi, "inferior_tty_terminal")
+          : undefined;
+      if (
+        !/^\d+\^done(?:,|$)/u.test(observed.mi) ||
+        reportedTty !== inferiorTty
+      )
+        throw new AnalysisCapabilityUnavailableError(
+          "gdb",
           "start_gdb_session",
+          "GDB did not report the exact caller-selected inferior TTY after configuration.",
         );
-        const reportedTty =
-          observed.completion_status === "complete" &&
-          !observed.output_truncated
-            ? miStringField(observed.mi, "inferior_tty_terminal")
-            : undefined;
-        if (
-          !/^\d+\^done(?:,|$)/u.test(observed.mi) ||
-          reportedTty !== inferiorTty
-        )
-          throw new AnalysisCapabilityUnavailableError(
-            "gdb",
-            "start_gdb_session",
-            "GDB did not report the exact caller-selected inferior TTY after configuration.",
-          );
-        session.inferiorTtyVerified = true;
-      }
+      session.inferiorTtyVerified = true;
       if (signal?.aborted)
         throw new AnalysisCancelledError("start_gdb_session");
       // Give queued exit notifications a turn before publishing startup.
@@ -968,10 +964,7 @@ export class GdbSessionManager {
               return err(await this.#stopAfterProtocolFailure(session, cause));
             if (cause instanceof GdbCommandProcessExitError) {
               const processExit = cause as GdbCommandProcessExitError;
-              const result: GdbCommandResult = {
-                ...processExit.partial,
-                command,
-              };
+              const result = processExit.partial;
               const evidence = createEvidence(
                 undefined,
                 { id: "gnu.gdb", name: "GNU GDB", version: null },
@@ -1041,7 +1034,7 @@ export class GdbSessionManager {
         readonly stderr_truncated: boolean;
         readonly stderr_invalid_utf8: boolean;
         readonly diagnostics_truncated: boolean;
-        readonly inferior_tty: string | null;
+        readonly inferior_tty: string;
         readonly inferior_tty_verified: boolean;
       }
     | undefined {
@@ -1064,7 +1057,7 @@ export class GdbSessionManager {
         diagnostics.stderr.observedBytes > diagnostics.stderr.bytes,
       stderr_invalid_utf8: diagnostics.stderr.invalidUtf8 === true,
       diagnostics_truncated: diagnostics.diagnosticTruncated === true,
-      inferior_tty: session.inferiorTty ?? null,
+      inferior_tty: session.inferiorTty,
       inferior_tty_verified: session.inferiorTtyVerified,
     };
   }
@@ -1131,14 +1124,14 @@ export class GdbSessionManager {
               throw new Error(
                 "GDB returned an unknown inferior list before shutdown.",
               );
-            if (groupCount > 0 && !session.inferiorTtyVerified)
+            if (!session.inferiorTtyVerified)
               return err(
                 new AnalysisInputError("close_gdb_session", undefined, [
                   {
                     path: ["session_id"],
                     reason: "invalid_value",
                     message:
-                      "Live GDB thread groups remain and no verified durable inferior TTY is configured. Select a safe disposition through the GDB console or restart with inferior_tty before closing.",
+                      "GDB inferior TTY verification was revoked. Thread-group reports cannot confirm target state; REA retains the debugger and its output streams.",
                   },
                 ]),
               );
@@ -1279,6 +1272,12 @@ export class GdbSessionManager {
     let offset = 0;
     while (offset < data.byteLength) {
       const newline = data.indexOf(0x0a, offset);
+      if (session.discardingOversizedLine) {
+        if (newline < 0) break;
+        session.discardingOversizedLine = false;
+        offset = newline + 1;
+        continue;
+      }
       const piece = data.subarray(
         offset,
         newline < 0 ? data.byteLength : newline,
@@ -1287,11 +1286,22 @@ export class GdbSessionManager {
       const lineBytes =
         session.bufferBytes - (newline >= 0 && piece.at(-1) === 0x0d ? 1 : 0);
       if (lineBytes > MAX_MI_LINE_BYTES) {
+        session.recentRecordsTruncated = true;
+        for (const pending of session.pending.values())
+          pending.outputTruncated = true;
         this.#failProtocol(
           session,
           "GDB emitted an MI line exceeding the 16 MiB protocol limit.",
         );
-        return;
+        this.#resetLineBuffer(session);
+        // Resume at the next record boundary so later tagged responses, such
+        // as the one close() waits for, are still parsed.
+        if (newline < 0) {
+          session.discardingOversizedLine = true;
+          break;
+        }
+        offset = newline + 1;
+        continue;
       }
       this.#appendLineBytes(session, piece);
       if (newline < 0) break;
@@ -1308,10 +1318,7 @@ export class GdbSessionManager {
         record.at(-1) === 0x0d ? record.subarray(0, -1) : record;
       const invalidUtf8 = !isUtf8(withoutCarriageReturn);
       const line = withoutCarriageReturn.toString("utf8");
-      session.bufferChunks.length = 0;
-      session.bufferTail = undefined;
-      session.bufferTailBytes = 0;
-      session.bufferBytes = 0;
+      this.#resetLineBuffer(session);
       if (invalidUtf8) session.invalidUtf8Observed = true;
       if (line.length > 0) lines.push({ value: line, invalidUtf8 });
       offset = newline + 1;
@@ -1398,6 +1405,13 @@ export class GdbSessionManager {
     }
   }
 
+  #resetLineBuffer(session: GdbSession): void {
+    session.bufferChunks.length = 0;
+    session.bufferTail = undefined;
+    session.bufferTailBytes = 0;
+    session.bufferBytes = 0;
+  }
+
   #appendLineBytes(session: GdbSession, piece: Buffer): void {
     const slabBytes = 64 * 1024;
     let offset = 0;
@@ -1430,7 +1444,7 @@ export class GdbSessionManager {
       const records = [...pending.lines];
       pending.reject(
         new GdbProtocolFailureError(message, {
-          command: pending.command,
+          command: pending.evidenceCommand,
           mi: "",
           records,
           console: records.filter((line) => line.startsWith("~")).join("\n"),
@@ -1537,6 +1551,10 @@ export class GdbSessionManager {
     if (session.noInferiorVerified) return { status: "no-inferior" };
     if (session.exited)
       throw new Error("GDB exited before inferior state could be verified.");
+    if (!session.inferiorTtyVerified)
+      throw new Error(
+        "GDB inferior TTY verification was revoked; thread-group reports cannot establish the inferior state.",
+      );
     // A new MI inspection replaces the old snapshot. If this read is
     // incomplete, malformed, or reports multiple inferiors, no earlier PID
     // can stand in for the current unknown inventory.
@@ -1572,10 +1590,6 @@ export class GdbSessionManager {
           ? "GDB returned an unknown recursive inferior list."
           : "GDB reports multiple inferiors; automatic detach cannot be confirmed safely.",
       );
-    if (!session.inferiorTtyVerified)
-      throw new Error(
-        "GDB cannot detach the live inferior because no durable output sink was verified at session startup.",
-      );
     const observedTty = await this.#request(session, "-inferior-tty-show");
     if (
       observedTty.completion_status !== "complete" ||
@@ -1589,7 +1603,7 @@ export class GdbSessionManager {
       );
     await this.#verifyInferiorOutputSink(
       inferiorPids[0]!,
-      session.inferiorTty!,
+      session.inferiorTty,
       (identity) =>
         session.knownInferiorIdentities.set(
           `${identity.pid}:${identity.startTime}`,
@@ -1617,7 +1631,7 @@ export class GdbSessionManager {
       clearTimeout(pending.timer);
       pending.reject(
         new GdbCommandProcessExitError({
-          command: pending.command,
+          command: pending.evidenceCommand,
           mi: "",
           records: [...pending.lines],
           console: pending.lines
