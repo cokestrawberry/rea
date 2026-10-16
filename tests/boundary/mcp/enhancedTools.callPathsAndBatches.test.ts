@@ -313,6 +313,25 @@ describe("trace_call_path MCP outcome semantics", () => {
 });
 
 describe("cancelled composed workflows", () => {
+  it("propagates name lookup cancellation while the caller signal remains active", async () => {
+    const controller = new AbortController();
+    const cancelled = new AnalysisCancelledError("address_name");
+    const tools = new EnhancedTools({
+      execute: async (name, input) => {
+        if (name === "procedure_address") return ok(String(input.procedure));
+        if (name === "address_name") return err(cancelled);
+        return ok("pseudo");
+      },
+    });
+    const result = await tools.execute(
+      "batch_decompile",
+      { addresses: ["0x1"] },
+      controller.signal,
+    );
+    expect(controller.signal.aborted).toBe(false);
+    expect(result).toEqual({ ok: false, error: cancelled });
+  });
+
   it("returns cancellation instead of recording a cancelled call-graph node", async () => {
     const controller = new AbortController();
     const tools = new EnhancedTools({

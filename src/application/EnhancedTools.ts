@@ -272,7 +272,11 @@ export class EnhancedTools {
           signal,
         );
         const procedure = resolved.ok
-          ? await this.#batchProcedureIdentity(resolved.value, signal)
+          ? await this.#batchProcedureIdentity(
+              resolved.value,
+              projectItemError,
+              signal,
+            )
           : {
               status: "unknown" as const,
               error: projectItemError(resolved.error),
@@ -323,7 +327,13 @@ export class EnhancedTools {
     });
   }
 
-  async #batchProcedureIdentity(address: string, signal?: AbortSignal) {
+  async #batchProcedureIdentity(
+    address: string,
+    projectItemError: (
+      error: AnalysisError,
+    ) => ReturnType<typeof projectAnalysisError>,
+    signal?: AbortSignal,
+  ) {
     const observed = await this.#call("address_name", { address }, signal);
     const named =
       observed.ok &&
@@ -335,7 +345,7 @@ export class EnhancedTools {
       ...(named
         ? {}
         : {
-            name_error: projectAnalysisError(
+            name_error: projectItemError(
               observed.ok
                 ? new AnalysisOutputError(
                     "address_name",
