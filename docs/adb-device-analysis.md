@@ -146,10 +146,11 @@ device first. The install verdict and host APK digest remain available.
 - **Mutations are explicit.** `push_adb_file`, `install_adb_package`, and
   `uninstall_adb_package` declare `mutatesTarget` and never run implicitly:
   pushes check for existing device files before transfer and refuse them
-  unless `overwrite` is set. The check is not atomic, so a different process
-  can create the path before `adb push` writes it. When available, the device's
-  `sha256sum` verifies the transfer; installs preserve the
-  device's `Failure [...]` reason verbatim.
+  unless `overwrite` is set. A directory destination is always refused,
+  because `adb push` would write inside it. The check is not atomic, so a
+  different process can create the path before `adb push` writes it. When
+  available, the device's `sha256sum` verifies the transfer; installs
+  preserve the device's `Failure [...]` reason verbatim.
 - **Producer identity stays attached.** Every result embeds the producing
   adb client (`binary_path`, `path_source`, `version`, `installed_path`).
 
@@ -168,6 +169,10 @@ device first. The install verdict and host APK digest remain available.
 - Cancellation during a package pull preserves caller-selected output. The
   error includes partial observations identifying completed artifacts and the
   interrupted local path; remaining APKs were not attempted.
+- `pull_adb_file` refuses a device path that the device shell does not report
+  as a regular file before creating output. A file left by a failed or
+  cancelled pull stays in place, and the error's partial observation gives its
+  `local_path` and an unknown digest status.
 - Bugreports collect into isolated staging and publish with exclusive creation;
   filename collisions select the next numeric suffix. If publication fails, the
   completed archive remains in staging. The error's partial observation gives
