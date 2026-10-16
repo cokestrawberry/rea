@@ -261,6 +261,57 @@ it.each(["capinfos", "tshark"] as const)(
   },
 );
 
+it("retains cleanup ownership when a failed version probe leaves cleanup unresolved", async () => {
+  let mayClean = false;
+  const launcher: PcapCommandLauncher = async (spawn) => {
+    const launched = await spawnOwnedProviderProcess(spawn);
+    const cleanupOwned =
+      launched.cleanup ?? (() => cleanupOwnedProcessGroup(launched.ownership));
+    return {
+      ...launched,
+      cleanup: async () => {
+        const cleaned = await cleanupOwned();
+        if (!mayClean) throw new Error("injected retained cleanup failure");
+        return cleaned;
+      },
+    };
+  };
+  const { provider, root } = await providerWith({
+    launcher,
+    beforeClose: () => {
+      mayClean = true;
+    },
+  });
+  await writeFile(
+    join(root, "tshark"),
+    "#!/bin/sh\nprintf 'version probe failed' >&2\nexit 3\n",
+    { mode: 0o755 },
+  );
+  const result = await provider.execute({
+    operation: "inspect_pcap_client",
+    input: {},
+  });
+  if (result.ok) throw new Error("Expected cleanup to remain unresolved");
+  expect(result.error).toMatchObject({ cleanupIncomplete: true });
+  expect(result.error.diagnostics).toMatchObject({
+    reason: "injected retained cleanup failure",
+    previous_error: { code: "capability_unavailable" },
+    captured_output: {
+      stderr: "version probe failed",
+      truncated: false,
+      exit_code: 3,
+      signal: null,
+    },
+  });
+  expect(
+    result.error.cleanupResources.some((resource) =>
+      resource.startsWith("process-group:"),
+    ),
+  ).toBe(true);
+  mayClean = true;
+  await provider.close();
+});
+
 it("reports a non-capture file as unsupported", async () => {
   const { provider, root } = await providerWith({ failCapinfos: true });
   const failPath = join(root, "fail.pcap");

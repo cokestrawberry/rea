@@ -68,6 +68,17 @@ describe("parseCapinfosOutput", () => {
     });
   });
 
+  it("keeps the file header snaplen when capinfos also prints an inferred line", () => {
+    const truncated = REAL_CAPINFOS.replace(
+      "Packet size limit:   file hdr: 262144 bytes",
+      [
+        "Packet size limit:   file hdr: 96 bytes",
+        "Packet size limit:   inferred: 60 bytes - 96 bytes (range)",
+      ].join("\n"),
+    );
+    expect(parseCapinfosOutput(truncated).snapshotLength).toBe(96);
+  });
+
   it("rejects empty metadata rather than reporting complete unknown facts", () => {
     expect(() => parseCapinfosOutput("")).toThrow(/machine-readable/u);
   });

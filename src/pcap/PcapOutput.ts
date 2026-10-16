@@ -30,10 +30,16 @@ export interface CapinfosMetadata {
 /** capinfos -M with a C locale provides exact numbers instead of "20 k". */
 export const parseCapinfosOutput = (stdout: string): CapinfosMetadata => {
   const lines = new Map<string, string>();
+  // capinfos prints a second "inferred:" line under the same key.
+  const packetSizeLimits: string[] = [];
   for (const line of stdout.split(/\r?\n/u)) {
     const at = line.indexOf(":");
-    if (at >= 0 && !/^\s/u.test(line))
-      lines.set(line.slice(0, at), line.slice(at + 1).trim());
+    if (at >= 0 && !/^\s/u.test(line)) {
+      const key = line.slice(0, at);
+      const value = line.slice(at + 1).trim();
+      if (key === "Packet size limit") packetSizeLimits.push(value);
+      else lines.set(key, value);
+    }
   }
   const fileType = lines.get("File type");
   const encapsulation = lines.get("File encapsulation");
@@ -55,10 +61,10 @@ export const parseCapinfosOutput = (stdout: string): CapinfosMetadata => {
     durationText === undefined
       ? null
       : /^(\d+(?:\.\d+)?)(?:\s+seconds?)?$/u.exec(durationText);
-  const snapshot = /^file hdr:\s*(\d+) bytes$/u.exec(
-    lines.get("Packet size limit") ?? "",
-  );
-  const snapshotLength = snapshot === null ? null : Number(snapshot[1]);
+  const snapshot = packetSizeLimits
+    .map((value) => /^file hdr:\s*(\d+) bytes$/u.exec(value))
+    .find((match): match is RegExpExecArray => match !== null);
+  const snapshotLength = snapshot === undefined ? null : Number(snapshot[1]);
   const sha256 = lines.get("SHA256") ?? null;
   if (sha256 !== null && !/^[0-9a-f]{64}$/u.test(sha256))
     return protocolFailure("capinfos SHA256 is malformed");
