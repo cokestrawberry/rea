@@ -14,6 +14,7 @@ import types
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 
 def _install_host_stubs():
@@ -51,6 +52,34 @@ def _frame(connection):
 
 def _send(connection, value):
     connection.sendall(json.dumps(value, separators=(",", ":")).encode() + b"\n")
+
+
+def _frame_line(size):
+    proof = "0" * 64
+    overhead = len(json.dumps({"request": "", "proof": proof}, separators=(",", ":")))
+    line = json.dumps({"request": "x" * (size - overhead), "proof": proof}, separators=(",", ":")).encode()
+    assert len(line) == size
+    return line
+
+
+class ChunkedConnection:
+    """Delivers each chunk separately, so a frame's newline arrives after its content."""
+
+    def __init__(self, *chunks):
+        self.pending = [memoryview(chunk) for chunk in chunks]
+
+    def settimeout(self, _timeout):
+        pass
+
+    def recv(self, size):
+        if not self.pending:
+            return b""
+        part, rest = self.pending[0][:size], self.pending[0][size:]
+        if len(rest):
+            self.pending[0] = rest
+        else:
+            self.pending.pop(0)
+        return bytes(part)
 
 
 class Dispatcher:
@@ -415,6 +444,44 @@ class ProtocolProducerTest(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(response["session_id"], self.server.session_id)
         self.assertEqual(self.dispatcher.commands, ["command", "status"])
+
+    def test_request_frame_of_exactly_the_limit_is_received(self):
+        connection = ChunkedConnection(_frame_line(bridge.MAX_FRAME_BYTES), b"\n")
+        frame = bridge._BridgeServer._receive_frame(connection)
+        self.assertEqual(frame["proof"], "0" * 64)
+
+    def test_request_frame_one_byte_over_the_limit_is_rejected(self):
+        connection = ChunkedConnection(_frame_line(bridge.MAX_FRAME_BYTES + 1), b"\n")
+        with self.assertRaisesRegex(ValueError, "frame-limit-exceeded"):
+            bridge._BridgeServer._receive_frame(connection)
+
+    def test_limit_sized_request_over_a_socket_uses_the_authentication_deadline(self):
+        sender, receiver = socket.socketpair()
+        line = _frame_line(bridge.MAX_FRAME_BYTES)
+        def send():
+            with sender:
+                sender.sendall(line)
+                sender.sendall(b"\n")
+        worker = threading.Thread(target=send)
+        worker.start()
+        try:
+            frame = bridge._BridgeServer._receive_frame(receiver)
+            self.assertEqual(frame["proof"], "0" * 64)
+        finally:
+            receiver.close()
+            worker.join()
+
+    def test_response_size_includes_its_newline(self):
+        value = {"ok": True, "execution_state": "complete", "output": ""}
+        empty_size = len(json.dumps(value, ensure_ascii=False).encode())
+        value["output"] = "x" * (512 - empty_size)
+        connection = mock.Mock()
+        with mock.patch.object(bridge, "MAX_FRAME_BYTES", 512), mock.patch.object(bridge, "_within_response_limit", return_value=True):
+            self.server._send(connection, value)
+        encoded = connection.sendall.call_args.args[0]
+        self.assertLessEqual(len(encoded), 512)
+        self.assertEqual(json.loads(encoded)["error"], "response-limit-exceeded")
+        self.assertEqual(json.loads(encoded)["execution_state"], "complete")
 
     def test_escape_expansion_uses_a_signed_truthful_truncation_fallback(self):
         sender, receiver = socket.socketpair()
