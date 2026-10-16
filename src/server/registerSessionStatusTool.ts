@@ -81,20 +81,16 @@ export const registerSessionStatusTool = (
       }
       const status = session.status();
       const statusObject = jsonObjectSchema.parse(status);
-      const toolAvailability = buildCapabilityInventory(
-        status,
-        {
-          ...availabilityPolicy(),
-          androidAnalysisAvailability: androidAvailability,
-          ...(adbAvailability === undefined
-            ? {}
-            : { adbAnalysisAvailability: adbAvailability }),
-          ...(apktoolAvailability === undefined
-            ? {}
-            : { apktoolAnalysisAvailability: apktoolAvailability }),
-        },
-        clientFeatures,
-      );
+      const toolAvailability = buildCapabilityInventory(status, {
+        ...availabilityPolicy(),
+        androidAnalysisAvailability: androidAvailability,
+        ...(adbAvailability === undefined
+          ? {}
+          : { adbAnalysisAvailability: adbAvailability }),
+        ...(apktoolAvailability === undefined
+          ? {}
+          : { apktoolAnalysisAvailability: apktoolAvailability }),
+      });
       const serverIdentity = createServerIdentity({
         startedAt,
         commandPath: CURRENT_ENTRYPOINT_PATH,

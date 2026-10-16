@@ -38,6 +38,7 @@ export const runCliJavaScriptApplicationAnalysis = async (
       { reason: cleanup.reason },
       { cause, operation: "analyze_javascript_application" },
     );
+    if (result.ok) failure.retainPartialObservation(result.value);
     return cliError(
       result.ok
         ? failure

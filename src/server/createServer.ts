@@ -308,6 +308,7 @@ export const createServer = (
   const webModuleTrace =
     options.webModuleTrace ?? createWebModuleTraceService(environment);
   const goBinary = options.goBinary ?? createGoBinaryService();
+  const rustBinary = options.rustBinary ?? createRustBinaryService();
   const peResources = createPeResourcesService();
   const webNetworkCapture =
     options.webNetworkCapture ?? createWebNetworkCaptureService(environment);
@@ -384,6 +385,7 @@ export const createServer = (
       webSourceLocation.close(),
       webModuleTrace.close(),
       goBinary.close(),
+      rustBinary.close(),
       peResources.close(),
       webNetworkCapture.close(),
       javascriptRecovery.close?.() ?? Promise.resolve(),
@@ -433,6 +435,7 @@ export const createServer = (
     withAdmittedAnalysis: analysisAdmission,
     artifactResources,
     goBinary,
+    rustBinary,
     peResources,
     webNetworkCapture,
   };
@@ -629,6 +632,7 @@ const registerConfiguredAnalysisTools = (
     recordEvidence,
     withAdmittedAnalysis,
     goBinary,
+    rustBinary,
     peResources,
     webNetworkCapture,
   }: ServerToolContext,
@@ -684,7 +688,7 @@ const registerConfiguredAnalysisTools = (
   );
   registerRustTools(
     server,
-    options.rustBinary ?? createRustBinaryService(),
+    rustBinary,
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,
@@ -795,6 +799,7 @@ const createSessionRecorders = (
 
 interface ServerToolContext extends ReturnType<typeof createSessionRecorders> {
   readonly goBinary: GoBinaryService;
+  readonly rustBinary: RustBinaryService;
   readonly peResources: PeResourcesService;
   readonly webNetworkCapture: WebNetworkCaptureService;
   readonly artifactResources: ArtifactResourceScope;
