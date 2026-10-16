@@ -26,7 +26,6 @@ import {
 import { DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS } from "../config/providerStartupTimeout.js";
 import type {
   GhidraClientOptions,
-  GhidraRequestOptions,
   GhidraStartResult,
 } from "./GhidraClientTypes.js";
 import type { GhidraInventoryOperation } from "./GhidraInventoryValues.js";
@@ -46,7 +45,6 @@ import {
 import {
   isGhidraShutdownAcknowledgement,
   parseGhidraSessionInfo,
-  type GhidraSessionInfo,
 } from "./GhidraSessionValues.js";
 import { createGhidraTargetSnapshot } from "./GhidraTargetSnapshot.js";
 import {
@@ -326,17 +324,6 @@ export class GhidraClient {
       active = false;
       clearInterval(timer);
     }
-  }
-
-  /** Revalidate live bridge, provider, run, and profile metadata. */
-  async ping(
-    options: GhidraRequestOptions = {},
-  ): Promise<Result<GhidraSessionInfo, GhidraSessionError>> {
-    const started = await this.start(options.signal);
-    if (!started.ok) return started;
-    const result = await this.#wire.request("ping", {}, options);
-    if (!result.ok) return result;
-    return this.#parseSessionInfo(result.value);
   }
 
   /** Execute one admitted operation through the serial per-Program queue. */

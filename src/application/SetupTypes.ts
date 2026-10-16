@@ -73,7 +73,10 @@ export interface SetupHost {
   macosVersion(): Promise<string | undefined>;
   linuxDistribution(): Promise<LinuxDistribution | undefined>;
   initialSetupState(scope?: DoctorScope): Promise<SetupInitialState>;
-  installHopper(replaceExisting: boolean): Promise<SetupHopperInstallResult>;
+  installHopper(
+    replaceExisting: boolean,
+    signal?: AbortSignal,
+  ): Promise<SetupHopperInstallResult>;
   /** Retry and report any cleanup resources still owned by this setup host. */
   close?(): Promise<string | undefined>;
   detectedClients(): Promise<readonly SetupClient[]>;
@@ -194,6 +197,8 @@ export interface SetupOptions {
   readonly dryRun?: boolean;
   readonly allDetectedClients?: boolean;
   readonly onProgress?: (event: SetupProgressEvent) => void;
+  /** Caller interrupt that stops Hopper installation and runs its cleanup. */
+  readonly signal?: AbortSignal;
 }
 
 /** One settled or active setup operation projected to the interactive adapter. */

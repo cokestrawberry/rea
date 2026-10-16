@@ -1,3 +1,4 @@
+import type { ScenarioSignalDeliveries } from "./ProcessCaptureJournal.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, statSync, type BigIntStats } from "node:fs";
 import { open, mkdtemp, rm, stat } from "node:fs/promises";
@@ -43,6 +44,10 @@ import {
 import { PROCESS_PROVIDER } from "../../domain/process/processEvidenceProvider.js";
 import { TerminalRenderer } from "./TerminalRenderer.js";
 import {
+  createSensitiveOutputRedactor,
+  sensitiveTerminalInput,
+} from "./SensitiveTerminalInput.js";
+import {
   hasCaptureTruncation,
   type NormalizedTerminalRetention,
   type TerminalRetention,
@@ -69,12 +74,12 @@ import type {
 } from "../../domain/process/processCapture.js";
 import { partialProcessCaptureObservationSchema } from "../../domain/process/processCapture.js";
 interface TerminalExitOptions {
-  readonly terminal: Pick<IPty, "onExit" | "kill">;
+  readonly terminal: Pick<IPty, "onExit">;
   readonly scenario: ProcessScenario;
   readonly started: number;
   readonly lastOutput: () => number;
   readonly signal: AbortSignal | undefined;
-  /** Identity-checked signal to the captured root, used only during finalization. */
+  /** Identity-checked signal to the captured root; the only way a deadline or cancellation signals it. */
   readonly signalTarget: (signal: FinalizationSignal) => Promise<{
     readonly delivery: FinalizationDelivery;
     readonly reason?: string | undefined;
@@ -88,12 +93,18 @@ interface TerminalExitOptions {
   readonly dispatchedEventIndexes: ReadonlySet<number>;
   readonly recordEvent: RecordProcessCaptureEvent;
   readonly onLiveProgress?: () => void;
+  readonly scenarioSignals: ScenarioSignalDeliveries;
 }
 
 type FinalizationSignal =
   ProcessCaptureFinalization["signals"][number]["signal"];
 type FinalizationDelivery =
   ProcessCaptureFinalization["signals"][number]["delivery"];
+
+/** Delivers a signal to the captured root only while its launch-time start identity matches. */
+export type RootSignaller = (
+  signal: "SIGINT" | FinalizationSignal,
+) => ReturnType<TerminalExitOptions["signalTarget"]>;
 
 /** The capture's exit, or the facts known when no exit could be observed. */
 export type TerminalExitResult =
@@ -107,7 +118,7 @@ export type TerminalExitResult =
   | {
       readonly unobserved: true;
       readonly reason: "timeout" | "idle_timeout" | "cancelled";
-      readonly finalization: ProcessCaptureFinalization;
+      readonly finalization?: ProcessCaptureFinalization;
     };
 
 interface CaptureResultOptions {
@@ -291,7 +302,8 @@ export const buildCaptureResult = (
     (event) => event.type === "input" && event.sensitive,
   );
   const sensitiveInputUnknown =
-    "Sensitive scripted input values are redacted from process capture Evidence.";
+    "Contiguous literal sensitive scripted input values are redacted. Rendered frames containing a sensitive value are withheld; output after redaction flush is counted but not retained.";
+  const terminalWithheld = !sensitiveTerminalInput(options.scenario).redactable;
   const filesystemObservationUnknown =
     "No filesystem observation paths were selected; filesystem effects remain unknown.";
   const hasFilesystemObservations =
@@ -353,9 +365,10 @@ export const buildCaptureResult = (
       "Inherited host environment variables are not recorded and may affect results.",
       ...(!hasFilesystemObservations ? [filesystemObservationUnknown] : []),
       ...filesystemUnknowns,
-      ...captureCoverageUnknowns(options.truncationDetails).map(
-        ({ reason }) => reason,
-      ),
+      ...captureCoverageUnknowns(
+        options.truncationDetails,
+        terminalWithheld,
+      ).map(({ reason }) => reason),
       ...(hasSensitiveScriptedInput ? [sensitiveInputUnknown] : []),
     ],
     residual_unknowns: [
@@ -392,15 +405,17 @@ export const buildCaptureResult = (
       ...(hasSensitiveScriptedInput
         ? [{ scope: "interaction" as const, reason: sensitiveInputUnknown }]
         : []),
-      ...captureCoverageUnknowns(options.truncationDetails).filter(
-        ({ scope }) => scope !== "terminal",
-      ),
+      ...captureCoverageUnknowns(
+        options.truncationDetails,
+        terminalWithheld,
+      ).filter(({ scope }) => scope !== "terminal"),
     ],
   };
 };
 
 const captureCoverageUnknowns = (
   details: ProcessCaptureTruncationDetails,
+  terminalWithheld: boolean,
 ): UnverifiedProcessCapture["residual_unknowns"] => {
   const unknowns: Array<UnverifiedProcessCapture["residual_unknowns"][number]> =
     [];
@@ -409,10 +424,11 @@ const captureCoverageUnknowns = (
   )
     unknowns.push({
       scope: "terminal",
-      reason:
-        (details.normalized_terminal?.omitted_frames ?? 0) > 0
+      reason: terminalWithheld
+        ? "Raw PTY output was withheld because a sensitive input echo cannot be matched exactly. See truncation_details.raw_terminal."
+        : (details.normalized_terminal?.omitted_frames ?? 0) > 0
           ? "Raw PTY chunks were omitted because original input exceeded output_bytes or an ordered normalization stage exceeded its remaining bound; final normalized sizes for the latter omissions are unknown. Rendered states also lack those inputs. See raw_terminal and normalized_terminal retention details, including the normalized omission count."
-          : "Raw PTY chunks exceeded output_bytes and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
+          : "Terminal fragments exceeded output_bytes or arrived after redaction flush and were omitted; rendered states also lack those inputs. See truncation_details.raw_terminal.",
     });
   if (
     details.rendered_terminal.observed_frames >
@@ -423,7 +439,7 @@ const captureCoverageUnknowns = (
       reason:
         (details.rendered_terminal.unknown_size_frames ?? 0) > 0
           ? "Rendered frames were omitted because a normalization stage exceeded the remaining output_bytes budget; final rendered byte totals are unknown for those frames. See truncation_details.rendered_terminal."
-          : "Cumulative rendered state and visible-line bytes exceeded output_bytes; whole rendered frames were omitted. Raw PTY coverage is reported separately. See truncation_details.rendered_terminal.",
+          : "Cumulative rendered state and visible-line bytes exceeded output_bytes; whole rendered frames were omitted. Frames containing a sensitive input value are also omitted. Raw PTY coverage is reported separately. See truncation_details.rendered_terminal.",
     });
   for (const [name, coverage] of [
     ["before", details.filesystem_before],
@@ -741,8 +757,9 @@ export const describeUnverifiedCause = (
  * A timeout or idle deadline kills the root at once when `finalization_ms` is
  * 0. With a positive interval it sends SIGTERM through `signalTarget`, keeps
  * observing, and sends SIGKILL once if the interval ends first; cancellation
- * during the interval sends that SIGKILL at once. Every attempt is recorded
- * with its delivery result before the delivery is awaited, and each wait is
+ * during the interval sends that SIGKILL at once. Every signal goes through
+ * `signalTarget`, never a bare PID kill. Finalization attempts are recorded
+ * with their delivery result before the delivery is awaited, and each wait is
  * bounded by the cleanup verification grace. If the SIGKILL cannot be
  * delivered the wait ends with `unobserved: true` and no invented exit, so the
  * caller can keep its observations and release the run through cleanup.
@@ -760,6 +777,7 @@ export const awaitTerminalExit = async ({
   dispatchedEventIndexes,
   recordEvent,
   onLiveProgress,
+  scenarioSignals,
 }: TerminalExitOptions): Promise<TerminalExitResult> =>
   new Promise((resolveExit) => {
     // The kill caused by a deadline is observed later as an ordinary PTY exit.
@@ -793,16 +811,56 @@ export const awaitTerminalExit = async ({
       signals: finalizationSignals.map((attempt) => ({ ...attempt })),
     });
     const unobservedExit = (): void => {
-      if (settled || exitObserved || finalizationStartedAt === undefined)
-        return;
+      if (settled || exitObserved) return;
       settled = true;
+      scenarioSignals.finish();
       for (const timer of timers) timer.cancel();
       timers.clear();
       resolveExit({
         unobserved: true,
         reason: reason === "exited" ? "timeout" : reason,
-        finalization: snapshot(null),
+        ...(finalizationStartedAt === undefined
+          ? {}
+          : { finalization: snapshot(null) }),
       });
+    };
+    // The wait is bounded by the cleanup verification grace: a delivery that
+    // never settles reads as unverified instead of holding the capture.
+    const deliver = (
+      finalizationSignal: FinalizationSignal,
+    ): ReturnType<typeof signalTarget> => {
+      const deliveryBound = new AbortController();
+      return Promise.race([
+        signalTarget(finalizationSignal),
+        delay(
+          PROCESS_CLEANUP_VERIFICATION_GRACE_MS,
+          {
+            delivery: "unverified" as const,
+            reason: `delivery did not settle within ${String(PROCESS_CLEANUP_VERIFICATION_GRACE_MS)} ms`,
+          },
+          {
+            ref: false,
+            signal: deliveryBound.signal,
+          },
+        ).catch(() => ({
+          delivery: "unverified" as const,
+          reason: "delivery wait was interrupted",
+        })),
+      ])
+        .finally(() => {
+          deliveryBound.abort();
+        })
+        .catch((cause: unknown) => ({
+          delivery: "unverified" as const,
+          reason: describeUnverifiedCause(
+            cause,
+            "signal delivery failed without a message",
+          ),
+        }));
+    };
+    // A kill that cannot reach the root leaves no exit to wait for.
+    const stopWaitingUnlessKilled = (delivery: FinalizationDelivery): void => {
+      if (delivery !== "signaled" && delivery !== "gone") unobservedExit();
     };
     // An attempt is recorded before its delivery is awaited, so a hung or
     // failed delivery still leaves the attempt in the observations.
@@ -819,68 +877,38 @@ export const awaitTerminalExit = async ({
       };
       finalizationSignals.push(record);
       recordFinalization(snapshot(null));
-      const deliveryBound = new AbortController();
-      // The wait is bounded by the cleanup verification grace: a delivery that
-      // never settles is recorded as unverified instead of holding the capture.
       pendingDeliveries.push(
-        Promise.race([
-          signalTarget(finalizationSignal),
-          delay(
-            PROCESS_CLEANUP_VERIFICATION_GRACE_MS,
-            {
-              delivery: "unverified" as const,
-              reason: `delivery did not settle within ${String(PROCESS_CLEANUP_VERIFICATION_GRACE_MS)} ms`,
-            },
-            {
-              ref: false,
-              signal: deliveryBound.signal,
-            },
-          ).catch(() => ({
-            delivery: "unverified" as const,
-            reason: "delivery wait was interrupted",
-          })),
-        ])
-          .finally(() => {
-            deliveryBound.abort();
-          })
-          .then(
-            ({ delivery, reason: deliveryReason }) => {
-              record.delivery = delivery;
-              if (deliveryReason !== undefined) record.reason = deliveryReason;
-              else delete record.reason;
-            },
-            (cause: unknown) => {
-              record.delivery = "unverified";
-              record.reason = describeUnverifiedCause(
-                cause,
-                "signal delivery failed without a message",
-              );
-            },
-          )
-          .then(() => {
+        deliver(finalizationSignal).then(
+          ({ delivery, reason: deliveryReason }) => {
+            if (settled) return;
+            record.delivery = delivery;
+            if (deliveryReason !== undefined) record.reason = deliveryReason;
+            else delete record.reason;
             recordFinalization(snapshot(null));
-            // A kill that cannot reach the root leaves no exit to wait for.
-            if (
-              finalizationSignal === "SIGKILL" &&
-              record.delivery !== "signaled" &&
-              record.delivery !== "gone"
-            )
-              unobservedExit();
-          }),
+            if (finalizationSignal === "SIGKILL")
+              stopWaitingUnlessKilled(delivery);
+          },
+        ),
       );
     };
     const forceKill = (): void => {
+      if (escalationSent) return;
+      escalationSent = true;
       if (finalizationStartedAt !== undefined) {
-        if (escalationSent) return;
-        escalationSent = true;
         attempt("SIGKILL");
         return;
       }
-      terminal.kill("SIGKILL");
+      // No interval ran, and the capture schema starts a finalization record
+      // with SIGTERM, so this kill is delivered without a record.
+      pendingDeliveries.push(
+        deliver("SIGKILL").then(({ delivery }) => {
+          stopWaitingUnlessKilled(delivery);
+        }),
+      );
     };
     const terminateAtDeadline = (): void => {
       if (scenario.finalization_ms === 0) {
-        terminal.kill("SIGKILL");
+        forceKill();
         return;
       }
       finalizationStartedAt = monotonicProcessCaptureClock();
@@ -924,6 +952,7 @@ export const awaitTerminalExit = async ({
       const finish = (): void => {
         if (settled) return;
         settled = true;
+        scenarioSignals.finish();
         resolveExit({
           ...exit,
           reason,
@@ -939,6 +968,7 @@ export const awaitTerminalExit = async ({
               }),
         });
       };
+      pendingDeliveries.push(...scenarioSignals.pending);
       if (pendingDeliveries.length === 0) {
         finish();
         return;
@@ -1302,8 +1332,15 @@ export const cleanupReportFailure = (
         .join("; ");
 };
 
+/** Raw PTY retention accounting and the release of redaction-held output. */
+export interface TerminalFrameCapture {
+  readonly retention: () => TerminalCaptureRetention;
+  /** Close retention and release output held back at a chunk boundary. */
+  readonly flush: () => void;
+}
+
 export const captureTerminalFrames = (options: {
-  readonly terminal: IPty;
+  readonly terminal: Pick<IPty, "onData">;
   readonly scenario: ProcessScenario;
   readonly frames: TerminalFrame[];
   readonly started: number;
@@ -1314,21 +1351,23 @@ export const captureTerminalFrames = (options: {
     maxBytes: number,
   ) => BoundedProcessTextNormalization;
   readonly recordEvent: RecordProcessCaptureEvent;
-}): (() => TerminalCaptureRetention) => {
+}): TerminalFrameCapture => {
+  const sensitive = sensitiveTerminalInput(options.scenario);
+  const redactor = createSensitiveOutputRedactor(
+    sensitive.redactable ? sensitive.values : [],
+  );
   let rawBytes = 0;
   let normalizedBytes = 0;
   let observedBytes = 0;
   let observedFrames = 0;
   let normalizedOmittedFrames = 0;
-  options.terminal.onData((data) => {
-    options.onOutput();
+  let closed = false;
+  const retain = (data: string, atMs: number): void => {
     const bytes = Buffer.byteLength(data);
     observedBytes += bytes;
     observedFrames += 1;
     const budget = options.scenario.limits.output_bytes;
-    if (bytes > budget - rawBytes) {
-      return;
-    }
+    if (!sensitive.redactable || bytes > budget - rawBytes) return;
     const normalized = options.normalizeText(data, budget - normalizedBytes);
     if (normalized.state === "over_budget") {
       normalizedOmittedFrames += 1;
@@ -1336,10 +1375,6 @@ export const captureTerminalFrames = (options: {
     }
     rawBytes += bytes;
     normalizedBytes += normalized.utf8Bytes;
-    const atMs = normalizeProcessElapsedTime(
-      monotonicProcessCaptureClock() - options.started,
-      options.scenario.normalization.time_bucket_ms,
-    );
     const sequence = options.frames.length;
     options.frames.push({
       sequence,
@@ -1349,21 +1384,43 @@ export const captureTerminalFrames = (options: {
     });
     options.renderer.write(data, atMs);
     options.recordEvent("frames", sequence);
+  };
+  options.terminal.onData((data) => {
+    options.onOutput();
+    if (closed) {
+      observedBytes += Buffer.byteLength(data);
+      observedFrames += 1;
+      return;
+    }
+    const atMs = normalizeProcessElapsedTime(
+      monotonicProcessCaptureClock() - options.started,
+      options.scenario.normalization.time_bucket_ms,
+    );
+    const visible = redactor.push(data, atMs);
+    if (visible.data !== "") retain(visible.data, visible.atMs);
   });
-  return () => ({
-    raw_terminal: {
-      budget_bytes: options.scenario.limits.output_bytes,
-      observed_bytes: observedBytes,
-      retained_bytes: rawBytes,
-      observed_frames: observedFrames,
-      retained_frames: options.frames.length,
+  return {
+    retention: () => ({
+      raw_terminal: {
+        budget_bytes: options.scenario.limits.output_bytes,
+        observed_bytes: observedBytes,
+        retained_bytes: rawBytes,
+        observed_frames: observedFrames,
+        retained_frames: options.frames.length,
+      },
+      normalized_terminal: {
+        budget_bytes: options.scenario.limits.output_bytes,
+        retained_bytes: normalizedBytes,
+        omitted_frames: normalizedOmittedFrames,
+      },
+    }),
+    flush: () => {
+      if (closed) return;
+      closed = true;
+      const tail = redactor.flush();
+      if (tail.data !== "") retain(tail.data, tail.atMs);
     },
-    normalized_terminal: {
-      budget_bytes: options.scenario.limits.output_bytes,
-      retained_bytes: normalizedBytes,
-      omitted_frames: normalizedOmittedFrames,
-    },
-  });
+  };
 };
 
 export interface TerminalCaptureRetention {

@@ -26,6 +26,7 @@ interface TerminalRendererOptions {
     value: string,
     maxBytes: number,
   ) => BoundedProcessTextNormalization;
+  readonly sensitiveValues?: readonly string[];
   readonly recordEvent?: RecordProcessCaptureEvent;
 }
 
@@ -129,11 +130,18 @@ export class TerminalRenderer {
     this.#observedFrames += 1;
     let remainingBytes = this.options.maxBytes - this.#capturedBytes;
     let bytes = 0;
+    let containsSensitiveValue = false;
     for (let row = 0; row < this.#terminal.rows; row += 1) {
       const line = buffer.getLine(buffer.viewportY + row);
-      const paddedLine = (
-        line?.translateToString(false, 0, this.#terminal.cols) ?? ""
-      ).padEnd(this.#terminal.cols, " ");
+      const visibleText =
+        line?.translateToString(false, 0, this.#terminal.cols) ?? "";
+      if (
+        this.options.sensitiveValues?.some((value) =>
+          visibleText.includes(value),
+        )
+      )
+        containsSensitiveValue = true;
+      const paddedLine = visibleText.padEnd(this.#terminal.cols, " ");
       const trailingSpaceBytes = Buffer.byteLength(
         paddedLine.match(TRAILING_SPACES)?.[0] ?? "",
       );
@@ -170,6 +178,17 @@ export class TerminalRenderer {
     }
     bytes += normalizedState.utf8Bytes;
     this.#observedBytes += bytes;
+    if (
+      containsSensitiveValue ||
+      this.options.sensitiveValues?.some(
+        (value) =>
+          lines.some((line) => line.includes(value)) ||
+          normalizedState.value.includes(value),
+      )
+    ) {
+      this.#truncated = true;
+      return;
+    }
     this.#capturedBytes += bytes;
     const sequence = this.#frames.length;
     this.#frames.push({
