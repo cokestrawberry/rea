@@ -140,6 +140,48 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 );
 
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "marks a directory without search permission unknown instead of failing the snapshot",
+  async () => {
+    const root = await createTestTempDirectory("rea-fs-unsearchable-directory-");
+    const blocked = join(root, "z-blocked");
+    await writeFile(join(root, "a-visible.txt"), "visible");
+    await mkdir(blocked);
+    await writeFile(join(blocked, "hidden.txt"), "hidden");
+    // Read-only: names are listed, but lstat of an entry needs search permission.
+    await chmod(blocked, 0o444);
+    const scenario = parseProcessScenario({
+      executable: process.execPath,
+      working_directory: root,
+      filesystem_observation_paths: [root],
+    });
+
+    try {
+      const snapshot = await snapshotRoots(scenario);
+      expect(snapshot.files.map(({ path }) => path)).toEqual([
+        "root_0:.",
+        "root_0:a-visible.txt",
+        "root_0:z-blocked",
+      ]);
+      expect(snapshot.completeRoots).toEqual([]);
+      expect(snapshot.coverage.enumeration_reasons).toEqual([
+        "directory_unavailable",
+      ]);
+      expect(snapshot.coverage.enumeration_omissions).toEqual([
+        {
+          path: "root_0:z-blocked",
+          reason: "directory_unavailable",
+          system_code: "EACCES",
+        },
+      ]);
+      expect(snapshot.truncated).toBe(true);
+    } finally {
+      await chmod(blocked, 0o700);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "retains unreadable-file and sibling observations in a complete snapshot",
   async () => {
     const root = await createTestTempDirectory("rea-fs-unreadable-file-");

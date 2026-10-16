@@ -50,6 +50,7 @@ const nativeFixture = (deviceType: Device["type"] = "local") => {
     load: async () => {},
     afterLoad: () => {},
     discover: async () => {},
+    emittedPayloads: [] as unknown[],
     unloadFailures: 0,
     detachFailures: 0,
     detachCalls: 0,
@@ -93,6 +94,8 @@ const nativeFixture = (deviceType: Device["type"] = "local") => {
           await controls.load();
           loaded.push(source);
           listener?.({ type: "send", payload: source }, null);
+          for (const payload of controls.emittedPayloads)
+            listener?.({ type: "send", payload }, null);
           controls.afterLoad();
         },
         async unload() {
@@ -692,3 +695,22 @@ it.each([0, 1, 2, 3, 4, 8])(
     }
   },
 );
+
+it("bounds the payload nodes a Frida session retains across messages", async () => {
+  const fixture = await connectedFixture();
+  const id = await fixture.start();
+  const emptyObjects = () => Array.from({ length: 150_000 }, () => ({}));
+  fixture.controls.emittedPayloads = [emptyObjects(), emptyObjects()];
+  const loaded = await fixture.load(id, "node-flood");
+  expect(loaded.isError).not.toBe(true);
+  const response = await fixture.client.callTool({
+    name: "frida_session_status",
+    arguments: { session_id: id },
+  });
+  expect(response.isError).not.toBe(true);
+  const status = toolContract("frida_session_status").outputSchema.parse(
+    response.structuredContent,
+  );
+  expect(status.messages.length).toBe(1);
+  expect(status.messages_truncated).toBe(true);
+});

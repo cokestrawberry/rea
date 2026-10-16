@@ -6,6 +6,9 @@ import { expect, it, vi } from "vitest";
 
 import { TerminalRenderer } from "./TerminalRenderer.js";
 import { ProcessCaptureResourceScope } from "./ProcessCaptureLifecycle.js";
+import { createBoundedProcessTextNormalizer } from "./ProcessNormalization.js";
+import { parseProcessScenario } from "../../domain/process/processScenario.js";
+import type { BoundedProcessTextNormalization } from "./ProcessNormalization.js";
 
 const require = createRequire(import.meta.url);
 it("withholds a rendered value reconstructed across control sequences", async () => {
@@ -14,7 +17,7 @@ it("withholds a rendered value reconstructed across control sequences", async ()
     rows: 4,
     scrollback: 10,
     maxBytes: 100_000,
-    normalize: (value) => value,
+    normalize: boundedNormalize((value) => value),
     sensitiveValues: ["swordfish"],
   });
   try {
@@ -34,6 +37,18 @@ const { Terminal } =
 const { SerializeAddon } =
   require("@xterm/addon-serialize") as typeof import("@xterm/addon-serialize");
 
+const boundedNormalize =
+  (
+    normalize: (value: string) => string,
+  ): ((value: string, maxBytes: number) => BoundedProcessTextNormalization) =>
+  (value, maxBytes) => {
+    const normalized = normalize(value);
+    const utf8Bytes = Buffer.byteLength(normalized);
+    return utf8Bytes <= maxBytes
+      ? { state: "normalized", value: normalized, utf8Bytes }
+      : { state: "over_budget" };
+  };
+
 const renderFrames = async (
   data: string,
   normalize: (value: string) => string = (value) => value,
@@ -43,7 +58,7 @@ const renderFrames = async (
     rows: 4,
     scrollback: 10,
     maxBytes: 100_000,
-    normalize,
+    normalize: boundedNormalize(normalize),
   });
   renderer.write(data, 0);
   const frames = await renderer.frames();
@@ -77,7 +92,7 @@ it("applies rendered retention cumulatively across sparse frames", async () => {
     rows: 1,
     scrollback: 0,
     maxBytes: 5,
-    normalize: (value) => value,
+    normalize: boundedNormalize((value) => value),
   });
   try {
     renderer.write("a", 0);
@@ -87,10 +102,11 @@ it("applies rendered retention cumulatively across sparse frames", async () => {
     expect(frames.map(({ lines }) => lines)).toEqual([["a"]]);
     expect(renderer.retention()).toEqual({
       budget_bytes: 5,
-      observed_bytes: 6,
+      observed_bytes: 2,
       retained_bytes: 2,
       observed_frames: 2,
       retained_frames: 1,
+      unknown_size_frames: 1,
     });
     expect(renderer.truncated()).toBe(true);
   } finally {
@@ -105,6 +121,44 @@ it("trims only after normalization sees the full-width row", async () => {
   expect(frames[0]?.lines[0]).toBe("pid <pid>");
 });
 
+it("omits rendered frames with unknown expanded size and keeps later bounded states", async () => {
+  const renderer = new TerminalRenderer({
+    columns: 10,
+    rows: 1,
+    scrollback: 0,
+    maxBytes: 1_000,
+    normalize: createBoundedProcessTextNormalizer(
+      parseProcessScenario({
+        executable: "unused",
+        normalization: {
+          paths: false,
+          pids: false,
+          ports: false,
+          patterns: [{ pattern: "a", replacement: "x".repeat(2_000) }],
+        },
+      }),
+      "/tmp",
+      -1,
+    ),
+  });
+  try {
+    renderer.write("a", 0);
+    renderer.write("\u001b[2J\rz", 1);
+    const frames = await renderer.frames();
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.lines[0]).toBe("z");
+    expect(renderer.retention()).toMatchObject({
+      observed_frames: 2,
+      retained_frames: 1,
+      unknown_size_frames: 1,
+    });
+    expect(renderer.truncated()).toBe(true);
+  } finally {
+    await renderer.dispose();
+  }
+});
+
 it.each(["write", "resize"] as const)(
   "releases terminal resources after a queued %s observation fails",
   async (operation) => {
@@ -116,9 +170,9 @@ it.each(["write", "resize"] as const)(
       rows: 4,
       scrollback: 10,
       maxBytes: 100_000,
-      normalize: () => {
+      normalize: boundedNormalize(() => {
         throw failure;
-      },
+      }),
     });
     const scope = new ProcessCaptureResourceScope();
     const temporaryRoot = await mkdtemp(
@@ -168,7 +222,7 @@ it("retains disposal failures for a later cleanup retry", async () => {
     rows: 4,
     scrollback: 10,
     maxBytes: 100_000,
-    normalize: (value) => value,
+    normalize: boundedNormalize((value) => value),
   });
   const scope = new ProcessCaptureResourceScope();
   const temporaryRoot = await mkdtemp(join(tmpdir(), "rea-terminal-retry-"));

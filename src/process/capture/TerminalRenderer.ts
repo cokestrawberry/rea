@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import type { TerminalRetention } from "../../domain/process/processCaptureCoverage.js";
+import type { BoundedProcessTextNormalization } from "./ProcessNormalization.js";
 
 import type {
   RecordProcessCaptureEvent,
@@ -21,7 +22,10 @@ interface TerminalRendererOptions {
   readonly rows: number;
   readonly scrollback: number;
   readonly maxBytes: number;
-  readonly normalize: (value: string) => string;
+  readonly normalize: (
+    value: string,
+    maxBytes: number,
+  ) => BoundedProcessTextNormalization;
   readonly sensitiveValues?: readonly string[];
   readonly recordEvent?: RecordProcessCaptureEvent;
 }
@@ -43,6 +47,7 @@ export class TerminalRenderer {
   #observedBytes = 0;
   #observedFrames = 0;
   #truncated = false;
+  #unknownSizeFrames = 0;
 
   constructor(private readonly options: TerminalRendererOptions) {
     this.#terminal = new HeadlessPackage.Terminal({
@@ -98,6 +103,9 @@ export class TerminalRenderer {
       retained_bytes: this.#capturedBytes,
       observed_frames: this.#observedFrames,
       retained_frames: this.#frames.length,
+      ...(this.#unknownSizeFrames === 0
+        ? {}
+        : { unknown_size_frames: this.#unknownSizeFrames }),
     };
   }
 
@@ -119,39 +127,62 @@ export class TerminalRenderer {
   #capture(atMs: number): void {
     const buffer = this.#terminal.buffer.active;
     const lines: string[] = [];
+    this.#observedFrames += 1;
+    let remainingBytes = this.options.maxBytes - this.#capturedBytes;
+    let bytes = 0;
     let containsSensitiveValue = false;
     for (let row = 0; row < this.#terminal.rows; row += 1) {
       const line = buffer.getLine(buffer.viewportY + row);
       const visibleText =
         line?.translateToString(false, 0, this.#terminal.cols) ?? "";
       if (
-        this.options.sensitiveValues?.some((value) =>
-          visibleText.includes(value),
-        )
+        this.options.sensitiveValues?.some((value) => visibleText.includes(value))
       )
         containsSensitiveValue = true;
+      const paddedLine = visibleText.padEnd(this.#terminal.cols, " ");
+      const trailingSpaceBytes = Buffer.byteLength(
+        paddedLine.match(TRAILING_SPACES)?.[0] ?? "",
+      );
+      const normalized = this.options.normalize(
+        paddedLine,
+        Math.min(Number.MAX_SAFE_INTEGER, remainingBytes + trailingSpaceBytes),
+      );
+      if (normalized.state === "over_budget") {
+        this.#unknownSizeFrames += 1;
+        this.#truncated = true;
+        return;
+      }
+      const normalizedLine = normalized.value.replace(TRAILING_SPACES, "");
+      const lineBytes = Buffer.byteLength(normalizedLine);
+      if (lineBytes > remainingBytes) {
+        this.#unknownSizeFrames += 1;
+        this.#truncated = true;
+        return;
+      }
+      remainingBytes -= lineBytes;
+      bytes += lineBytes;
       // Trailing blank cells carry no information beyond `columns`; dropping
       // them keeps sparse screens from costing a full row per blank line.
-      lines.push(
-        this.options
-          .normalize(visibleText.padEnd(this.#terminal.cols, " "))
-          .replace(TRAILING_SPACES, ""),
-      );
+      lines.push(normalizedLine);
     }
-    const serializedState = this.options.normalize(
+    const normalizedState = this.options.normalize(
       this.#serializeAddon.serialize(),
+      remainingBytes,
     );
-    const bytes =
-      Buffer.byteLength(serializedState) +
-      lines.reduce((total, line) => total + Buffer.byteLength(line), 0);
+    if (normalizedState.state === "over_budget") {
+      this.#unknownSizeFrames += 1;
+      this.#truncated = true;
+      return;
+    }
+    bytes += normalizedState.utf8Bytes;
     this.#observedBytes += bytes;
-    this.#observedFrames += 1;
     if (
       containsSensitiveValue ||
-      this.options.sensitiveValues?.some((value) =>
-        lines.some((line) => line.includes(value)),
-      ) ||
-      this.#capturedBytes + bytes > this.options.maxBytes
+      this.options.sensitiveValues?.some(
+        (value) =>
+          lines.some((line) => line.includes(value)) ||
+          normalizedState.value.includes(value),
+      )
     ) {
       this.#truncated = true;
       return;
@@ -167,7 +198,7 @@ export class TerminalRenderer {
       cursor_y: buffer.cursorY,
       active_buffer: buffer.type,
       lines,
-      serialized_state: serializedState,
+      serialized_state: normalizedState.value,
     });
     this.options.recordEvent?.("rendered_frames", sequence);
   }
