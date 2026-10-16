@@ -65,7 +65,6 @@ async function main() {
     allowPositionals: true,
     options: {
       repository: { type: "string" },
-      pr: { type: "string" },
       base: { type: "string" },
       target: { type: "string" },
       version: { type: "string" },
@@ -80,9 +79,7 @@ async function main() {
   const [command] = positionals;
   if (command === "publication" && positionals.length === 1) {
     if (!values.repository || !values.source)
-      throw new Error(
-        "publication requires --repository and --source; --pr selects the merged release PR",
-      );
+      throw new Error("publication requires --repository and --source");
     process.stdout.write(
       `${JSON.stringify(await verifyNotesPublication(run, values), null, 2)}\n`,
     );

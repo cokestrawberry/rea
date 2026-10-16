@@ -329,13 +329,13 @@ Generated fixtures and manifests remain ignored.
 
 ## Maintainer release checklist
 
-Use the [release guide](docs/releasing.md). Main pushes automatically refresh a
-Release Please PR with the next version and changelog. Review its migration
-notes, wait for the current CI checks to pass, and merge it into main to publish.
+Use the [release guide](docs/releasing.md). Releases start only from a manual
+dispatch of the Release workflow for a frozen `release/VERSION` checkpoint, with
+explicit preparation and publication. Main pushes do not open release PRs or
+publish packages.
 
-The Release workflow validates and tags that merge; both publishers build its
-exact SHA. Ordinary main pushes cannot publish packages. An optional manual
-`release/VERSION` checkpoint retains explicit preparation and publication.
+The Release workflow validates and tags the reviewed release merge; both
+publishers build its exact SHA.
 
 For grouped release notes with verified contributor thanks, use the repository's
 `rea-changelog-update` skill in `.agents/skills/rea-changelog-update/`. Its inventory,
@@ -344,4 +344,4 @@ credit checks, and finalization process are described in the release guide.
 Keep new implementation commits on main for the next release. The workflow
 owns packaged-artifact verification, npm publication, the published CLI/MCP
 canary, and MCP Registry publication. Sync manual checkpoint metadata back to
-main after publication; see the guide for recovery and verification.
+main after publication; see the guide for retries and verification.

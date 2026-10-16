@@ -33,9 +33,7 @@ async function readReleaseWorkflow() {
       on: z.record(z.string(), z.unknown()),
       concurrency: z.object({ group: z.string() }),
       jobs: z.object({
-        "release-proposal": jobSchema,
         "release-please": jobSchema,
-        "merged-release": jobSchema,
         qualification: z.object({
           if: z.string(),
           needs: z.array(z.string()),
@@ -96,77 +94,15 @@ it("validates the source before release creation and the prepared candidate befo
   }
 });
 
-it("keeps main pushes proposal-only and gates merged-release automation", async () => {
+it("runs releases only from an explicit dispatch", async () => {
   const workflow = await readReleaseWorkflow();
-  expect(workflow.on.push).toEqual({ branches: ["main"] });
-  expect(workflow.on.pull_request).toMatchObject({
-    types: ["closed"],
-    branches: ["main"],
-  });
-  const proposal = workflow.jobs["release-proposal"];
-  expect(proposal.if).toBe("github.event_name == 'push'");
-  const action = proposal.steps.find((step) =>
-    step.uses?.startsWith("googleapis/release-please-action@"),
-  );
-  expect(action?.with).toMatchObject({
-    token: "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
-    "target-branch": "main",
-    "skip-github-release": true,
-  });
-  expect(action?.with?.["skip-github-pull-request"]).not.toBe(true);
-  expect(action?.if).toBe("steps.editorial.outputs.frozen != 'true'");
-  expect(proposal.steps[0]?.run).toContain("rea:release-notes-finalized");
-  expect(proposal.steps[0]?.run).toContain("--paginate");
-  const merged = workflow.jobs["merged-release"];
-  expect(merged.if).toContain("github.event.pull_request.merged == true");
-  expect(merged.if).toContain("github.repository");
-  expect(merged.if).toContain("release-please--branches--main--");
-  expect(merged.outputs).toEqual({
-    release_created: "${{ steps.release.outputs.release_created }}",
-    sha: "${{ steps.release.outputs.sha }}",
-  });
+  expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
   expect(workflow.jobs["release-please"].if).toBe(
     "github.event_name == 'workflow_dispatch'",
   );
   expect(workflow.concurrency.group).toBe(
-    "release-${{ inputs.release_branch || github.event.pull_request.merge_commit_sha || github.ref_name }}",
+    "release-${{ inputs.release_branch }}",
   );
-});
-
-it("validates the reviewed merge before creating its release", async () => {
-  const workflow = await readReleaseWorkflow();
-  const steps = workflow.jobs["merged-release"].steps;
-  const checkout = steps.find((step) =>
-    step.uses?.startsWith("actions/checkout@"),
-  );
-  expect(checkout?.with).toMatchObject({
-    ref: "${{ github.event.pull_request.merge_commit_sha }}",
-    "fetch-depth": 0,
-  });
-  const checkpoint = steps.find((step) =>
-    step.run?.includes("verify-release-checkpoint.mjs"),
-  );
-  expect(checkpoint?.run).toContain("--phase publish --release-branch main");
-  expect(checkpoint?.run).toContain('--source-sha "$SOURCE_SHA"');
-  const release = steps.find((step) => step.id === "release");
-  expect(release?.with).toMatchObject({
-    "target-branch": "main",
-    "skip-github-release": false,
-    "skip-github-pull-request": true,
-  });
-  const bind = steps.find(
-    (step) => step.name === "Bind publication to the reviewed merge",
-  );
-  expect(bind?.env).toMatchObject({
-    SOURCE_SHA: "${{ github.event.pull_request.merge_commit_sha }}",
-    RELEASE_SHA: "${{ steps.release.outputs.sha }}",
-  });
-  const notesIndex = steps.findIndex((step) =>
-    step.run?.includes("release-notes.mjs publication"),
-  );
-  expect(notesIndex).toBeGreaterThan(steps.indexOf(checkpoint!));
-  expect(notesIndex).toBeLessThan(steps.indexOf(release!));
-  expect(steps[notesIndex]?.run).toContain('--pr "$RELEASE_PR"');
 });
 
 it("keeps frozen candidate preparation and publication explicit", async () => {
@@ -288,8 +224,7 @@ it("binds npm and MCP publication to the same immutable release SHA", async () =
   );
   expect(workflow.jobs.qualification.uses).toBe("./.github/workflows/ci.yml");
   expect(workflow.jobs.qualification.with).toEqual({
-    source_sha:
-      "${{ needs.merged-release.outputs.sha || needs.release-please.outputs.sha }}",
+    source_sha: "${{ needs.release-please.outputs.sha }}",
   });
   expect(workflow.jobs.publish.needs).toContain("qualification");
   expect(workflow.jobs.publish.needs).toContain("rehearsal");
@@ -302,8 +237,8 @@ it("binds npm and MCP publication to the same immutable release SHA", async () =
   expect(workflow.jobs["publish-mcp"].if).toContain(
     "needs.publish.result == 'success'",
   );
-  expect(workflow.jobs.publish.needs).toContain("merged-release");
-  expect(workflow.jobs["publish-mcp"].needs).toContain("merged-release");
+  expect(workflow.jobs.publish.needs).toContain("release-please");
+  expect(workflow.jobs["publish-mcp"].needs).toContain("release-please");
   for (const job of [
     workflow.jobs.rehearsal,
     workflow.jobs.publish,
@@ -313,7 +248,7 @@ it("binds npm and MCP publication to the same immutable release SHA", async () =
       step.uses?.startsWith("actions/checkout@"),
     );
     expect(checkout?.with).toMatchObject({
-      ref: "${{ needs.merged-release.outputs.sha || needs.release-please.outputs.sha }}",
+      ref: "${{ needs.release-please.outputs.sha }}",
       "persist-credentials": false,
     });
   }
@@ -354,58 +289,6 @@ it("binds npm and MCP publication to the same immutable release SHA", async () =
     expect(result.stdout).toBe(tag);
   }
 });
-
-it.skipIf(process.platform === "win32").each([
-  {
-    created: "false",
-    releaseSha: "1111111111111111111111111111111111111111",
-    succeeds: false,
-    reason: "did not create a release",
-  },
-  {
-    created: "true",
-    releaseSha: "1111111111111111111111111111111111111111",
-    succeeds: true,
-  },
-  {
-    created: "true",
-    releaseSha: "2222222222222222222222222222222222222222",
-    succeeds: false,
-    reason: "refusing mismatched publication provenance",
-  },
-])(
-  "publishes a merged release only when Release Please creates it at the reviewed SHA: $created/$releaseSha",
-  async ({ created, releaseSha, succeeds, reason }) => {
-    const workflow = await readReleaseWorkflow();
-    const command = z
-      .string()
-      .parse(
-        workflow.jobs["merged-release"].steps.find(
-          (step) => step.name === "Bind publication to the reviewed merge",
-        )?.run,
-      );
-    const result = execFileAsync(
-      "bash",
-      ["-e", "-o", "pipefail", "-c", command],
-      {
-        env: {
-          ...process.env,
-          SOURCE_SHA: "1111111111111111111111111111111111111111",
-          RELEASE_CREATED: created,
-          RELEASE_SHA: releaseSha,
-        },
-      },
-    );
-    if (succeeds) {
-      await expect(result).resolves.toMatchObject({ stderr: "" });
-    } else {
-      await expect(result).rejects.toMatchObject({
-        code: 1,
-        stderr: expect.stringContaining(z.string().parse(reason)),
-      });
-    }
-  },
-);
 
 it
   .skipIf(process.platform === "win32")

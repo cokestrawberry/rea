@@ -202,7 +202,7 @@ function verify(
       "--stage",
       stage,
       "--release-branch",
-      version === "main" ? "main" : `release/${version}`,
+      `release/${version}`,
       "--source-sha",
       f.sourceSha,
     ],
@@ -355,7 +355,7 @@ it.each([
     accepted: true,
   },
 ])(
-  "validates generated migration text on a main release merge ($accepted): $notes",
+  "validates generated migration text on a release merge ($accepted): $notes",
   async ({ notes, accepted, footer }) => {
     const f = await fixture(
       "fix(contracts)!: change path inputs",
@@ -364,7 +364,7 @@ it.each([
       { versioning: "always-bump-minor" },
     );
     const sourceSha = await candidate(f, "5.1.0", notes);
-    const result = verify({ ...f, sourceSha }, "main", "publish", "source");
+    const result = verify({ ...f, sourceSha }, "5.1.0", "publish", "source");
     if (!accepted) {
       await expect(result).rejects.toMatchObject({
         code: 1,
@@ -387,13 +387,14 @@ it.each([
     // A moved checkout does not change the selected reviewed merge.
     expect(
       JSON.parse(
-        (await verify({ ...f, sourceSha }, "main", "publish", "source")).stdout,
+        (await verify({ ...f, sourceSha }, "5.1.0", "publish", "source"))
+          .stdout,
       ),
     ).toEqual(original);
     await expect(
       verify(
         { ...f, sourceSha: await git(f.directory, ["rev-parse", "HEAD"]) },
-        "main",
+        "5.1.0",
         "publish",
         "source",
       ),
@@ -637,20 +638,15 @@ it("rejects a candidate from a different source even when versions and notes mat
   });
 });
 
-it.skipIf(process.platform === "win32").each([
-  { job: "release-please", valid: true },
-  { job: "release-please", valid: false },
-  { job: "merged-release", valid: true },
-  { job: "merged-release", valid: false },
-])(
-  "the actual $job preflight admits the next action only for valid metadata ($valid)",
-  async ({ job, valid }) => {
+it.skipIf(process.platform === "win32").each([true, false])(
+  "the actual release-please preflight admits the next action only for valid metadata (%s)",
+  async (valid) => {
     const f = await fixture();
     const sourceSha = await candidate(f, valid ? "6.0.0" : "5.1.0");
     const workflow = z
       .object({
         jobs: z.object({
-          [job]: z.object({
+          "release-please": z.object({
             steps: z.array(
               z.object({
                 name: z.string().optional(),
@@ -671,12 +667,10 @@ it.skipIf(process.platform === "win32").each([
     const command = z
       .string()
       .parse(
-        workflow.jobs[job]?.steps.find(
+        workflow.jobs["release-please"].steps.find(
           (step) =>
             step.name ===
-            (job === "merged-release"
-              ? "Validate reviewed merge before release creation"
-              : "Validate checkpoint version and ancestry before release creation"),
+            "Validate checkpoint version and ancestry before release creation",
         )?.run,
       );
     const marker = join(f.directory, "next-release-action");
@@ -709,11 +703,7 @@ it.skipIf(process.platform === "win32").each([
     } else {
       await expect(execution).rejects.toMatchObject({
         code: 1,
-        stderr: expect.stringContaining(
-          job === "merged-release"
-            ? "contains unreleased breaking markers"
-            : "release branch requires 6.0.0",
-        ),
+        stderr: expect.stringContaining("release branch requires 6.0.0"),
       });
       await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
     }

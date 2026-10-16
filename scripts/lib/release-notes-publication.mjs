@@ -39,29 +39,19 @@ export async function verifyNotesPublication(run, options) {
     .parse(JSON.parse(await read("package.json")));
   if (valid(version) !== version || version.includes("+"))
     throw new Error("Invalid reviewed package version");
-  let candidates;
-  if (options.pr !== undefined) {
-    const number = z.coerce.number().int().positive().parse(options.pr);
-    candidates = [
-      pullRequest.parse(
-        JSON.parse(await run("gh", ["api", `repos/${repo}/pulls/${number}`])),
+  const candidates = z
+    .array(z.array(pullRequest))
+    .parse(
+      JSON.parse(
+        await run("gh", [
+          "api",
+          "--paginate",
+          "--slurp",
+          `repos/${repo}/commits/${source}/pulls?per_page=100`,
+        ]),
       ),
-    ];
-  } else {
-    candidates = z
-      .array(z.array(pullRequest))
-      .parse(
-        JSON.parse(
-          await run("gh", [
-            "api",
-            "--paginate",
-            "--slurp",
-            `repos/${repo}/commits/${source}/pulls?per_page=100`,
-          ]),
-        ),
-      )
-      .flat();
-  }
+    )
+    .flat();
   const matching = candidates.filter(
     (pr) =>
       pr.merged_at !== null &&
