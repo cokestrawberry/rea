@@ -1,3 +1,4 @@
+import { FridaSessionDetachedError } from "./fridaInputErrors.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -272,6 +273,73 @@ it("reports the spawned session when cancellation arrives during resume", async 
       },
     });
   }
+  expect(closes).toBe(1);
+});
+
+it("retains the loaded script and session status when resume fails", async () => {
+  let closes = 0;
+  const script = {
+    ...createScriptObservation(),
+    messages: [{ type: "send", payload: "before-resume" }],
+  };
+  const service = new FridaInstrumentationService(
+    createProvider({
+      async loadScript() {
+        return { ok: true, value: script };
+      },
+      async resumeSession() {
+        return {
+          ok: false,
+          error: new FridaSessionDetachedError(
+            "resume_frida_session",
+            createSession().sessionId,
+          ),
+        };
+      },
+      status() {
+        return {
+          ...createSession(),
+          state: "detached",
+          targetResumeObserved: false,
+          scripts: [{ scriptId: script.scriptId, name: "rea-script" }],
+          messages: script.messages,
+          messagesTruncated: false,
+        };
+      },
+      async closeSession() {
+        closes += 1;
+        return { ok: true, value: { targetResumeObserved: false } };
+      },
+    }),
+  );
+
+  const result = await service.instrument({
+    mode: "spawn",
+    deviceId: "local",
+    program: "/tmp/fixture",
+    source: { sourceKind: "inline", source: "send('before-resume')" },
+    durationMs: 1,
+  });
+
+  if (result.ok) throw new Error("Resume unexpectedly succeeded");
+  expect(result.error).toBeInstanceOf(AnalysisCapabilityUnavailableError);
+  expect(result.error).toMatchObject({
+    operation: "instrument_with_frida",
+    userMessage: expect.stringContaining("has been cleaned up"),
+  });
+  expect(result.error.partialObservation).toMatchObject({
+    normalized_result: {
+      state: "detached",
+      source_kind: "inline",
+      source_sha256: script.sourceSha256,
+      messages: script.messages,
+      cleanup_error: null,
+      target_state_before_cleanup: "detached",
+      target_resume_observed: false,
+      instrumentation_cleanup: "released",
+    },
+    parameters: { mode: "spawn", program: "/tmp/fixture" },
+  });
   expect(closes).toBe(1);
 });
 

@@ -245,9 +245,10 @@ Terminal frame `data` is the comparison text after the selected normalization.
 New captures also preserve `raw_data` when normalization changes a PTY chunk;
 otherwise `data` is already the original text. Older captures may lack the
 original text for changed chunks. Both values participate in Evidence identity,
-while comparisons and trace assertions use the normalized text. Retaining the
-original adds at most `limits.output_bytes` of text, because it comes from the
-same admitted PTY chunks rather than a second unbounded stream.
+while comparisons and trace assertions use the normalized text. A chunk counts
+against `limits.output_bytes` by the bytes it retains: its normalized text plus,
+when normalization changed it, the original text. A replacement that expands a
+chunk therefore cannot grow retained terminal text beyond that limit.
 
 Rendered frame `lines` hold the visible rows after normalization, with trailing
 U+0020 spaces removed. Blank rows and internal spaces remain. `columns` records
@@ -390,22 +391,34 @@ exit comparison like `settlement.elapsed_ms`.
 Every capture requires `truncation_details`, with separate accounting for:
 
 - `raw_terminal`: original UTF-8 PTY chunk bytes and observed/retained chunk
-  counts. A chunk that does not fit `limits.output_bytes` is omitted whole;
-  a later smaller chunk can still fit.
+  counts. A chunk whose retained text, as described above, does not fit
+  `limits.output_bytes` is omitted whole; a later smaller chunk can still fit.
+  `retained_bytes` counts only original bytes, so normalization can cause
+  omissions even when `observed_bytes` does not exceed `budget_bytes`.
 - `rendered_terminal`: cumulative UTF-8 serialized-state and visible-line
   bytes, plus observed/retained frame counts. This is independent of the raw
   chunk budget and does not count JSON encoding. Repeated screen snapshots can
   exhaust it even when all raw output fits. Rendered states use retained PTY
   input, so raw omissions also limit rendered coverage.
+  When normalization is stopped before allocation, `observed_bytes` counts
+  completed lines and the calculated size of the first rejected normalization
+  stage; the rest of that omitted state is not examined.
 - `filesystem_before` and `filesystem_after`: file-count/depth limits,
   enumeration failures, whole-file hash budget and bytes successfully hashed.
   Directory names are read incrementally within the remaining entry capacity.
   When a directory exceeds that capacity, the retained subset follows filesystem
   enumeration order and is then sorted; it is explicitly incomplete and cannot
   establish that an omitted path is absent.
-  An unreadable directory is recorded in `enumeration_omissions` with its
-  root-aliased path and operating-system error code. Entries observed before
-  that directory remain available, while descendants beneath it stay unknown.
+  A directory that cannot be read or searched, an already inspected symlink
+  that becomes unreadable or disappears, or a directory that becomes
+  unavailable during or after enumeration is recorded in
+  `enumeration_omissions` with the retained containing directory's root-aliased
+  path and the first operating-system error code observed. ENOENT on an entry's
+  initial metadata read means absence and does not create an omission.
+  An omission means the descendant list is incomplete; retained descendants
+  remain known, while unretained paths stay unknown. A selected root
+  that cannot be inspected adds the `directory_unavailable` reason without an
+  omission, since no retained directory identifies it.
   Each retained regular file without a digest has an aliased path, size,
   remaining budget and reason: `file_bytes_budget`,
   `file_changed_or_short_read`, or `file_unavailable`. Its `system_code` is
