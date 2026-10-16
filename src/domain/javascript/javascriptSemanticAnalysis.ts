@@ -40,6 +40,7 @@ import {
 } from "./javascriptSemanticState.js";
 import {
   completeSemanticSteps,
+  traverseJavaScriptAst,
   traverseJavaScriptAstSteps,
 } from "./javascriptSemanticTraversal.js";
 import { semanticRequireOrigin } from "./javascriptSemanticRequireOrigin.js";
@@ -78,6 +79,7 @@ interface BindPatternInput {
   readonly scope: JavaScriptSemanticScopeState;
   readonly state: JavaScriptSemanticAnalysisState;
   readonly mutable: boolean;
+  readonly declarationKind?: "var" | "let" | "const" | "using" | "await using";
   readonly kind?: JavaScriptSemanticDefinition["kind"];
   readonly projection?: readonly (string | number | null)[];
   readonly referenceOnly?: boolean;
@@ -101,6 +103,7 @@ interface AddBindingInput {
   readonly name: string;
   readonly kind: JavaScriptSemanticDefinition["kind"];
   readonly mutable: boolean;
+  readonly declarationKind?: "var" | "let" | "const" | "using" | "await using";
   readonly definitionNode: t.Node;
   readonly initializer: t.Node | null;
   readonly directOrigin?: JavaScriptModuleOrigin;
@@ -685,6 +688,7 @@ const createState = (
     moduleLinks: [],
     linkedRequireCalls: new WeakSet(),
     moduleLinkBindings: new WeakMap(),
+    defaultExportExpressions: new WeakMap(),
     conditionallySkippedExpressions: new WeakSet(),
     requiredModuleEffects: new Map(),
     ambientBindingWrites: new Map(),
@@ -893,10 +897,29 @@ const isSkippedBranch = (parent: t.Node, child: t.Node): boolean => {
   if (t.isForStatement(parent))
     return child === parent.body || child === parent.update;
   if (t.isWhileStatement(parent)) return child === parent.body;
-  if (t.isDoWhileStatement(parent)) return false;
+  if (t.isDoWhileStatement(parent))
+    return (
+      (child === parent.body || child === parent.test) &&
+      bodyMayJumpOut(parent.body)
+    );
+  if (t.isLabeledStatement(parent))
+    return (
+      child === parent.body &&
+      !t.isLoop(parent.body) &&
+      !t.isSwitchStatement(parent.body) &&
+      bodyMayJumpOut(parent.body)
+    );
   if (t.isForInStatement(parent) || t.isForOfStatement(parent))
     return child === parent.left || child === parent.body;
   if (t.isLogicalExpression(parent)) return child === parent.right;
+  if (t.isAssignmentExpression(parent))
+    return (
+      child === parent.right &&
+      (parent.operator === "||=" ||
+        parent.operator === "&&=" ||
+        parent.operator === "??=")
+    );
+  if (t.isAssignmentPattern(parent)) return child === parent.right;
   if (t.isConditionalExpression(parent))
     return child === parent.consequent || child === parent.alternate;
   if (t.isOptionalCallExpression(parent) || t.isCallExpression(parent))
@@ -905,27 +928,59 @@ const isSkippedBranch = (parent: t.Node, child: t.Node): boolean => {
       optionalCallArgumentsMayBeSkipped(parent)
     );
   if (t.isOptionalMemberExpression(parent))
-    return parent.optional && parent.computed && child === parent.property;
+    return (
+      parent.computed &&
+      child === parent.property &&
+      (parent.optional || optionalChainMayShortCircuit(parent.object))
+    );
   return false;
+};
+
+const bodyJumpsOut = new WeakMap<t.Node, boolean>();
+
+const bodyMayJumpOut = (body: t.Node): boolean => {
+  const known = bodyJumpsOut.get(body);
+  if (known !== undefined) return known;
+  let jumpsOut = false;
+  traverseJavaScriptAst(body, {
+    skip: (node) => jumpsOut || t.isFunction(node) || t.isStaticBlock(node),
+    enter: (node, _parent, readAncestors) => {
+      if (!t.isBreakStatement(node) && !t.isContinueStatement(node)) return;
+      const label = node.label;
+      // A jump whose target lies inside the body leaves the rest of it intact.
+      jumpsOut = !readAncestors().some((ancestor) =>
+        label == null
+          ? t.isLoop(ancestor) ||
+            (t.isBreakStatement(node) && t.isSwitchStatement(ancestor))
+          : t.isLabeledStatement(ancestor) &&
+            ancestor.label.name === label.name,
+      );
+    },
+  });
+  bodyJumpsOut.set(body, jumpsOut);
+  return jumpsOut;
 };
 
 const optionalCallArgumentsMayBeSkipped = (
   call: t.CallExpression | t.OptionalCallExpression,
-): boolean => {
-  if (t.isOptionalCallExpression(call) && call.optional) return true;
-  let callee: t.Node = call.callee;
+): boolean =>
+  (t.isOptionalCallExpression(call) && call.optional) ||
+  optionalChainMayShortCircuit(call.callee);
+
+const optionalChainMayShortCircuit = (start: t.Node): boolean => {
+  let link = start;
   while (true) {
     // Parentheses terminate optional-chain short-circuiting. In particular,
     // `(foo?.bar)(arg)` evaluates arg before attempting the call.
-    if (callee.extra?.parenthesized === true) return false;
-    if (t.isOptionalMemberExpression(callee)) {
-      if (callee.optional) return true;
-      callee = callee.object;
-    } else if (t.isMemberExpression(callee)) callee = callee.object;
-    else if (t.isOptionalCallExpression(callee)) {
-      if (callee.optional) return true;
-      callee = callee.callee;
-    } else if (t.isCallExpression(callee)) callee = callee.callee;
+    if (link.extra?.parenthesized === true) return false;
+    if (t.isOptionalMemberExpression(link)) {
+      if (link.optional) return true;
+      link = link.object;
+    } else if (t.isMemberExpression(link)) link = link.object;
+    else if (t.isOptionalCallExpression(link)) {
+      if (link.optional) return true;
+      link = link.callee;
+    } else if (t.isCallExpression(link)) link = link.callee;
     else return false;
   }
 };
@@ -976,6 +1031,9 @@ const bindInnerDeclaration = (
         parent !== null && t.isVariableDeclaration(parent)
           ? parent.kind !== "const"
           : true,
+      ...(parent !== null && t.isVariableDeclaration(parent)
+        ? { declarationKind: parent.kind }
+        : {}),
     });
   else if (t.isClassExpression(node) && t.isIdentifier(node.id))
     addBinding({
@@ -1258,6 +1316,7 @@ const bindPattern = (input: BindPatternInput): void => {
     scope,
     state,
     mutable,
+    declarationKind,
     kind = "variable",
     projection = [],
     referenceOnly = false,
@@ -1300,6 +1359,7 @@ const bindPattern = (input: BindPatternInput): void => {
       name: pattern.name,
       kind,
       mutable,
+      ...(declarationKind === undefined ? {} : { declarationKind }),
       definitionNode: pattern,
       initializer,
       projection,
@@ -1402,6 +1462,7 @@ const addBinding = (input: AddBindingInput): void => {
     name,
     kind,
     mutable,
+    declarationKind,
     definitionNode,
     initializer,
     directOrigin,
@@ -1416,6 +1477,8 @@ const addBinding = (input: AddBindingInput): void => {
     state.bindingsById.set(binding.bindingId, binding);
   }
   binding.mutable ||= mutable;
+  if (declarationKind !== undefined)
+    binding.declarationKinds.add(declarationKind);
   binding.definitions.push({ kind, location: range(definitionNode) });
   if (initializer !== null)
     binding.initializers.push({ node: initializer, projection });
@@ -1443,6 +1506,7 @@ const createBinding = (
   name,
   kind,
   mutable,
+  declarationKinds: new Set(),
   memberWrites: [],
   escapedPaths: [],
   definitions: [],

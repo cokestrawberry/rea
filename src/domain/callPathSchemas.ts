@@ -77,12 +77,17 @@ const resultContextShape = {
   limitations: z.array(z.string()),
 };
 
-/** Evidence-cited directed call-path result containing every shortest path. */
+/**
+ * Evidence-cited directed call-path result. `paths` holds the first shortest
+ * paths in address order; `shortest_path_count` is the exact decimal total.
+ */
 export const callPathResultSchema = z.union([
   z.object({
     ...resultContextShape,
     status: z.literal("found"),
     shortest_hops: z.number().int().min(0),
+    shortest_path_count: z.string().regex(/^[1-9][0-9]*$/u),
+    paths_truncated: z.boolean(),
     search_scope: z.object({ exhaustive: z.boolean() }),
     paths: z.array(pathSchema).min(1),
   }),

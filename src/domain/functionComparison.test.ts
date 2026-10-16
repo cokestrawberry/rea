@@ -312,6 +312,70 @@ describe("function comparison normalized identity", () => {
   });
 });
 
+describe("reference endpoint identity", () => {
+  it.each(["incoming", "outgoing"] as const)(
+    "compares stable %s endpoints independently of generated self names",
+    (direction) => {
+      const referenced = (
+        base: "0x1000" | "0x2000",
+        name: string,
+        kind: "call" | "data" = "call",
+      ) => {
+        const value = dossierWithReference(base, kind);
+        const edge = value.outgoing_references[0]!;
+        const self = procedure(base, `sub_${base.slice(2)}`);
+        const other = procedure(base === "0x1000" ? "0x1010" : "0x2010", name);
+        return functionDossierSchema.parse({
+          ...value,
+          procedure: { ...value.procedure, name: self.name },
+          outgoing_references:
+            direction === "outgoing"
+              ? [{ ...edge, source_procedure: self, target_procedure: other }]
+              : [],
+          incoming_references:
+            direction === "incoming"
+              ? [{ ...edge, source_procedure: other, target_procedure: self }]
+              : [],
+        });
+      };
+      for (const [name, kind, status] of [
+        ["malloc", "call", "unchanged"],
+        ["free", "call", "changed"],
+        ["malloc", "data", "changed"],
+      ] as const) {
+        const result = compareFunctions(
+          observe("1", referenced("0x1000", "malloc")),
+          observe("2", referenced("0x2000", name, kind)),
+        );
+        expect(
+          result.dimensions.find(({ dimension }) => dimension === "references"),
+        ).toMatchObject({ status });
+      }
+    },
+  );
+
+  it("keeps address-derived referenced names unknown after a callee moves", () => {
+    const named = (base: "0x1000" | "0x2000") =>
+      functionDossierSchema.parse({
+        ...dossier("return helper();", base),
+        referenced_names: [
+          {
+            source_address: base,
+            address: base === "0x1000" ? "0x1010" : "0x2010",
+            value: base === "0x1000" ? "FUN_00101000" : "FUN_00101040",
+          },
+        ],
+      });
+    const result = compareFunctions(
+      observe("3", named("0x1000")),
+      observe("4", named("0x2000")),
+    );
+    expect(
+      result.dimensions.find(({ dimension }) => dimension === "strings_names"),
+    ).toMatchObject({ status: "unknown" });
+  });
+});
+
 describe("function call relationship coverage", () => {
   const coverageCases: {
     readonly label: string;

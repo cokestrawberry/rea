@@ -29,8 +29,11 @@ import {
   type TypeRange,
 } from "./ManagedMemberInspectorCore.js";
 import { edgeTargets } from "./ManagedMethodSpecs.js";
+import { signatureTypeNames } from "./ManagedSignatureTypeNames.js";
 import { typeNameLookup } from "./ManagedTypeNames.js";
+import { managedTypeReferences } from "./ManagedTypeReferences.js";
 import { parseUserStrings } from "./ManagedUserStrings.js";
+import { readTypeMemberListFacts } from "./ManagedTypeMemberLists.js";
 import {
   edges,
   parseExportedTypes,
@@ -71,6 +74,7 @@ const unavailable = (
         requires_mvid: null,
       },
       types: [],
+      signature_resolution: "type-names-v1",
       exported_types: null,
       user_strings: null,
       fields: [],
@@ -113,12 +117,14 @@ const readMemberInventory = (
     rootOffset,
     cli.metadata.size,
   );
+  const memberLists = readTypeMemberListFacts(bytes, layout);
   const inventory = readManagedMetadataInventory(
     bytes,
     layout,
     readManagedResourceDirectory(pe, issues),
+    memberLists,
   );
-  return { layout, inventory };
+  return { layout, inventory, memberLists };
 };
 
 const selectTypes = (
@@ -185,9 +191,13 @@ export const inspectManagedMembersBytes = (
     return unavailable(target, bytes, pe.cliIssue, typeNames);
   const issues: ManagedParseIssue[] = [];
   try {
-    const { layout, inventory } = readMemberInventory(bytes, pe, issues);
+    const { layout, inventory, memberLists } = readMemberInventory(
+      bytes,
+      pe,
+      issues,
+    );
     appendManagedParseIssues(issues, inventory.issues);
-    const ranges = typeRanges(bytes, layout, issues);
+    const ranges = typeRanges(bytes, layout, issues, memberLists);
     const {
       tokens: selected,
       selection,
@@ -197,11 +207,22 @@ export const inspectManagedMembersBytes = (
     appendManagedParseIssues(issues, parsedTypes.issues);
     const exportedTypes = parseExportedTypes(bytes, layout);
     appendManagedParseIssues(issues, exportedTypes.issues);
-    const fields = parseFields(bytes, layout, ranges, selected);
+    const typeReferences = managedTypeReferences(bytes, layout, issues);
+    const signatureTypeName = signatureTypeNames(
+      layout,
+      issues,
+      parsedTypes,
+      typeReferences,
+    );
+    const fields = parseFields(bytes, layout, ranges, memberLists, {
+      signatureTypeName,
+      selected,
+    });
     const memberRefs = parseMemberRefs(
       bytes,
       layout,
-      typeNameLookup(bytes, layout, ranges, issues),
+      typeNameLookup(bytes, layout, ranges, issues, typeReferences),
+      signatureTypeName,
     );
     appendManagedParseIssues(issues, memberRefs.issues);
     const methods = parseMethods({
@@ -209,6 +230,8 @@ export const inspectManagedMembersBytes = (
       layout,
       pe,
       ranges,
+      signatureTypeName,
+      memberLists,
       selected,
       methodOffset,
       methodLimit,
@@ -267,6 +290,7 @@ export const inspectManagedMembersBytes = (
             selected === null
               ? parsedTypes.types
               : parsedTypes.types.filter((type) => selected.has(type.token)),
+          signature_resolution: "type-names-v1",
           exported_types: exportedTypes.exportedTypes,
           fields: fields.fields,
           methods: methods.methods,
