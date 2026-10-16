@@ -59,35 +59,46 @@ export const run = async (
   const logger = createLogger("mcp", config.value.logLevel);
   const serverLogger = logger.child({ layer: "server" });
   const session = createBinarySession(config.value, logger, environment);
-  const opened = await openInitialTarget(
-    session,
-    config.value,
-    serverLogger,
-    dependencies.writeStderr,
+  const startup = new AbortController();
+  const unregisterStartup = dependencies.registerShutdown(() =>
+    startup.abort(),
   );
-  if (!opened.ok) return opened.exitCode;
-  const transport = await startMcpTransport(dependencies, session, {
-    logger,
-    serverLogger,
-    environment,
-    delivery: createToolResultDelivery(config.value.mcpMaxResponseBytes),
-    loadOptionalProviders:
-      dependencies.loadOptionalProviders ??
-      (() =>
-        loadOptionalObservationProviders(
-          createOptionalObservationFactories(environment),
-        )),
-  });
-  if (!transport.ok) return 1;
-  createShutdown({
-    handle: transport.handle,
-    closeAndroid: transport.closeAndroid,
-    closeOptionalProviders: transport.closeOptionalProviders,
-    session,
-    dependencies,
-    serverLogger,
-  });
-  return 0;
+  let requestShutdown: (() => void) | undefined;
+  try {
+    const opened = await openInitialTarget(
+      session,
+      config.value,
+      serverLogger,
+      dependencies,
+      startup.signal,
+    );
+    if (!opened.ok) return opened.exitCode;
+    const transport = await startMcpTransport(dependencies, session, {
+      logger,
+      serverLogger,
+      environment,
+      delivery: createToolResultDelivery(config.value.mcpMaxResponseBytes),
+      loadOptionalProviders:
+        dependencies.loadOptionalProviders ??
+        (() =>
+          loadOptionalObservationProviders(
+            createOptionalObservationFactories(environment),
+          )),
+    });
+    if (!transport.ok) return 1;
+    requestShutdown = createShutdown({
+      handle: transport.handle,
+      closeAndroid: transport.closeAndroid,
+      closeOptionalProviders: transport.closeOptionalProviders,
+      session,
+      dependencies,
+      serverLogger,
+    }).request;
+    return 0;
+  } finally {
+    unregisterStartup();
+    if (startup.signal.aborted) requestShutdown?.();
+  }
 };
 
 /** Run the executable boundary without exposing an unexpected startup cause. */
