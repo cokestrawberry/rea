@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   managedFailure,
   ManagedReaderFailure,
@@ -8,7 +10,14 @@ import type {
   ManagedParseIssue,
 } from "../domain/managed/managedArtifact.js";
 import { managedDecodeBudget } from "./ManagedDecodeBudget.js";
-import type { ManagedMetadataLayout } from "./ManagedMetadataLayout.js";
+import {
+  readManagedTypeNesting,
+  type ManagedTypeNesting,
+} from "./ManagedTypeNesting.js";
+import type {
+  ManagedMetadataLayout,
+  MetadataTableLayout,
+} from "./ManagedMetadataLayout.js";
 import {
   metadataRowCursor,
   metadataCodedToken,
@@ -17,8 +26,8 @@ import {
   readMetadataString,
   sha256Bytes,
 } from "./ManagedMetadataHeaps.js";
-import { memberListIndexSize } from "./ManagedMemberPointers.js";
-import { typeMemberList } from "./ManagedMemberOwnership.js";
+import { memberListTable } from "./ManagedMemberPointers.js";
+import type { TypeMemberListFacts } from "./ManagedTypeMemberLists.js";
 
 export type ManagedType = ManagedMemberInspection["types"][number];
 export type ManagedExportedType = NonNullable<
@@ -42,6 +51,10 @@ export type ManagedExceptionRegion =
 export interface TypeRange {
   readonly token: string;
   readonly fullName: string | null;
+  readonly fieldStart: number | null;
+  readonly fieldEnd: number | null;
+  readonly methodStart: number | null;
+  readonly methodEnd: number | null;
 }
 
 /**
@@ -69,6 +82,27 @@ export interface ParsedInstruction {
   readonly operand: string | null;
 }
 
+const rowRange = (
+  table: MetadataTableLayout | undefined,
+  start: number | null,
+  end: number | null,
+): {
+  readonly first: number | null;
+  readonly last: number | null;
+  readonly count: number;
+} => {
+  const total = table?.rowCount ?? 0;
+  if (start === null || end === null)
+    return { first: null, last: null, count: 0 };
+  const lastExclusive = Math.min(end, total + 1);
+  if (start >= lastExclusive) return { first: null, last: null, count: 0 };
+  return {
+    first: start,
+    last: lastExclusive - 1,
+    count: lastExclusive - start,
+  };
+};
+
 export const fullName = (namespace: string, name: string): string =>
   namespace.length === 0 ? name : `${namespace}.${name}`;
 
@@ -77,6 +111,7 @@ const readTypeRange = (
   layout: ManagedMetadataLayout,
   row: number,
   issues: ManagedParseIssue[],
+  memberLists: TypeMemberListFacts,
 ): TypeRange => {
   const cursor = metadataRowCursor(bytes, layout, 2, row);
   cursor.readUInt32();
@@ -96,43 +131,47 @@ const readTypeRange = (
         ),
       issues,
     ) ?? null;
-  return { token: metadataToken(2, row), fullName: declaredName };
+  cursor.readIndex(layout.codedIndexSize("TypeDefOrRef"));
+  const current = memberLists.entries[row - 1];
+  return {
+    token: metadataToken(2, row),
+    fullName: declaredName,
+    fieldStart: current?.field.start.value ?? null,
+    fieldEnd: current?.field.end ?? null,
+    methodStart: current?.method.start.value ?? null,
+    methodEnd: current?.method.end ?? null,
+  };
 };
 
 export const typeRanges = (
   bytes: Buffer,
   layout: ManagedMetadataLayout,
   issues: ManagedParseIssue[],
+  memberLists: TypeMemberListFacts,
 ): readonly TypeRange[] => {
+  issues.push(...memberLists.issues);
   const typeTable = layout.table(2);
   const ranges: TypeRange[] = [];
   for (let row = 1; row <= (typeTable?.rowCount ?? 0); row += 1)
-    ranges.push(readTypeRange(bytes, layout, row, issues));
+    ranges.push(readTypeRange(bytes, layout, row, issues, memberLists));
   return ranges;
 };
-
-const decreasingListIssue = (
-  row: number,
-  column: "FieldList" | "MethodList",
-  start: number,
-  offset: number,
-): ManagedParseIssue => ({
-  code: "invalid-row",
-  scope: `metadata.TypeDef:${metadataToken(2, row)}`,
-  offset,
-  detail: `TypeDef ${column} ${String(start)} is below the previous TypeDef's ${column}; list positions belong to the first TypeDef whose run reaches them`,
-});
 
 export const parseTypes = (
   bytes: Buffer,
   layout: ManagedMetadataLayout,
+  ranges: readonly TypeRange[],
 ): {
   readonly types: readonly ManagedType[];
   readonly issues: readonly ManagedParseIssue[];
+  readonly nesting: ManagedTypeNesting;
 } => {
   const typeTable = layout.table(2);
+  const fields = memberListTable(layout, 4);
+  const methods = memberListTable(layout, 6);
   const items: ManagedType[] = [];
   const issues: ManagedParseIssue[] = [];
+  const nesting = readManagedTypeNesting(bytes, layout, issues);
   for (let row = 1; row <= (typeTable?.rowCount ?? 0); row += 1) {
     readManagedValue(() => {
       const cursor = metadataRowCursor(bytes, layout, 2, row);
@@ -153,20 +192,17 @@ export const parseTypes = (
       const extendsRaw = cursor.readIndex(
         layout.codedIndexSize("TypeDefOrRef"),
       );
-      const fieldOffset = cursor.offset;
-      const fieldStart = cursor.readIndex(memberListIndexSize(layout, 4));
-      const methodOffset = cursor.offset;
-      const methodStart = cursor.readIndex(memberListIndexSize(layout, 6));
-      const fieldList = typeMemberList(bytes, layout, 4, row);
-      const methodList = typeMemberList(bytes, layout, 6, row);
-      if (fieldList.decreasing)
-        issues.push(
-          decreasingListIssue(row, "FieldList", fieldStart, fieldOffset),
-        );
-      if (methodList.decreasing)
-        issues.push(
-          decreasingListIssue(row, "MethodList", methodStart, methodOffset),
-        );
+      const currentRange = ranges[row - 1] ?? null;
+      const fieldRange = rowRange(
+        fields,
+        currentRange?.fieldStart ?? null,
+        currentRange?.fieldEnd ?? null,
+      );
+      const methodRange = rowRange(
+        methods,
+        currentRange?.methodStart ?? null,
+        currentRange?.methodEnd ?? null,
+      );
       const extendsReason = metadataCodedTokenInvalidReason(
         extendsRaw,
         2,
@@ -194,19 +230,19 @@ export const parseTypes = (
           layout.rowCounts,
         ),
         field_list: {
-          first_row: fieldList.first,
-          last_row: fieldList.last,
-          count: fieldList.count,
+          first_row: fieldRange.first,
+          last_row: fieldRange.last,
+          count: fieldRange.count,
         },
         method_list: {
-          first_row: methodList.first,
-          last_row: methodList.last,
-          count: methodList.count,
+          first_row: methodRange.first,
+          last_row: methodRange.last,
+          count: methodRange.count,
         },
       });
     }, issues);
   }
-  return { types: items, issues };
+  return { types: items, issues, nesting };
 };
 
 export const readCompressed = (
@@ -464,11 +500,26 @@ const readTypeOperand = (
   return token;
 };
 
+/** A TypeDefOrRefOrSpec coded index embedded in a signature blob. */
+interface TypeOperand {
+  readonly offset: number;
+  readonly next: number;
+  readonly value: number;
+}
+
 const readTypeSignature = (
   blob: Buffer,
   offset: number,
   base: SignaturePosition,
-  layout?: ManagedMetadataLayout,
+  {
+    layout,
+    operands,
+  }: {
+    /** Validate each type operand against these tables, as specs require. */
+    readonly layout?: ManagedMetadataLayout;
+    /** Collect each type operand, to resolve it by name. */
+    readonly operands?: TypeOperand[];
+  } = {},
 ): { readonly value: string; readonly next: number } => {
   const stack: TypeContinuation[] = [];
   let cursor = offset;
@@ -496,6 +547,7 @@ const readTypeSignature = (
       cursor += 1;
     } else if (kind === 0x1f || kind === 0x20) {
       const token = readTypeOperand(blob, cursor + 1, layout);
+      operands?.push({ offset: cursor + 1, ...token });
       const modifier = `${kind === 0x1f ? "modreq" : "modopt"}:${String(token.value)}`;
       // A modifier frame on top was pushed by the directly preceding byte;
       // keep an adjacent run together and in source order.
@@ -505,6 +557,7 @@ const readTypeSignature = (
       cursor = token.next;
     } else if (kind === 0x11 || kind === 0x12) {
       const token = readTypeOperand(blob, cursor + 1, layout);
+      operands?.push({ offset: cursor + 1, ...token });
       value = `${kind === 0x11 ? "valuetype" : "class"}:${String(token.value)}`;
       cursor = token.next;
     } else if (kind === 0x1e || kind === 0x13) {
@@ -525,6 +578,7 @@ const readTypeSignature = (
           cursor + 1,
         );
       const token = readTypeOperand(blob, cursor + 2, layout, [2, 1]);
+      operands?.push({ offset: cursor + 2, ...token });
       const argumentCount = readCompressed(blob, token.next);
       if (argumentCount.value === 0)
         return malformedSignature(
@@ -646,7 +700,7 @@ export const specSignature = (
     const types: string[] = [];
     // Each Type consumes at least one byte, so a false count fails on truncation.
     for (let index = 0; index < count; index += 1) {
-      const type = readTypeSignature(blob, cursor, "type", layout);
+      const type = readTypeSignature(blob, cursor, "type", { layout });
       types.push(type.value);
       cursor = type.next;
     }
@@ -672,13 +726,19 @@ export const specSignature = (
   }
 };
 
-type DecodedSignature = Omit<ManagedSignature, "raw_length" | "raw_sha256">;
+type DecodedSignature = Omit<
+  ManagedSignature,
+  "raw_length" | "raw_sha256" | "resolved_sha256"
+>;
 
 /**
  * Decode a field or member method signature. A malformed or unsupported blob
  * decodes as kind `unknown` with its reason.
  */
-const decodeSignature = (blob: Buffer): DecodedSignature => {
+const decodeSignature = (
+  blob: Buffer,
+  operands: TypeOperand[] = [],
+): DecodedSignature => {
   try {
     if (blob.length === 0)
       throw managedFailure("invalid-blob", "signature", "empty signature", 0);
@@ -686,7 +746,7 @@ const decodeSignature = (blob: Buffer): DecodedSignature => {
     // FieldSig (II.23.2.4) is exactly FIELD; a flagged FIELD header is not a
     // method header either, so it is malformed below.
     if (first === 0x06) {
-      const fieldType = readTypeSignature(blob, 1, "field");
+      const fieldType = readTypeSignature(blob, 1, "field", { operands });
       return {
         kind: "field",
         parse_status: fieldType.next === blob.length ? "decoded" : "partial",
@@ -701,11 +761,15 @@ const decodeSignature = (blob: Buffer): DecodedSignature => {
       };
     }
     const header = readMethodSignatureHeader(blob, 0, "member");
-    const returnType = readTypeSignature(blob, header.next, "return");
+    const returnType = readTypeSignature(blob, header.next, "return", {
+      operands,
+    });
     let offset = returnType.next;
     const parameters: string[] = [];
     for (let index = 0; index < header.parameterCount; index += 1) {
-      const parameter = readTypeSignature(blob, offset, "parameter");
+      const parameter = readTypeSignature(blob, offset, "parameter", {
+        operands,
+      });
       parameters.push(parameter.value);
       offset = parameter.next;
     }
@@ -773,11 +837,58 @@ export const signatureGenericArity = (
     ? (decoded.generic_parameter_count ?? 0)
     : null;
 
+/**
+ * SHA-256 of the namespace-qualified name of a TypeDefOrRefOrSpec coded index,
+ * or null when it has no name.
+ */
+export type SignatureTypeName = (codedIndex: number) => Buffer | null;
+
+/**
+ * Each type operand is replaced by 0xff, which never starts a compressed
+ * coded index, then the 32-byte name digest; a blob without type operands
+ * keeps its raw digest. So no decodable signature's resolved preimage is
+ * another's, but an undecodable blob can hold one, and its raw digest then
+ * equals that resolved digest. Comparison keys the two kinds apart.
+ */
+const OPERAND_MARKER = Buffer.from([0xff]);
+
+/**
+ * Digest the blob with each type operand replaced by its type's name digest,
+ * so the value does not depend on build-local row numbers.
+ */
+const resolvedSha256 = (
+  blob: Buffer,
+  operands: readonly TypeOperand[],
+  typeName: SignatureTypeName,
+): string | null => {
+  const hash = createHash("sha256");
+  let copied = 0;
+  for (const operand of operands) {
+    const name = typeName(operand.value);
+    if (name === null) return null;
+    hash.update(blob.subarray(copied, operand.offset));
+    hash.update(OPERAND_MARKER);
+    hash.update(name);
+    copied = operand.next;
+  }
+  hash.update(blob.subarray(copied));
+  return hash.digest("hex");
+};
+
 export const signature = (
   blob: Buffer,
   rawSha256?: string,
-): ManagedSignature => ({
-  raw_length: blob.length,
-  raw_sha256: rawSha256 ?? sha256Bytes(blob),
-  ...decodeSignature(blob),
-});
+  typeName: SignatureTypeName = () => null,
+): ManagedSignature => {
+  const operands: TypeOperand[] = [];
+  const decoded = decodeSignature(blob, operands);
+  return {
+    raw_length: blob.length,
+    raw_sha256: rawSha256 ?? sha256Bytes(blob),
+    resolved_sha256:
+      decoded.kind === "unknown"
+        ? null
+        : resolvedSha256(blob, operands, typeName),
+    ...decoded,
+  };
+};

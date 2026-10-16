@@ -54,7 +54,7 @@ const observedCandidatesSchema = z
   .tuple([nativeSymbolSchema])
   .rest(nativeSymbolSchema);
 
-export const pinvokeVerificationSchema = z.discriminatedUnion("status", [
+export const pinvokeVerificationSchema = z.union([
   z.strictObject({
     ...pinvokeVerificationContextShape,
     status: z.literal("verified"),
@@ -78,6 +78,14 @@ export const pinvokeVerificationSchema = z.discriminatedUnion("status", [
     confidence: z.literal("unknown"),
     matched_native: z.null(),
     candidates: emptyArraySchema,
+  }),
+  z.strictObject({
+    ...pinvokeVerificationContextShape,
+    status: z.literal("unresolved"),
+    basis: z.literal("module-identity-unknown"),
+    confidence: z.literal("unknown"),
+    matched_native: nativeSymbolSchema,
+    candidates: observedCandidatesSchema,
   }),
   z.strictObject({
     ...pinvokeVerificationContextShape,

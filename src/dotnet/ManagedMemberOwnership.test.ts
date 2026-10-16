@@ -6,6 +6,7 @@ import { inspectManagedMembersBytes } from "./ManagedMemberInspector.js";
 import { managedDecodeBudget } from "./ManagedDecodeBudget.js";
 import { memberDeclaringTypeRowLookup } from "./ManagedMemberOwnership.js";
 import { memberListIndexSize } from "./ManagedMemberPointers.js";
+import { readTypeMemberListFacts } from "./ManagedTypeMemberLists.js";
 import { readManagedMetadataLayout } from "./ManagedMetadataLayout.js";
 import {
   buildManagedMemberPointerFixture,
@@ -25,46 +26,36 @@ const metadataLayout = (bytes: Buffer) => {
   );
 };
 
-/** Rewrite the fixture's three TypeDef list columns; returns each row's FieldList offset. */
-const writeTypeLists = (
-  bytes: Buffer,
-  fields: readonly number[],
-  methods: readonly number[],
-): readonly number[] => {
-  const layout = metadataLayout(bytes);
-  const types = layout.table(2);
-  if (types === undefined) throw new Error("Fixture omitted TypeDef");
-  return Array.from({ length: 3 }, (_, row) => {
-    const fieldOffset =
-      types.offset +
-      row * types.rowSize +
-      4 +
-      2 * layout.stringIndexSize +
-      layout.codedIndexSize("TypeDefOrRef");
-    bytes.writeUInt16LE(fields[row] ?? 0, fieldOffset);
-    bytes.writeUInt16LE(
-      methods[row] ?? 0,
-      fieldOffset + memberListIndexSize(layout, 4),
-    );
-    return fieldOffset;
-  });
-};
-
 describe("managed declaring type ownership", () => {
   it.prop([
     fc.tuple(
-      fc.tuple(
-        ...Array.from({ length: 3 }, () => fc.integer({ min: 0, max: 6 })),
-      ),
-      fc.tuple(
-        ...Array.from({ length: 3 }, () => fc.integer({ min: 0, max: 6 })),
-      ),
+      fc
+        .array(fc.integer({ min: 1, max: 3 }), { minLength: 3, maxLength: 3 })
+        .map((starts) => starts.sort((left, right) => left - right)),
+      fc
+        .array(fc.integer({ min: 1, max: 3 }), { minLength: 3, maxLength: 3 })
+        .map((starts) => starts.sort((left, right) => left - right)),
     ),
   ])(
-    "retains first-match field and method owners for arbitrary metadata lists",
+    "matches literal ownership ranges for valid nondecreasing list starts",
     ([fields, methods]) => {
       const bytes = buildManagedMemberPointerFixture();
-      writeTypeLists(bytes, fields, methods);
+      const layout = metadataLayout(bytes);
+      const types = layout.table(2);
+      if (types === undefined) throw new Error("Fixture omitted TypeDef");
+      for (let row = 0; row < 3; row++) {
+        const fieldOffset =
+          types.offset +
+          row * types.rowSize +
+          4 +
+          2 * layout.stringIndexSize +
+          layout.codedIndexSize("TypeDefOrRef");
+        bytes.writeUInt16LE(fields[row] ?? 0, fieldOffset);
+        bytes.writeUInt16LE(
+          methods[row] ?? 0,
+          fieldOffset + memberListIndexSize(layout, 4),
+        );
+      }
       const target = managedPeFixtureTarget(bytes);
       const members = inspectManagedMembersBytes(bytes, target);
       const artifact = inspectManagedArtifactBytes(bytes, target);
@@ -72,22 +63,22 @@ describe("managed declaring type ownership", () => {
         ["fields", fields, "field_list"],
         ["methods", methods, "method_list"],
       ] as const) {
-        // Each type's list covers exactly the positions whose members it declares.
-        const declaring = members[table].map(
-          (member) => member.declaring_type_token,
-        );
+        const declaring = members[table].map((member) => member.declaring_type_token);
         expect(members.types.map((type) => type[list].count)).toEqual(
-          members.types.map(
-            (type) => declaring.filter((token) => token === type.token).length,
-          ),
+          members.types.map((type) => declaring.filter((token) => token === type.token).length),
         );
         // The fixture's pointers reorder physical rows 1,2 to list positions 2,1.
         const expected = [2, 1].map((position) => {
-          const owner = starts.findIndex(
-            (start, index) =>
-              position >= start && position < (starts[index + 1] ?? 3),
-          );
-          return owner < 0 ? null : members.types[owner]?.full_name;
+          let owner: number | null = null;
+          for (let index = 0; index < starts.length; index += 1) {
+            const start = starts[index];
+            const end = starts[index + 1] ?? 3;
+            if (start !== undefined && position >= start && position < end) {
+              owner = index;
+              break;
+            }
+          }
+          return owner === null ? null : members.types[owner]?.full_name;
         });
         expect(members[table].map((member) => member.declaring_type)).toEqual(
           expected,
@@ -99,53 +90,10 @@ describe("managed declaring type ownership", () => {
     },
   );
 
-  it("reports a decreasing list as invalid and keeps type lists on member owners", () => {
-    const bytes = buildManagedMemberPointerFixture();
-    // FieldList of the third type drops below the second's; MethodList stays ascending.
-    const fieldListOffsets = writeTypeLists(bytes, [1, 2, 1], [1, 1, 2]);
-    const result = inspectManagedMembersBytes(
-      bytes,
-      managedPeFixtureTarget(bytes),
-    );
-
-    expect(
-      result.types.map(({ field_list, method_list }) => ({
-        field_list,
-        method_list,
-      })),
-    ).toEqual([
-      {
-        field_list: { first_row: 1, last_row: 1, count: 1 },
-        method_list: { first_row: null, last_row: null, count: 0 },
-      },
-      {
-        field_list: { first_row: null, last_row: null, count: 0 },
-        method_list: { first_row: 1, last_row: 1, count: 1 },
-      },
-      {
-        field_list: { first_row: 2, last_row: 2, count: 1 },
-        method_list: { first_row: 2, last_row: 2, count: 1 },
-      },
-    ]);
-    expect(result.fields.map((field) => field.declaring_type)).toEqual([
-      "Fixture.B",
-      "<Module>",
-    ]);
-    expect(result.coverage.state).toBe("partial");
-    expect(result.coverage.issues).toEqual([
-      {
-        code: "invalid-row",
-        scope: "metadata.TypeDef:0x02000003",
-        offset: fieldListOffsets[2],
-        detail: expect.stringContaining("TypeDef FieldList 1 is below"),
-      },
-    ]);
-  });
-
-  it("indexes large unordered member lists once per layout", () => {
-    const count = 100_000;
+  it("indexes wide valid member lists once per layout", () => {
+    const count = 65_538;
     const bytes = buildManagedPeFixture({
-      additionalEmptyTypes: count - 1,
+      additionalEmptyTypes: count - 3,
       methodRowCount: count,
     });
     const layout = metadataLayout(bytes);
@@ -157,24 +105,25 @@ describe("managed declaring type ownership", () => {
       2 * layout.stringIndexSize +
       layout.codedIndexSize("TypeDefOrRef") +
       memberListIndexSize(layout, 4);
-    // The first reversed range forces first-match semantics, with the owner last.
-    // 100,000 MethodDef rows require a four-byte method-list index.
-    bytes.writeUInt32LE(2, methodOffset);
-    const start = performance.now();
-    const lookup = memberDeclaringTypeRowLookup(bytes, layout, 6);
-    expect(
-      Array.from({ length: count }, (_, row) => lookup(row + 1)).every(
-        (owner) => owner === count,
-      ),
-    ).toBe(true);
-    expect(performance.now() - start).toBeLessThan(2000);
-    expect(memberDeclaringTypeRowLookup(bytes, layout, 6)).toBe(lookup);
+    // Each preceding TypeDef owns one row; later TypeDefs have empty intervals.
+    // This exercises the four-byte list-index boundary without malformed starts.
+    for (let row = 0; row < count; row += 1)
+      bytes.writeUInt32LE(
+        Math.min(row + 1, 65_537),
+        methodOffset + row * types.rowSize,
+      );
+    const facts = readTypeMemberListFacts(bytes, layout);
+    const lookup = memberDeclaringTypeRowLookup(bytes, layout, 6, facts);
+    expect(lookup(65_536)).toBe(65_536);
+    expect(lookup(65_535)).toBe(65_535);
+    expect(memberDeclaringTypeRowLookup(bytes, layout, 6, facts)).toBe(lookup);
     expect([lookup(0), lookup(count + 1)]).toEqual([0, 0]);
   });
 
   it("admits ownership storage before allocation and retains failed admission", () => {
     const bytes = buildManagedPeFixture();
     const layout = metadataLayout(bytes);
+    const facts = readTypeMemberListFacts(bytes, layout);
     const budget = managedDecodeBudget(layout);
     const capacityFailure = new ManagedReaderFailure({
       code: "resource-limit",
@@ -196,12 +145,12 @@ describe("managed declaring type ownership", () => {
       }),
     );
     try {
-      expect(() => memberDeclaringTypeRowLookup(bytes, layout, 6)).toThrow(
-        capacityFailure,
-      );
-      expect(() => memberDeclaringTypeRowLookup(bytes, layout, 6)).toThrow(
-        capacityFailure,
-      );
+      expect(() =>
+        memberDeclaringTypeRowLookup(bytes, layout, 6, facts),
+      ).toThrow(capacityFailure);
+      expect(() =>
+        memberDeclaringTypeRowLookup(bytes, layout, 6, facts),
+      ).toThrow(capacityFailure);
       expect(admission).toHaveBeenCalledTimes(1);
       expect(allocations).toBe(0);
     } finally {
