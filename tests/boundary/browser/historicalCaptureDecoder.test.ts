@@ -23,6 +23,7 @@ import { historicalHar } from "../../fixtures/historicalHar.js";
 import { decodeHarCapture } from "../../../src/browser/history/HarCapture.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
 import { OwnedFileHandle } from "../../../src/filesystem/OwnedFileHandle.js";
+import { ProviderProcessSupervisor } from "../../../src/process/ProviderProcess.js";
 
 const linux = it.skipIf(process.platform !== "linux");
 
@@ -196,6 +197,73 @@ it("retains a failed capture reader and retries it before a fresh load", async (
     allowClose = true;
     await decoder.close().catch(() => undefined);
     close.mockRestore();
+  }
+});
+
+it("keeps the private runtime root until a decoder that failed to stop is stopped", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rea-historical-stop-"));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "input.har");
+  await writeFile(path, JSON.stringify(historicalHar()));
+  const originalStop = ProviderProcessSupervisor.prototype.stop;
+  const stop = vi.spyOn(ProviderProcessSupervisor.prototype, "stop");
+  let allowStop = false;
+  stop.mockImplementation(async function (
+    this: ProviderProcessSupervisor,
+    options,
+  ) {
+    if (!allowStop)
+      return {
+        status: "incomplete" as const,
+        reason: "injected decoder stop failure",
+      };
+    return originalStop.call(this, options);
+  });
+  let privatePath = "";
+  let decoderCalls = 0;
+  const decoder = new HistoricalCaptureDecoder(
+    [
+      {
+        format: "har",
+        identity: HAR_CAPTURE_PROVIDER_IDENTITY,
+        command: async (_, runtimePath) => {
+          decoderCalls += 1;
+          privatePath = runtimePath;
+          return {
+            command: process.execPath,
+            arguments: ["-e", "process.exit(0)"],
+          };
+        },
+      },
+    ],
+    process.env,
+  );
+  const input = inspectWebNetworkCaptureInputSchema.parse({
+    capture_path: path,
+    format: "har",
+  });
+  try {
+    const first = await decoder.inspect(input);
+    if (first.ok)
+      throw new Error("A decoder that failed to stop must fail inspection");
+    expect(first.error.cleanupIncomplete).toBe(true);
+    expect(first.error.cleanupResources).toContain(privatePath);
+    await access(privatePath);
+
+    const refused = await decoder.inspect(input);
+    if (refused.ok) throw new Error("Fresh load must wait for owner cleanup");
+    expect(refused.error.cleanupIncomplete).toBe(true);
+    expect(refused.error.cleanupResources).toContain(privatePath);
+    expect(decoderCalls).toBe(1);
+    await access(privatePath);
+
+    allowStop = true;
+    await decoder.close();
+    await expect(access(privatePath)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    allowStop = true;
+    await decoder.close().catch(() => undefined);
+    stop.mockRestore();
   }
 });
 
