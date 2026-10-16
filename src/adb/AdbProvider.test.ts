@@ -1210,7 +1210,7 @@ it.each([
     const { binary, root } = await writeAdbStub(
       (stubRoot) => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi
 if [ "$1" = "-s" ]; then printf '%s\\n' "$3" >> "${stubRoot}/calls"; fi
-if [ "$1" = "-s" ] && [ "$4" = "test" ]; then ${probe}; fi
+if [ "$1" = "-s" ] && [ "$4" = "sh" ]; then ${probe}; fi
 exit 0`,
     );
     const localFile = join(root, "payload.bin");
