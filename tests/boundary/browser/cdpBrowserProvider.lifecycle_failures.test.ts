@@ -160,7 +160,9 @@ describe("CdpBrowserProvider: cancellation and session events", () => {
       },
     });
   });
+});
 
+describe("CdpBrowserProvider: session timeline events", () => {
   it("observes user-driven reload, SPA, redirect, failure, and lifecycle events", async () => {
     const browser = await startFakeCdpBrowser({
       sessionTimeline: "same_origin",
