@@ -488,8 +488,19 @@ const patchWebContentsIpc = (webContents, contentsId) => {
     };
 };
 
+// web-contents-created may fire before browser-window-created, so the owning
+// window is resolved when an event is recorded rather than when patching.
+const webContentsOwners = new WeakMap();
+
 const patchWebContents = (webContents, windowId) => {
   if (webContents === null || webContents === undefined) return;
+  const knownOwner = webContentsOwners.get(webContents);
+  if (knownOwner !== undefined) {
+    if (windowId !== null) knownOwner.windowId = windowId;
+    return;
+  }
+  const owner = { windowId };
+  webContentsOwners.set(webContents, owner);
   const contentsId = identity(webContents, "webContents");
   patchEmitter(webContents, (event, args) => {
     const navigation = [
@@ -520,7 +531,7 @@ const patchWebContents = (webContents, windowId) => {
         if (typeof preventDefault === "function") preventDefault.call(args[0]);
         recordRuntime("navigation", event, "blocked", {
           target: contentsId,
-          sender: windowId,
+          sender: owner.windowId,
           argument_shape_values: args,
           error: true,
         });
@@ -529,7 +540,7 @@ const patchWebContents = (webContents, windowId) => {
     }
     recordRuntime(kind, event, "observed", {
       target: contentsId,
-      sender: windowId,
+      sender: owner.windowId,
       argument_shape_values: args,
       error: kind === "error",
     });
@@ -548,6 +559,9 @@ const patchWebContents = (webContents, windowId) => {
 
 const patchWindows = (app) => {
   if (app === null || app === undefined) return;
+  app.on("web-contents-created", (_event, webContents) => {
+    patchWebContents(webContents, null);
+  });
   app.on("browser-window-created", (_event, window) => {
     const targetId = identity(window, "window");
     recordRuntime("window-lifecycle", "created", "completed", {

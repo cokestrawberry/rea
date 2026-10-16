@@ -8,6 +8,37 @@ import {
 import { parseProcessScenario } from "../../domain/process/processScenario.js";
 
 const rootPid = 41_010;
+it.each(["a", ""])(
+  "bounds literal replacement before allocation for %j",
+  (pattern) => {
+    const scenario = parseProcessScenario({
+      executable: "unused",
+      normalization: {
+        paths: false,
+        pids: false,
+        ports: false,
+        patterns: [{ pattern, replacement: "b".repeat(50) }],
+      },
+    });
+    const normalize = createProcessTextNormalizer(scenario, "unused", 1);
+    expect(normalize("a", 3)).toBeUndefined();
+  },
+);
+
+it("counts empty-pattern replacement across UTF-16 surrogate boundaries", () => {
+  const scenario = parseProcessScenario({
+    executable: "unused",
+    normalization: {
+      paths: false,
+      pids: false,
+      ports: false,
+      patterns: [{ pattern: "", replacement: "x" }],
+    },
+  });
+  const normalize = createProcessTextNormalizer(scenario, "unused", 1);
+  expect(normalize("😀", 9)).toBe("x\ud83dx\ude00x");
+  expect(normalize("😀", 8)).toBeUndefined();
+});
 const samples = Object.freeze(
   [
     {

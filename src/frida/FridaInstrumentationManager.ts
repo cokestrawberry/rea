@@ -43,8 +43,10 @@ const MAX_SESSION_CAPTURE_BYTES = 16 * 1024 * 1024;
 const MAX_MESSAGE_METADATA_BYTES = 128 * 1024;
 const MAX_MESSAGE_TYPE_BYTES = 4 * 1024;
 const MAX_MESSAGE_TEXT_BYTES = 32 * 1024;
-// Bound the in-memory object graph as well as its serialized JSON byte size.
+// Bound traversal of one message payload.
 const MAX_CAPTURE_JSON_NODES = 250_000;
+// Bound cumulative retained payload nodes independently of message traversal.
+const MAX_SESSION_CAPTURE_NODES = 250_000;
 const MAX_BINARY_MESSAGE_BYTES = Math.floor(
   ((MAX_SESSION_CAPTURE_BYTES - 1024 * 1024) * 3) / 4,
 );
@@ -92,6 +94,7 @@ interface ManagedSession extends ManagedRemoteConnection {
   targetResumeObserved: boolean;
   resumeAfterDetachPending: boolean;
   capturedBytes: number;
+  capturedNodes: number;
   messagesTruncated: boolean;
   readonly truncatedScripts: Set<string>;
 }
@@ -280,12 +283,13 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
         pid = process.pid;
         target = `${process.name} (pid ${process.pid})`;
       } else {
-        pid = await device.spawn(
-          input.program,
-          input.argv === undefined
-            ? undefined
-            : { argv: [input.program, ...input.argv] },
-        );
+        // Local INHERIT shares the MCP server streams; Android app spawns require INHERIT on remote/USB devices.
+        pid = await device.spawn(input.program, {
+          ...(device.type === "local" ? { stdio: "pipe" as const } : {}),
+          ...(input.argv === undefined
+            ? {}
+            : { argv: [input.program, ...input.argv] }),
+        });
         spawnedPid = pid;
         target = input.program;
       }
@@ -309,6 +313,7 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
         targetResumeObserved: false,
         resumeAfterDetachPending: false,
         capturedBytes: 0,
+        capturedNodes: 0,
         messagesTruncated: false,
         truncatedScripts: new Set(),
       };
@@ -909,6 +914,7 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
           readonly value: JsonValue;
           readonly truncated: boolean;
           readonly bytes: number;
+          readonly nodes: number;
         }
       | undefined;
     if (payload !== undefined) {
@@ -923,6 +929,7 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
           value: { payload_unavailable: true },
           truncated: true,
           bytes: Buffer.byteLength('{"payload_unavailable":true}'),
+          nodes: 1,
         };
       }
       if (payloadResult.truncated) markMessageTruncated(managed, scriptId);
@@ -1030,13 +1037,16 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
       markMessageTruncated(managed, scriptId);
       return;
     }
+    const nodes = payloadResult?.nodes ?? 0;
     while (
       managed.messages.size > 0 &&
-      managed.capturedBytes + charge > MAX_SESSION_CAPTURE_BYTES
+      (managed.capturedBytes + charge > MAX_SESSION_CAPTURE_BYTES ||
+        managed.capturedNodes + nodes > MAX_SESSION_CAPTURE_NODES)
     ) {
       const removed = managed.messages.shift();
       if (removed !== undefined) {
         managed.capturedBytes -= removed.charge;
+        managed.capturedNodes -= removed.nodes;
         // Both queues are in arrival order, so the globally oldest message is
         // also the oldest one retained for its script.
         const scriptMessages = managed.messagesByScript.get(removed.scriptId);
@@ -1045,9 +1055,10 @@ export class FridaInstrumentationManager implements FridaInstrumentationPort {
         markMessageTruncated(managed, removed.scriptId);
       }
     }
-    managed.messages.push({ observation, scriptId, charge });
+    managed.messages.push({ observation, scriptId, charge, nodes });
     managed.messagesByScript.get(scriptId)?.push(observation);
     managed.capturedBytes += charge;
+    managed.capturedNodes += nodes;
   }
 
   async #getDeviceManager(): Promise<DeviceManager> {
@@ -1232,6 +1243,7 @@ const boundedJsonValue = (
   readonly value: JsonValue;
   readonly truncated: boolean;
   readonly bytes: number;
+  readonly nodes: number;
 } => {
   const seen = new WeakSet<object>();
   let remainingNodes = MAX_CAPTURE_JSON_NODES;
@@ -1331,9 +1343,15 @@ const boundedJsonValue = (
   };
   const result = visit(input, maximumBytes, 0);
   const bytes = Buffer.byteLength(JSON.stringify(result.value));
+  const nodes = MAX_CAPTURE_JSON_NODES - Math.max(remainingNodes, 0);
   return bytes > maximumBytes
-    ? { value: null, truncated: true, bytes: Buffer.byteLength("null") }
-    : { ...result, bytes };
+    ? {
+        value: null,
+        truncated: true,
+        bytes: Buffer.byteLength("null"),
+        nodes: 1,
+      }
+    : { ...result, bytes, nodes };
 };
 
 const jsonStringBytes = (value: string): number => {
@@ -1455,6 +1473,8 @@ interface CapturedMessage {
   readonly scriptId: string;
   /** Serialized bytes charged against the session capture budget. */
   readonly charge: number;
+  /** Payload JSON nodes charged against the session node budget. */
+  readonly nodes: number;
 }
 
 const markMessageTruncated = (
