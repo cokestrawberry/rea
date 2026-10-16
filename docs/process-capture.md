@@ -257,10 +257,11 @@ Terminal frame `data` is the comparison text after the selected normalization.
 New captures also preserve `raw_data` when normalization changes a PTY chunk;
 otherwise `data` is already the original text. Older captures may lack the
 original text for changed chunks. Both values participate in Evidence identity,
-while comparisons and trace assertions use the normalized text. A chunk counts
-against `limits.output_bytes` by the bytes it retains: its normalized text plus,
-when normalization changed it, the original text. A replacement that expands a
-chunk therefore cannot grow retained terminal text beyond that limit.
+while comparisons and trace assertions use the normalized text. Redacted input
+text and normalized comparison text each have a separate cumulative
+`limits.output_bytes` budget. A fragment is retained only when it fits both
+remaining budgets. When both `data` and `raw_data` are stored, their combined
+size can exceed one budget; they are not checked against a shared total.
 
 Rendered frame `lines` hold the visible rows after normalization, with trailing
 U+0020 spaces removed. Blank rows and internal spaces remain. `columns` records

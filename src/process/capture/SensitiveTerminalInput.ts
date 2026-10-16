@@ -58,7 +58,10 @@ export const createSensitiveOutputRedactor = (
       .join("|"),
     "gu",
   );
-  const longest = Math.max(...values.map((value) => value.length));
+  const longest = values.reduce(
+    (maximum, value) => Math.max(maximum, value.length),
+    0,
+  );
   const startsValue = (tail: string): boolean =>
     values.some(
       (value) => value.length > tail.length && value.startsWith(tail),

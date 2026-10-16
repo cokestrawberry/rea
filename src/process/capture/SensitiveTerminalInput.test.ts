@@ -81,6 +81,11 @@ it("passes output through unchanged without sensitive values", () => {
   expect(redactor.flush().data).toBe("");
 });
 
+it("initializes redaction for a large sensitive-input list", () => {
+  const values = Array.from({ length: 150_000 }, (_, index) => `secret-${index}`);
+  expect(() => createSensitiveOutputRedactor(values)).not.toThrow();
+});
+
 it("preserves the reception time of a held tail", () => {
   const redactor = createSensitiveOutputRedactor(["swordfish"]);
   expect(redactor.push("pass: sword", 3)).toEqual({ data: "pass: ", atMs: 3 });
