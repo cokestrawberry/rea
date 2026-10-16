@@ -350,18 +350,47 @@ const createElectronActiveBoundaryPatches = ({
 
   const patchChildProcess = () => {
     const childProcess = require("node:child_process");
-    for (const method of ["spawn", "fork", "exec", "execFile"]) {
+    // exec calls the exported execFile, so only the outermost call is recorded.
+    let nestedDepth = 0;
+    for (const method of [
+      "spawn",
+      "spawnSync",
+      "fork",
+      "exec",
+      "execSync",
+      "execFile",
+      "execFileSync",
+    ]) {
       const original = childProcess[method];
       if (typeof original !== "function") continue;
       childProcess[method] = function patchedChildProcess(...args) {
+        if (nestedDepth > 0) return original.apply(this, args);
         recordRuntime("process-lifecycle", `child.${method}`, "attempted", {
           argument_shape_values: args,
         });
-        const child = original.apply(this, args);
+        let child;
+        nestedDepth += 1;
+        try {
+          child = original.apply(this, args);
+        } catch (cause) {
+          recordRuntime("process-lifecycle", `child.${method}`, "failed", {
+            error: true,
+          });
+          throw cause;
+        } finally {
+          nestedDepth -= 1;
+        }
         const childId = identity(child, "child");
-        recordRuntime("process-lifecycle", `child.${method}`, "completed", {
-          target: childId,
-        });
+        const failed = method === "spawnSync" && child.error !== undefined;
+        recordRuntime(
+          "process-lifecycle",
+          `child.${method}`,
+          failed ? "failed" : "completed",
+          {
+            target: childId,
+            error: failed,
+          },
+        );
         patchEmitter(child, (event, eventArgs) =>
           recordRuntime("process-lifecycle", `child.${event}`, "observed", {
             target: childId,
