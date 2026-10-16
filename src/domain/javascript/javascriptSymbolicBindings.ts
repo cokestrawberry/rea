@@ -52,6 +52,9 @@ interface SymbolicReturnFlow {
   readonly fallsThrough: boolean;
 }
 const emptyEnvironment: SymbolicEnvironment = { values: new Map() };
+// Ends an argument list at the first spread whose length is unknown, so no
+// later argument is assigned a fixed position.
+const dynamicSpreadArguments = symbolicUnknown("dynamic spread arguments");
 const isObjectPrototypeSetter = (
   property: t.ObjectMethod | t.ObjectProperty,
   name: string,
@@ -399,6 +402,7 @@ export class JavaScriptSymbolicBindings {
     invocationNode?: t.Node,
   ): SymbolicEnvironment {
     const values = new Map<string, SymbolicValue>();
+    const lengthKnown = !args.includes(dynamicSpreadArguments);
     runtimeFunctionParameters(fn.node).forEach((param, index) => {
       const target = t.isRestElement(param) ? param.argument : param;
       if (!t.isIdentifier(target)) return;
@@ -411,8 +415,12 @@ export class JavaScriptSymbolicBindings {
         values.set(
           binding.bindingId,
           t.isRestElement(param)
-            ? { kind: "array", values: args.slice(index) }
-            : (args[index] ?? symbolicUnknown("runtime parameter")),
+            ? lengthKnown
+              ? { kind: "array", values: args.slice(index) }
+              : symbolicUnknown("rest after dynamic spread arguments")
+            : args[index] === dynamicSpreadArguments
+              ? symbolicUnknown("dynamic spread argument")
+              : (args[index] ?? symbolicUnknown("runtime parameter")),
         );
     });
     const scopeId =
@@ -431,12 +439,14 @@ export class JavaScriptSymbolicBindings {
     node: t.CallExpression | t.OptionalCallExpression,
     env: SymbolicEnvironment,
   ): readonly SymbolicValue[] {
+    let lengthKnown = true;
     return node.arguments.flatMap((a) => {
+      if (!lengthKnown) return [];
       if (!t.isSpreadElement(a)) return [this.evaluate(a, env)];
       const value = this.evaluate(a.argument, env);
-      return value.kind === "array"
-        ? value.values
-        : [symbolicUnknown("dynamic spread arguments")];
+      if (value.kind === "array") return value.values;
+      lengthKnown = false;
+      return [dynamicSpreadArguments];
     });
   }
 
