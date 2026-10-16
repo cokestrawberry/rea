@@ -4,6 +4,7 @@ import { lstat, open, type FileHandle } from "node:fs/promises";
 import { ArtifactReaderFailure } from "./ArtifactReader.js";
 import type { ArtifactResourceScope } from "./ArtifactResourceScope.js";
 import { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
+import type { AnalysisCleanupObservation } from "../domain/analysisErrorBase.js";
 
 /** Filesystem boundary for stable reads, including deterministic replacement probes. */
 export interface StableArtifactFileSystem {
@@ -52,6 +53,7 @@ export const readStableArtifact = async (
   signal?: AbortSignal,
   fileSystem: StableArtifactFileSystem = FILE_SYSTEM,
   resourceScope?: ArtifactResourceScope,
+  onCleanupFailure?: (cleanup: AnalysisCleanupObservation) => void,
 ): Promise<{ readonly bytes: Buffer; readonly sha256: string }> => {
   assertReadActive(signal);
   const before = await fileSystem.lstat(path);
@@ -141,11 +143,19 @@ export const readStableArtifact = async (
         resource: path,
         handle: owner,
       });
-      if (cleanup.kind === "failed")
-        throw ArtifactReaderFailure.withCleanup(
-          failure ?? cleanup.cause,
-          ArtifactReaderFailure.cleanupObservation(cleanup.cause, path),
+      if (cleanup.kind === "failed") {
+        const observation = ArtifactReaderFailure.cleanupObservation(
+          cleanup.cause,
+          path,
         );
+        if (failure === undefined && onCleanupFailure !== undefined)
+          onCleanupFailure(observation);
+        else
+          throw ArtifactReaderFailure.withCleanup(
+            failure ?? cleanup.cause,
+            observation,
+          );
+      }
     }
   }
 };
