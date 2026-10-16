@@ -948,6 +948,63 @@ describe("legacy pointer fixup streams", () => {
       target: 0x99n,
     });
   });
+
+  it.each([
+    {
+      name: "keeps a ten-byte SLEB addend",
+      sleb: [...Array<number>(9).fill(0xff), 0x7f],
+      failures: [],
+      decoded: 1,
+    },
+    {
+      name: "rejects a SLEB whose tenth byte still continues",
+      // A decoder that stops at ten bytes would read the next 0x00 as DONE.
+      sleb: [...Array<number>(10).fill(0x80), 0x00],
+      failures: ["bind bind opcodes: Oversized bind opcode operand"],
+      decoded: 0,
+    },
+  ])("$name", ({ sleb, failures, decoded }) => {
+    const opcodes = Buffer.from([
+      0x11, // SET_DYLIB_ORDINAL_IMM 1
+      0x40,
+      ...Buffer.from("_free\0"),
+      0x71,
+      0x08, // SET_SEGMENT_AND_OFFSET segment 1 + 8
+      0x60,
+      ...sleb, // SET_ADDEND_SLEB
+      0x90, // DO_BIND
+      0x00,
+    ]);
+    const fixups = parsePointerFixups(
+      opcodes,
+      {
+        chained: null,
+        binds: [{ offset: 0, size: opcodes.length, stream: "bind" }],
+        rebases: [],
+        dylibs: ["/usr/lib/libSystem.B.dylib"],
+      },
+      SEGMENTS,
+      BASE,
+    );
+    expect(fixups.failures).toEqual(failures);
+    expect(fixups.decoded).toBe(decoded);
+    if (failures.length > 0) {
+      expect(fixups.decode(BASE + 0x4008n, 0n)).toEqual({
+        kind: "unsupported",
+        reason: failures.join("; "),
+      });
+    } else {
+      expect(fixups.decode(BASE + 0x4008n, 0n)).toMatchObject({
+        kind: "bind",
+        symbol: "_free",
+        addend: -1n,
+      });
+      expect(fixups.decode(BASE + 0x4018n, 0x99n)).toEqual({
+        kind: "rebase",
+        target: 0x99n,
+      });
+    }
+  });
 });
 
 describe("Objective-C property attributes", () => {
