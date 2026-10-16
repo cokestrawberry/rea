@@ -63,6 +63,36 @@ const capture = async (
 };
 
 itWithCaptureCapability.each(["cli", "mcp"] as const)(
+  "reports normalization expansion omission through %s",
+  async (adapter) => {
+    const root = await createTestTempDirectory("rea-normalization-budget-");
+    const result = await capture(adapter, {
+      executable: process.execPath,
+      working_directory: root,
+      arguments: ["-e", "process.stdout.write('a')"],
+      normalization: {
+        ports: false,
+        pids: false,
+        paths: false,
+        time_bucket_ms: 1,
+        patterns: [{ pattern: "a", replacement: "b".repeat(50) }],
+      },
+      limits: { output_bytes: 3 },
+    });
+    expect(result.frames).toEqual([]);
+    expect(result.truncation_details?.raw_terminal).toMatchObject({
+      observed_bytes: 1,
+      retained_bytes: 0,
+    });
+    expect(processSourceTruncated(result, "terminal_raw")).toBe(true);
+    expect(
+      result.residual_unknowns.map(({ reason }) => reason).join(" "),
+    ).toContain("normalized and original");
+  },
+  20_000,
+);
+
+itWithCaptureCapability.each(["cli", "mcp"] as const)(
   "localizes rendered-state expansion exhaustion through %s",
   async (adapter) => {
     const root = await createTestTempDirectory("rea-rendered-budget-");

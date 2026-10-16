@@ -21,7 +21,11 @@ interface TerminalRendererOptions {
   readonly rows: number;
   readonly scrollback: number;
   readonly maxBytes: number;
-  readonly normalize: (value: string) => string;
+  readonly normalize: (
+    value: string,
+    maxBytes: number,
+    onOmitted?: (bytes: number) => void,
+  ) => string | undefined;
   readonly recordEvent?: RecordProcessCaptureEvent;
 }
 
@@ -118,28 +122,44 @@ export class TerminalRenderer {
   #capture(atMs: number): void {
     const buffer = this.#terminal.buffer.active;
     const lines: string[] = [];
+    let remainingBytes = this.options.maxBytes - this.#capturedBytes;
+    this.#observedFrames += 1;
+    const omit = (bytes: number): void => {
+      this.#observedBytes +=
+        this.options.maxBytes - this.#capturedBytes - remainingBytes + bytes;
+      this.#truncated = true;
+    };
     for (let row = 0; row < this.#terminal.rows; row += 1) {
       const line = buffer.getLine(buffer.viewportY + row);
       // Trailing blank cells carry no information beyond `columns`; dropping
       // them keeps sparse screens from costing a full row per blank line.
-      lines.push(
-        this.options
-          .normalize(
-            (
-              line?.translateToString(false, 0, this.#terminal.cols) ?? ""
-            ).padEnd(this.#terminal.cols, " "),
-          )
-          .replace(TRAILING_SPACES, ""),
+      const normalized = this.options.normalize(
+        (line?.translateToString(false, 0, this.#terminal.cols) ?? "").padEnd(
+          this.#terminal.cols,
+          " ",
+        ),
+        remainingBytes + this.#terminal.cols * 3,
+        omit,
       );
+      if (normalized === undefined) return;
+      const text = normalized.replace(TRAILING_SPACES, "");
+      if (Buffer.byteLength(text) > remainingBytes) {
+        omit(Buffer.byteLength(text));
+        return;
+      }
+      remainingBytes -= Buffer.byteLength(text);
+      lines.push(text);
     }
     const serializedState = this.options.normalize(
       this.#serializeAddon.serialize(),
+      remainingBytes,
+      omit,
     );
+    if (serializedState === undefined) return;
     const bytes =
       Buffer.byteLength(serializedState) +
       lines.reduce((total, line) => total + Buffer.byteLength(line), 0);
     this.#observedBytes += bytes;
-    this.#observedFrames += 1;
     if (this.#capturedBytes + bytes > this.options.maxBytes) {
       this.#truncated = true;
       return;
