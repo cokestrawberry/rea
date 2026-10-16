@@ -27,12 +27,11 @@ export const GDB_TOOL_CONTRACTS = [
     ...toolContractMetadata("start_gdb_session"),
     kind: "native-provider",
     description:
-      "Start a BYO GDB process in MI3 mode when available, suppress startup files, and disable auto-loading. Persistent GDB sessions are available only on Linux, where REA can verify live inferior output descriptors through /proc before detaching; macOS descriptor verification is not implemented, and Windows Job Object cleanup can terminate debugger inferiors. Optionally set inferior_tty to a caller-selected terminal for future inferior runs; REA verifies the setting through GDB/MI before the session becomes ready. The selected terminal must remain available after GDB exits. A live inferior can be detached during close only while this durable output sink remains verified. The session persists in this REA MCP server process and receives an explicit session ID.",
+      "Start a BYO GDB process in MI3 mode when available, suppress startup files, and disable auto-loading. Persistent GDB sessions are available only on Linux, where REA can verify live inferior output descriptors through /proc before detaching; macOS descriptor verification is not implemented, and Windows Job Object cleanup can terminate debugger inferiors. Requires inferior_tty, a caller-selected terminal for future inferior runs, so target output uses that terminal while the configuration remains verified; REA verifies the setting through GDB/MI before the session becomes ready. The selected terminal must remain available after GDB exits. A live inferior can be detached during close only while this durable output sink remains verified. The session persists in this REA MCP server process and receives an explicit session ID.",
     inputSchema: z.strictObject({
       inferior_tty: z
         .string()
         .min(1)
-        .optional()
         .describe(
           "Caller-selected terminal path for future inferior runs. GDB must report the exact configured path before the session is ready.",
         ),
@@ -41,7 +40,7 @@ export const GDB_TOOL_CONTRACTS = [
       session_id: sessionId,
       mi_version: z.enum(["mi3", "mi2"]),
     }),
-    examples: [{ title: "Start GDB", input: {} }],
+    examples: [{ title: "Start GDB", input: { inferior_tty: "/dev/pts/7" } }],
   },
   {
     name: "gdb_console",
@@ -83,7 +82,7 @@ export const GDB_TOOL_CONTRACTS = [
       stderr_truncated: z.boolean(),
       stderr_invalid_utf8: z.boolean(),
       diagnostics_truncated: z.boolean(),
-      inferior_tty: z.string().nullable(),
+      inferior_tty: z.string(),
       inferior_tty_verified: z.boolean(),
     }),
     examples: [
