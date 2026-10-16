@@ -2,7 +2,10 @@ import { z } from "zod";
 
 import { emptyArraySchema } from "../emptyArraySchema.js";
 import { evidenceSchema } from "../evidence.js";
-import { cliMetadataGuidSchema } from "./managedArtifact.js";
+import {
+  cliMetadataGuidSchema,
+  managedNativeImportSchema,
+} from "./managedArtifact.js";
 import { digestSchema } from "../digests.js";
 import { prefixedDigestSchema } from "../digests.js";
 
@@ -28,7 +31,7 @@ const pinvokeVerificationContextShape = {
     token: tokenSchema,
     member_token: tokenSchema.nullable(),
     member_name: z.string().nullable(),
-    import_name: z.string().min(1),
+    import_name: managedNativeImportSchema.shape.import_name,
     import_scope_name: z.string().nullable(),
     no_mangle: z.boolean(),
     char_set: z.enum(["not-specified", "ansi", "unicode", "auto", "unknown"]),

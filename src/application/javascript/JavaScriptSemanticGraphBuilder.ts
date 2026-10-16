@@ -225,7 +225,9 @@ export const createJavaScriptSemanticGraphProjection = (
     const remainingTreeBudget = nodeCeiling - state.nodes.size;
     state.fileNodeBudget = Math.min(fileNodeCeiling, remainingTreeBudget);
     state.fileNodesDropped = false;
-    fingerprints.push(...(yield* projectFileSteps(file, ir, state, paths)));
+    // Spreading into push overflows the stack on large fingerprint lists.
+    for (const fingerprint of yield* projectFileSteps(file, ir, state, paths))
+      fingerprints.push(fingerprint);
     // Nodes were dropped only if the budget actually blocked creation. A file
     // that exactly fills its share ends with a zero budget without dropping
     // anything, so the remaining budget alone cannot decide truncation.
@@ -342,7 +344,8 @@ export const createJavaScriptSemanticGraphProjection = (
       for (const unknown of projection.unknowns)
         state.unknowns.set(unknown.unknown_id, unknown);
       for (const root of projection.roots) state.roots.add(root);
-      fingerprints.push(...projection.fingerprints);
+      for (const fingerprint of projection.fingerprints)
+        fingerprints.push(fingerprint);
       if (projection.truncated) truncatedFiles += 1;
     },
     recordUnavailableFile: (file, reason, limits, unknownReason) => {

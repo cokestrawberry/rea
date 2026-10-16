@@ -482,6 +482,26 @@ describe("historical source graph excluded symlink targets", () => {
     );
   });
 
+  it("retains internal symlinks into unreadable directories only below them", () => {
+    const input = { ...graphInput(), inventory_state: "partial" as const };
+    input.entries.unshift({
+      ...directoryEntry("unreadable"),
+      path: "blocked",
+      limitations: ["Permission denied"],
+    });
+    input.entries[3] = symlinkEntry({ target: "../blocked/nested/file.js" });
+    const graph = createHistoricalSourceGraph(input);
+    expect(graph.entries[3]).toMatchObject({
+      target: "../blocked/nested/file.js",
+      target_state: "internal",
+    });
+
+    input.entries[3] = symlinkEntry({ target: "../blocked-old/file.js" });
+    expect(() => createHistoricalSourceGraph(input)).toThrow(
+      /recorded exclusion/u,
+    );
+  });
+
   it("does not treat an excluded file or unknown-kind ancestor as a directory", () => {
     const input = { ...graphInput(), inventory_state: "partial" as const };
     input.exclusions = [

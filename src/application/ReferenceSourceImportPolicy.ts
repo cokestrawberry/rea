@@ -1,4 +1,4 @@
-import { lstat, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import ignore from "ignore";
@@ -8,6 +8,7 @@ import {
   retryRegularFileCleanup,
 } from "./RegularFileRead.js";
 
+import { NonRegularFileReadError } from "../filesystem/RegularFile.js";
 import { err, ok, type Result } from "../domain/result.js";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
@@ -23,7 +24,11 @@ export interface PreparedReferenceSourceImport {
   readonly root: string;
   readonly ignored: ReturnType<typeof ignore>;
   readonly secrets: ReturnType<typeof ignore>;
+  readonly limitations: readonly string[];
 }
+
+const IGNORE_POLICY_NOT_REGULAR_LIMITATION =
+  "The root .gitignore is a symbolic link or not a regular file, so project ignore rules were not applied.";
 
 const failure = (
   code: ReferenceSourceImportError["code"],
@@ -79,55 +84,68 @@ const resolveRoot = async (
   }
 };
 
+const errorCode = (cause: unknown): unknown =>
+  typeof cause === "object" && cause !== null && "code" in cause
+    ? cause.code
+    : undefined;
+
+// O_NOFOLLOW reports a symbolic link as ELOOP; other non-regular files fail admission.
+const isNotRegularPolicy = (cause: unknown): boolean =>
+  cause instanceof NonRegularFileReadError || errorCode(cause) === "ELOOP";
+
+const readIgnorePolicy = async (
+  policyPath: string,
+  resources: ArtifactResourceScope,
+  signal?: AbortSignal,
+): Promise<Result<string, ReferenceSourceImportError>> => {
+  try {
+    return ok(
+      await readRegularFileText(policyPath, { signal, symlinks: "reject" }),
+    );
+  } catch (cause: unknown) {
+    if (!(cause instanceof RegularFileCleanupFailure)) throw cause;
+    const retry = await retryRegularFileCleanup(cause, resources);
+    if (retry.cleanup !== undefined) {
+      const primary =
+        cause.outcome.kind === "failed"
+          ? cause.outcome.cause
+          : cause.cleanupCause;
+      return err({
+        ...failure(
+          signal?.aborted === true ? "cancelled" : "io",
+          `Reference source ignore policy could not be read at ${policyPath}: ${errorMessage(primary)}`,
+        ),
+        cleanup: retry.cleanup,
+        cause: primary,
+      });
+    }
+    if (retry.outcome.kind === "failed") throw retry.outcome.cause;
+    return ok(retry.outcome.value);
+  }
+};
+
 const buildIgnored = async (
   root: string,
   excludePaths: readonly string[],
   resources: ArtifactResourceScope,
   signal?: AbortSignal,
-): Promise<Result<ReturnType<typeof ignore>, ReferenceSourceImportError>> => {
+): Promise<
+  Result<
+    Pick<PreparedReferenceSourceImport, "ignored" | "limitations">,
+    ReferenceSourceImportError
+  >
+> => {
   const ignored = ignore();
+  const limitations: string[] = [];
   const policyPath = join(root, ".gitignore");
-  let present = true;
   try {
-    await lstat(policyPath);
+    const policy = await readIgnorePolicy(policyPath, resources, signal);
+    if (!policy.ok) return policy;
+    addMarkedPatterns(ignored, [policy.value], "project-ignored");
   } catch (cause: unknown) {
-    if (
-      !(
-        typeof cause === "object" &&
-        cause !== null &&
-        "code" in cause &&
-        cause.code === "ENOENT"
-      )
-    )
-      throw cause;
-    present = false;
-  }
-  signal?.throwIfAborted();
-  if (present) {
-    let text: string;
-    try {
-      text = await readRegularFileText(policyPath, { signal });
-    } catch (cause: unknown) {
-      if (!(cause instanceof RegularFileCleanupFailure)) throw cause;
-      const retry = await retryRegularFileCleanup(cause, resources);
-      if (retry.cleanup !== undefined) {
-        const primary =
-          cause.outcome.kind === "failed"
-            ? cause.outcome.cause
-            : cause.cleanupCause;
-        return err({
-          ...failure(
-            signal?.aborted === true ? "cancelled" : "io",
-            `Reference source ignore policy could not be read at ${policyPath}: ${errorMessage(primary)}`,
-          ),
-          cleanup: retry.cleanup,
-          cause: primary,
-        });
-      }
-      if (retry.outcome.kind === "failed") throw retry.outcome.cause;
-      text = retry.outcome.value;
-    }
-    addMarkedPatterns(ignored, [text], "project-ignored");
+    if (isNotRegularPolicy(cause))
+      limitations.push(IGNORE_POLICY_NOT_REGULAR_LIMITATION);
+    else if (errorCode(cause) !== "ENOENT") throw cause;
   }
   addMarkedPatterns(
     ignored,
@@ -137,7 +155,7 @@ const buildIgnored = async (
   for (const path of excludePaths) {
     addMarkedPatterns(ignored, [path, `${path}/`], "caller-excluded");
   }
-  return ok(ignored);
+  return ok({ ignored, limitations });
 };
 
 /** Resolve the caller-selected directory and build path filters. */
@@ -161,7 +179,7 @@ export const prepareReferenceSourceImport = async (
         if (!ignored.ok) return ignored;
         return ok({
           root: root.value,
-          ignored: ignored.value,
+          ...ignored.value,
           secrets: ignore().add([...options.policy.secretPatterns]),
         });
       } catch (cause: unknown) {
