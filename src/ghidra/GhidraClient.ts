@@ -49,6 +49,10 @@ import {
   type GhidraSessionInfo,
 } from "./GhidraSessionValues.js";
 import { createGhidraTargetSnapshot } from "./GhidraTargetSnapshot.js";
+import {
+  createGhidraSnapshotReader,
+  type GhidraSnapshotReader,
+} from "./GhidraSnapshotReader.js";
 import { readFileHandleChunks } from "../filesystem/readFileHandleChunks.js";
 import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
 import {
@@ -419,6 +423,18 @@ export class GhidraClient {
       if (bytes !== initial.size) throw new RegularFileChangedError(path);
       return { sha256: hash.digest("hex"), bytes };
     }, signal);
+  }
+
+  /** Give `use` positional access to the snapshot so format owners read only the ranges they inspect. */
+  withTargetSnapshotReader<T>(
+    use: (reader: GhidraSnapshotReader) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<Result<T, GhidraSessionError>> {
+    return this.#withTargetSnapshot(
+      (handle, initial, path) =>
+        use(createGhidraSnapshotReader(handle, initial.size, path, signal)),
+      signal,
+    );
   }
 
   async #withTargetSnapshot<T>(

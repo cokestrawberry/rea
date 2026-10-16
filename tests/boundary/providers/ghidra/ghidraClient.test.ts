@@ -377,6 +377,68 @@ describe("GhidraClient captured source snapshot", () => {
   });
 });
 
+describe("GhidraClient snapshot reader", () => {
+  const privateSnapshot = async () => {
+    const root = await createTestTempDirectory("rea-ghidra-reader-");
+    const source = join(root, "overlay.exe");
+    const bytes = Buffer.alloc(512 * 1024 + 3);
+    bytes.forEach((_, index) => {
+      bytes[index] = index % 251;
+    });
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    await writeFile(source, bytes);
+    const client = clientFor(new FixtureLauncher(), {
+      targetPath: source,
+      targetSha256: sha256,
+    });
+    return { bytes, client };
+  };
+
+  it("serves exact ranges and bounded streams without reading the whole file", async () => {
+    const { bytes, client } = await privateSnapshot();
+    await expect(
+      client.withTargetSnapshotReader(() => Promise.resolve(null)),
+    ).resolves.toMatchObject({ ok: false, error: { kind: "protocol" } });
+    const started = await client.start();
+    if (!started.ok) throw started.error;
+    const observed = await client.withTargetSnapshotReader(async (reader) => {
+      const streamed = createHash("sha256");
+      const lengths: number[] = [];
+      for await (const chunk of reader.stream(1000)) {
+        streamed.update(chunk);
+        lengths.push(chunk.length);
+      }
+      return {
+        size: reader.size,
+        range: await reader.read(10, 20),
+        streamed: streamed.digest("hex"),
+        lengths,
+      };
+    });
+    if (!observed.ok) throw observed.error;
+    expect(observed.value.size).toBe(bytes.length);
+    expect(observed.value.range).toEqual(bytes.subarray(10, 20));
+    expect(observed.value.streamed).toBe(
+      createHash("sha256").update(bytes.subarray(1000)).digest("hex"),
+    );
+    expect(observed.value.lengths.length).toBeGreaterThan(1);
+    expect(Math.max(...observed.value.lengths)).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("stops streaming when the caller aborts", async () => {
+    const { client } = await privateSnapshot();
+    const started = await client.start();
+    if (!started.ok) throw started.error;
+    const controller = new AbortController();
+    await expect(
+      client.withTargetSnapshotReader(async (reader) => {
+        for await (const chunk of reader.stream(0))
+          if (chunk.length > 0) controller.abort();
+      }, controller.signal),
+    ).resolves.toMatchObject({ ok: false, error: { kind: "cancelled" } });
+  });
+});
+
 describe("GhidraClient", () => {
   it("completes an exact, fragmented post-analysis handshake", async () => {
     const launcher = new FixtureLauncher("fragmented");
