@@ -711,6 +711,6 @@ it("bounds the payload nodes a Frida session retains across messages", async () 
   const status = toolContract("frida_session_status").outputSchema.parse(
     response.structuredContent,
   );
-  expect(status.messages.length).toBe(1);
-  expect(status.messages_truncated).toBe(true);
+  expect(status.normalized_result.messages.length).toBe(1);
+  expect(status.normalized_result.messages_truncated).toBe(true);
 });

@@ -519,7 +519,7 @@ const processCaptureShapeSchema = z.strictObject({
           ]),
           reason: z.string().optional(),
         })
-        .optional(),
+        .exactOptional(),
     }),
   ),
   exit: z.object({

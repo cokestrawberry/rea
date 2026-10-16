@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import { symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -20,7 +21,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       const directory = await original.opendir(...args);
       if (args[0] === injected.iterationPath) {
         const iterator = directory[Symbol.asyncIterator]();
-        directory[Symbol.asyncIterator] = async function* () {
+        directory[Symbol.asyncIterator] = async function* (): AsyncGenerator<
+          Dirent,
+          undefined
+        > {
           for await (const entry of iterator) {
             yield entry;
             throw Object.assign(
