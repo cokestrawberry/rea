@@ -127,7 +127,12 @@ def inspect_core(path, cache):
                 # Only the initial Linux CORE ABI is interpreted. Other owners retain exact bytes.
                 if owner != b"CORE\0":
                     continue
-                if note.n_type == "NT_PRSTATUS":
+                if note.n_type == "NT_PRPSINFO":
+                    if len(descriptor) < image.structs.Elf_Prpsinfo.sizeof():
+                        raise CoreFailure("format", "Linux NT_PRPSINFO descriptor is truncated.")
+                    process_info = image.structs.Elf_Prpsinfo.parse(descriptor)
+                    notes[-1]["process_info"] = {"historical_pid": ctypes.c_int32(process_info.pr_pid).value}
+                elif note.n_type == "NT_PRSTATUS":
                     if len(descriptor) < ctypes.sizeof(prstatus_type):
                         raise CoreFailure("format", "Linux " + profile_label + " NT_PRSTATUS descriptor is truncated.")
                     status = prstatus_type.from_buffer_copy(descriptor)
@@ -151,7 +156,7 @@ def inspect_core(path, cache):
                 "note_interpretation_completeness": "unknown",
                 "limitations": ["The initial Linux note profile accepts System V/unspecified or GNU/Linux OSABI with ABI version zero; an unspecified OSABI alone does not prove operating-system origin.",
                                 "Historical PID and signal values are recorded metadata, not current process identity or attach authority.",
-                                "Only exact Linux CORE NT_PRSTATUS/NT_SIGINFO owners are interpreted; every descriptor and owner retains original bytes. Other note semantics remain unknown.",
+                                "Only exact Linux CORE NT_PRPSINFO/NT_PRSTATUS/NT_SIGINFO owners are interpreted; every descriptor and owner retains original bytes. Other note semantics remain unknown.",
                                 "NT_SIGINFO thread association is unknown. Only SIGSEGV SEGV_MAPERR/SEGV_ACCERR initially establish a fault-address union meaning.",
                                 "PT_LOAD file bytes are recorded bytes. Undumped memory and current executable/library identity remain unknown; no current host file is resolved from a recorded pathname.",
                                 "Missing notes/registers/signals do not establish their absence at the original crash. Full unwinding, executable pairing and live control are not provided."]}
