@@ -1,6 +1,13 @@
 import { expect, it } from "vitest";
 
 import { serveCli } from "./cliServeHarness.js";
+import { createTestCli } from "../../support/cli/cliFixture.js";
+import { createTestProcessRegistry } from "../../support/process/processFixture.js";
+import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+import {
+  startJebMcpFixture,
+  jebPrimaryResponses,
+} from "../../fixtures/jebMcp.js";
 
 const jebEnvironment = {
   REA_JEB_MCP_URL: "http://127.0.0.1:1/mcp",

@@ -56,7 +56,32 @@ const OWNER_ADMITTED_LOCALES = [
   "zh-rCN",
   "en-419",
   "b+zh+Hans+CN",
+  "b+sr+Latn+RS+REVISED",
+  "b+fil+Latn+419+ABCDEFGH",
 ] as const;
+
+it("forwards the table-only string choice through the CLI", async () => {
+  const result = await invoke([
+    "decode-android-resources",
+    "/targets/app.apk",
+    "--string-tables-only",
+    "--locales",
+    "de",
+    "--json",
+  ]);
+  expect(result.exitCode, result.stdout).toBe(0);
+  expect(result.requests).toEqual([
+    {
+      operation: "decode_android_resources",
+      input: {
+        path: "/targets/app.apk",
+        include_strings: true,
+        locales: ["de"],
+        string_tables_only: true,
+      },
+    },
+  ]);
+});
 
 it("forwards every locale the apktool input owner admits", async () => {
   for (const locale of OWNER_ADMITTED_LOCALES) {
@@ -78,6 +103,30 @@ it("forwards every locale the apktool input owner admits", async () => {
   }
 });
 
+it("forwards repeated --locales to project multiple localized tables", async () => {
+  const result = await invoke([
+    "decode-android-resources",
+    "/targets/app.apk",
+    "--locales",
+    "de",
+    "--locales",
+    "pt-BR",
+    "--json",
+  ]);
+
+  expect(result.exitCode).toBe(0);
+  expect(result.requests).toEqual([
+    {
+      operation: "decode_android_resources",
+      input: {
+        path: "/targets/app.apk",
+        include_strings: true,
+        locales: ["de", "pt-BR"],
+      },
+    },
+  ]);
+});
+
 it("still refuses a locale the apktool input owner refuses", async () => {
   const result = await invoke([
     "decode-android-resources",
@@ -89,4 +138,27 @@ it("still refuses a locale the apktool input owner refuses", async () => {
 
   expect(result.exitCode).not.toBe(0);
   expect(result.requests).toEqual([]);
+});
+
+it("forwards --no-strings with --locale preserving caller options", async () => {
+  const result = await invoke([
+    "decode-android-resources",
+    "/targets/app.apk",
+    "--no-strings",
+    "--locale",
+    "de",
+    "--json",
+  ]);
+
+  expect(result.exitCode).toBe(0);
+  expect(result.requests).toEqual([
+    {
+      operation: "decode_android_resources",
+      input: {
+        path: "/targets/app.apk",
+        include_strings: false,
+        locale: "de",
+      },
+    },
+  ]);
 });

@@ -11,8 +11,10 @@ import type {
 import { readStableArtifact } from "../artifacts/readStableArtifact.js";
 import {
   ArtifactResourceScope,
-  type ArtifactResourceOwner,
+  ArtifactResourceRetryFailure,
 } from "../artifacts/ArtifactResourceScope.js";
+import { AnalysisCleanupLeaseGroup } from "../artifacts/AnalysisCleanupLease.js";
+import { bindArtifactFileCleanup } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import type {
   AnalysisError,
@@ -26,6 +28,7 @@ import {
   AnalysisOutputError,
 } from "../domain/analysisErrorCore.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
+import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import { createEvidence } from "../domain/evidence.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import {
@@ -33,11 +36,9 @@ import {
   type InspectWasmArtifactInput,
 } from "../domain/wasm/wasmArtifact.js";
 import { err, ok, type Result } from "../domain/result.js";
-import {
-  OwnedCommandFailure,
-  runOwnedCommand,
-} from "../process/OwnedCommand.js";
+import { runOwnedCommand } from "../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
+import { WabtRuntime } from "./WabtRuntime.js";
 import { WABT_PROVIDER_IDENTITY, WABT_LIMITS } from "./WabtRelease.js";
 import { wabtFailure } from "./WabtFailures.js";
 import { parseWabtOutput } from "./WabtOutput.js";
@@ -63,18 +64,7 @@ export class WabtArtifactProvider implements WasmArtifactPort {
     try {
       await this.#resources.close();
     } catch (cause: unknown) {
-      const cleanup =
-        cause instanceof ArtifactReaderFailure ? cause.cleanup : undefined;
-      throw new ProviderCleanupError(
-        WABT_PROVIDER_IDENTITY.id,
-        cleanup?.resources ?? ["artifact-resources"],
-        {
-          reason:
-            cleanup?.reason ??
-            (cause instanceof Error ? cause.message : String(cause)),
-        },
-        { operation: OPERATION, cause },
-      );
+      throw resourceCleanupFailure(cause);
     }
   }
   async inspect(
@@ -84,19 +74,8 @@ export class WabtArtifactProvider implements WasmArtifactPort {
     try {
       return await this.#resources.run(() => this.#inspect(input, options));
     } catch (cause: unknown) {
-      if (
-        cause instanceof ArtifactReaderFailure &&
-        cause.reason === "unavailable" &&
-        cause.cleanup !== undefined
-      )
-        return err(
-          new ProviderCleanupError(
-            WABT_PROVIDER_IDENTITY.id,
-            cause.cleanup.resources,
-            { reason: cause.cleanup.reason },
-            { operation: OPERATION, cause },
-          ),
-        );
+      if (cause instanceof ArtifactResourceRetryFailure)
+        return err(resourceCleanupFailure(cause));
       if (
         cause instanceof ArtifactReaderFailure &&
         cause.reason === "unavailable" &&
@@ -119,10 +98,7 @@ export class WabtArtifactProvider implements WasmArtifactPort {
     input: InspectWasmArtifactInput,
     options?: ExecutionOptions,
   ): Promise<Result<WasmArtifactExecution, AnalysisError>> {
-    let root: Pick<PrivateRuntimeRoot, "path" | "close"> | undefined;
-    let unstoppedRoot:
-      | Extract<ArtifactResourceOwner, { kind: "owned-process-root" }>
-      | undefined;
+    let runtime: WabtRuntime | undefined;
     let phase: "configuration" | "artifact" | "producer" = "configuration";
     let result: Result<WasmArtifactExecution, AnalysisError>;
     let capturedOutput: AnalysisCapturedOutput | undefined;
@@ -166,36 +142,25 @@ export class WabtArtifactProvider implements WasmArtifactPort {
               : ["--enable-all", "module.wasm"],
         });
       }
-      root = await this.createRuntime();
+      const root = await this.createRuntime();
+      runtime = new WabtRuntime(root);
       const snapshotPath = join(root.path, "module.wasm");
       let snapshotHash: string | undefined;
       const verifySnapshot = async () => {
         if (snapshotHash === undefined) return;
-        try {
-          const bytes = await readStableArtifact(
-            snapshotPath,
-            WABT_LIMITS.inputBytes,
-            options?.signal,
-            undefined,
-            this.#resources,
-          );
-          if (bytes.sha256 !== snapshotHash)
-            throw new Error("Private WASM snapshot bytes changed.");
-        } catch (cause: unknown) {
-          const cleanup =
-            cause instanceof ArtifactReaderFailure ? cause.cleanup : undefined;
-          if (options?.signal?.aborted)
-            throw new AnalysisCancelledError(OPERATION, {
-              cause,
-              ...(cleanup === undefined ? {} : { cleanup }),
-            });
+        const bytes = await readStableArtifact(
+          snapshotPath,
+          WABT_LIMITS.inputBytes,
+          options?.signal,
+          undefined,
+          this.#resources,
+        );
+        if (bytes.sha256 !== snapshotHash)
           throw new AnalysisArtifactChangedError(
             OPERATION,
             input.path,
-            "Private WASM snapshot no longer matches selected byte identity.",
-            { cause, ...(cleanup === undefined ? {} : { cleanup }) },
+            "Private WASM snapshot bytes changed.",
           );
-        }
       };
       const execute = async (
         command: (typeof commands)[number],
@@ -208,7 +173,7 @@ export class WabtArtifactProvider implements WasmArtifactPort {
           {
             command: command.path,
             arguments: args,
-            ...(root === undefined ? {} : { cwd: root.path }),
+            cwd: root.path,
             expectedCommand: command.path,
             runId: `rea-wabt-${randomUUID()}`,
             hostEnvironment: this.environment,
@@ -452,38 +417,26 @@ export class WabtArtifactProvider implements WasmArtifactPort {
         }),
       );
     } catch (cause: unknown) {
-      if (
-        cause instanceof OwnedCommandFailure &&
-        cause.cleanupOwner !== undefined &&
-        root !== undefined
-      )
-        unstoppedRoot = {
-          kind: "owned-process-root",
-          providerId: WABT_PROVIDER_IDENTITY.id,
-          operation: OPERATION,
-          resource: root.path,
-          process: cause.cleanupOwner,
-          root,
-          resources: cause.resources,
-        };
       const failure = wabtFailure(cause, phase, input.path);
+      runtime?.retainCommandFailure(cause, failure, this.#resources);
       result = err(
         failure instanceof AnalysisOutputError &&
           failure.capturedOutput === undefined &&
           capturedOutput !== undefined
           ? new AnalysisOutputError(OPERATION, failure.reason, {
-              cause,
+              cause: failure,
               capturedOutput,
-            })
+              cleanup: failure.cleanup,
+              diagnostics: failure.diagnostics,
+            }).bindCleanupDependencies([failure])
           : failure,
       );
     }
-    if (unstoppedRoot !== undefined) this.#resources.retain(unstoppedRoot);
-    else if (root !== undefined) {
+    if (runtime !== undefined) {
       const cleanup = await this.#resources.release({
-        kind: "private-runtime-root",
-        resource: root.path,
-        root,
+        kind: "lease",
+        resource: runtime.path,
+        lease: runtime.lease,
       });
       let partialObservation = result.ok
         ? undefined
@@ -507,12 +460,10 @@ export class WabtArtifactProvider implements WasmArtifactPort {
       }
       if (result.ok && options?.signal?.aborted) {
         result = err(
-          new AnalysisCancelledError(
-            OPERATION,
-            partialObservation === undefined
-              ? undefined
-              : { partialObservation },
-          ),
+          new AnalysisCancelledError(OPERATION, {
+            cause: options?.signal?.reason,
+            ...(partialObservation === undefined ? {} : { partialObservation }),
+          }),
         );
       }
       if (cleanup.kind === "failed") {
@@ -520,27 +471,53 @@ export class WabtArtifactProvider implements WasmArtifactPort {
         const retainedObservation = result.ok
           ? partialObservation
           : result.error.partialObservation;
-        result = err(
-          new ProviderCleanupError(
-            WABT_PROVIDER_IDENTITY.id,
-            [root.path],
-            {
-              reason: cause instanceof Error ? cause.message : String(cause),
-              previous_error: result.ok
-                ? null
-                : projectAnalysisError(result.error),
-            },
-            {
-              operation: OPERATION,
-              cause,
-              ...(retainedObservation === undefined
-                ? {}
-                : { partialObservation: retainedObservation }),
-            },
-          ),
+        const failure = new ProviderCleanupError(
+          WABT_PROVIDER_IDENTITY.id,
+          [runtime.path],
+          {
+            reason: cause instanceof Error ? cause.message : String(cause),
+            previous_error: result.ok
+              ? null
+              : projectAnalysisError(result.error),
+          },
+          {
+            operation: OPERATION,
+            cause,
+            ...(retainedObservation === undefined
+              ? {}
+              : { partialObservation: retainedObservation }),
+          },
         );
+        new AnalysisCleanupLeaseGroup(failure, [runtime.lease]);
+        result = result.ok
+          ? err(failure)
+          : err(
+              analysisErrorWithCleanupFailure(
+                result.error,
+                failure,
+                OPERATION,
+              ).bindCleanupDependencies([result.error, failure]),
+            );
       }
     }
     return result;
   }
 }
+
+/** Retry errors follow their exact retained leases, including partially released groups. */
+const resourceCleanupFailure = (cause: unknown): ProviderCleanupError => {
+  const cleanup =
+    cause instanceof ArtifactReaderFailure ? cause.cleanup : undefined;
+  const failure = new ProviderCleanupError(
+    WABT_PROVIDER_IDENTITY.id,
+    cleanup?.resources ?? ["artifact-resources"],
+    {
+      reason:
+        cleanup?.reason ??
+        (cause instanceof Error ? cause.message : String(cause)),
+    },
+    { operation: OPERATION, cause },
+  );
+  bindArtifactFileCleanup(cause, failure);
+  return failure;
+};

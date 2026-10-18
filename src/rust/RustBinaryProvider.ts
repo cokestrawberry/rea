@@ -1,3 +1,7 @@
+import {
+  ArtifactFileCleanupFailure,
+  bindArtifactFileCleanup,
+} from "../artifacts/ArtifactFileOperation.js";
 import { readStableArtifact } from "../artifacts/readStableArtifact.js";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
@@ -175,30 +179,12 @@ const rustcLimitation = (
   ];
 };
 
-const failureFor = (
-  cause: unknown,
-  path: string,
-  signal?: AbortSignal,
-): AnalysisError => {
-  const primary = failureForPrimary(cause, path, signal);
-  if (!(cause instanceof ArtifactReaderFailure) || cause.cleanup === undefined)
-    return primary;
-  const cleanup = new ProviderCleanupError(
-    RUST_BINARY_PROVIDER_IDENTITY.id,
-    cause.cleanup.resources,
-    { reason: cause.cleanup.reason },
-    { operation: OPERATION, cause },
-  );
-  return analysisErrorWithCleanupFailure(primary, cleanup, OPERATION);
-};
-
 const failureForPrimary = (
   cause: unknown,
   path: string,
   signal?: AbortSignal,
 ): AnalysisError => {
   if (cause instanceof AnalysisError) return cause;
-  if (signal?.aborted) return new AnalysisCancelledError(OPERATION);
   if (cause instanceof RustAuditableResourceFailure)
     return new AnalysisResourceConstraintError(
       OPERATION,
@@ -220,6 +206,31 @@ const failureForPrimary = (
           },
         ]);
   return artifactFailure(cause, path);
+};
+
+const failureFor = (
+  cause: unknown,
+  path: string,
+  signal?: AbortSignal,
+): AnalysisError => {
+  const primary =
+    cause instanceof ArtifactFileCleanupFailure &&
+    cause.fileCleanupFailure.outcome.kind === "failed"
+      ? failureForPrimary(cause.fileCleanupFailure.outcome.cause, path)
+      : cause instanceof ArtifactFileCleanupFailure && signal?.aborted
+        ? new AnalysisCancelledError(OPERATION, { cause: signal.reason })
+        : failureForPrimary(cause, path);
+  if (!(cause instanceof ArtifactReaderFailure) || cause.cleanup === undefined)
+    return primary;
+  const cleanup = new ProviderCleanupError(
+    RUST_BINARY_PROVIDER_IDENTITY.id,
+    cause.cleanup.resources,
+    { reason: cause.cleanup.reason },
+    { cause, operation: OPERATION },
+  );
+  const error = analysisErrorWithCleanupFailure(primary, cleanup, OPERATION);
+  bindArtifactFileCleanup(cause, error);
+  return error;
 };
 
 const artifactFailure = (cause: unknown, path: string): AnalysisError => {
@@ -261,7 +272,7 @@ const artifactReaderFailure = (
       cause,
     });
   if (cause.reason === "cancelled")
-    return new AnalysisCancelledError(OPERATION);
+    return new AnalysisCancelledError(OPERATION, { cause: cause.cause });
   if (cause.reason === "limit")
     return new AnalysisResourceConstraintError(
       OPERATION,

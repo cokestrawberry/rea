@@ -26,6 +26,7 @@ export const registerJebCommands = (
           provider,
           "jeb",
           operation,
+          signal,
         ),
       ),
     );

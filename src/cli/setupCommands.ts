@@ -124,18 +124,20 @@ const registerDoctorCommand = (
         .describe("Require the installed REA skill identity to be aligned"),
     }),
     run: ({ options }) =>
-      logCliCommand(logger, "doctor", async () => {
-        const [{ runDoctorOwned }, { createSystemDoctorHost }] =
-          await Promise.all([
-            import("../application/Doctor.js"),
-            import("../doctorRuntime.js"),
-          ]);
-        return runDoctorOwned(
-          options.target,
-          createSystemDoctorHost(environment),
-          doctorScope(options),
-        );
-      }),
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, "doctor", async () => {
+          const [{ runDoctorOwned }, { createSystemDoctorHost }] =
+            await Promise.all([
+              import("../application/Doctor.js"),
+              import("../doctorRuntime.js"),
+            ]);
+          return runDoctorOwned(
+            options.target,
+            createSystemDoctorHost(environment, signal),
+            doctorScope(options),
+          );
+        }),
+      ),
   });
 };
 

@@ -5,8 +5,8 @@ import { err, ok, type Result } from "../domain/result.js";
 import {
   readRegularFile,
   RegularFileCleanupFailure,
-  type RegularFileReadOptions,
 } from "./RegularFileRead.js";
+import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 
 export interface RecoveryBackupSelection {
   readonly backupPath: string;
@@ -29,17 +29,19 @@ const errorDetail = (cause: unknown): string =>
 export const selectCurrentRecoveryBackup = async (
   firstBackupPath: string,
   original: string | Buffer,
-  options: Pick<RegularFileReadOptions, "resources"> = {},
+  resources?: ArtifactResourceScope,
 ): Promise<Result<RecoveryBackupSelection, RecoveryBackupSelectionFailure>> => {
+  const read = (path: string) =>
+    readRegularFile(path, {
+      symlinks: "reject",
+      ...(resources === undefined ? {} : { resources }),
+    });
   const expected = Buffer.isBuffer(original)
     ? original
     : Buffer.from(original, "utf8");
   let firstBackup: Buffer | undefined;
   try {
-    firstBackup = await readRegularFile(firstBackupPath, {
-      ...options,
-      symlinks: "reject",
-    });
+    firstBackup = await read(firstBackupPath);
   } catch (cause: unknown) {
     if (cause instanceof RegularFileCleanupFailure) throw cause;
     if (!isMissing(cause))
@@ -58,10 +60,7 @@ export const selectCurrentRecoveryBackup = async (
   const recoveryPath = `${firstBackupPath}.${digest}.recovery`;
   let recovery: Buffer | undefined;
   try {
-    recovery = await readRegularFile(recoveryPath, {
-      ...options,
-      symlinks: "reject",
-    });
+    recovery = await read(recoveryPath);
   } catch (cause: unknown) {
     if (cause instanceof RegularFileCleanupFailure) throw cause;
     if (!isMissing(cause))
@@ -80,44 +79,65 @@ export const selectCurrentRecoveryBackup = async (
   return ok({ backupPath: recoveryPath, present: recovery !== undefined });
 };
 
-/** Preserve a snapshot without replacing an earlier recovery file. */
-export const preserveRecoveryBackup = async (
-  source: string,
-  destination: string,
-): Promise<boolean> => {
-  try {
-    await copyFile(source, destination, fsConstants.COPYFILE_EXCL);
-    return true;
-  } catch (cause: unknown) {
-    return cause instanceof Error && "code" in cause && cause.code === "EEXIST";
-  }
-};
+export interface RecoveryBackupPreservationFailure {
+  readonly kind: RecoveryBackupSelectionFailure["kind"] | "copy" | "unverified";
+  readonly path: string;
+  readonly detail: string;
+}
 
-/** Preserve `source` and return the path that verifiably holds its original bytes. */
+const copyExclusive = (source: string, destination: string): Promise<void> =>
+  copyFile(source, destination, fsConstants.COPYFILE_EXCL);
+
+export interface RecoveryBackupPreservationOptions {
+  /** Copy without replacing an existing destination; reject one with EEXIST. */
+  readonly copy?: (source: string, destination: string) => Promise<void>;
+  /** Scope that retains a backup read whose handle cleanup failed. */
+  readonly resources?: ArtifactResourceScope;
+}
+
+/**
+ * Preserve a transaction's original bytes before it edits the file: keep a
+ * matching first backup, otherwise copy them to the content-addressed recovery
+ * path without replacing an earlier file, then verify the selected snapshot.
+ */
 export const preserveCurrentRecoveryBackup = async (
-  source: string,
   firstBackupPath: string,
+  source: string,
   original: string | Buffer,
-  options: Pick<RegularFileReadOptions, "resources"> = {},
-): Promise<string | undefined> => {
+  { copy = copyExclusive, resources }: RecoveryBackupPreservationOptions = {},
+): Promise<Result<string, RecoveryBackupPreservationFailure>> => {
   const selection = await selectCurrentRecoveryBackup(
     firstBackupPath,
     original,
-    options,
+    resources,
   );
-  if (
-    !selection.ok ||
-    !(await preserveRecoveryBackup(source, selection.value.backupPath))
-  )
-    return undefined;
+  if (!selection.ok) return selection;
+  const { backupPath } = selection.value;
+  if (!selection.value.present) {
+    try {
+      await copy(source, backupPath);
+    } catch (cause: unknown) {
+      if (
+        !(cause instanceof Error && "code" in cause && cause.code === "EEXIST")
+      )
+        return err({
+          kind: "copy",
+          path: backupPath,
+          detail: `The recovery backup could not be written: ${errorDetail(cause)}`,
+        });
+    }
+  }
   const verified = await selectCurrentRecoveryBackup(
     firstBackupPath,
     original,
-    options,
+    resources,
   );
-  return verified.ok &&
-    verified.value.present &&
-    verified.value.backupPath === selection.value.backupPath
-    ? verified.value.backupPath
-    : undefined;
+  if (!verified.ok) return verified;
+  if (verified.value.backupPath !== backupPath || !verified.value.present)
+    return err({
+      kind: "unverified",
+      path: backupPath,
+      detail: `The recovery backup does not match the configuration it preserves: ${backupPath}`,
+    });
+  return ok(backupPath);
 };

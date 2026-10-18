@@ -6,12 +6,14 @@ import {
   effectiveClientServer,
   type ClientConfigurationDocument,
 } from "./ClientConfigurationDocument.js";
-import { access } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { lstat } from "node:fs/promises";
+import { err, ok, type Result } from "../domain/result.js";
+import { isAbsolute } from "node:path";
 
 import { z } from "zod";
 import { valid } from "semver";
 
+import { RegularFileCleanupFailure } from "./RegularFileRead.js";
 import { PRODUCT_IDENTITY } from "../identity.js";
 import { CURRENT_ENTRYPOINT_PATH } from "../process/CurrentEntrypointPath.js";
 import {
@@ -78,12 +80,18 @@ export type UnhealthyClientRegistrationStatus = Exclude<
   { readonly state: "aligned" }
 >;
 
+const tomlTimeoutSchema = z.union([
+  z.number().positive(),
+  z.bigint().positive(),
+]);
+
 const registrationSchema = z
   .object({
     command: z.string().min(1),
     args: z.array(z.string()).default([]),
-    startup_timeout_sec: z.number().positive().optional(),
-    tool_timeout_sec: z.number().positive().optional(),
+    // TOML keeps integers beyond the safe Number range exact as bigint.
+    startup_timeout_sec: tomlTimeoutSchema.optional(),
+    tool_timeout_sec: tomlTimeoutSchema.optional(),
     startupTimeoutMs: z.number().positive().optional(),
     toolTimeoutMs: z.number().positive().optional(),
     type: z.string().optional(),
@@ -118,7 +126,9 @@ export const readClientRegistrationStatuses = async (
     await readClientRegistrationInspections(home, currentCommandPath, options)
   ).map(({ status }) => status);
 
-/** Parse effective registrations and their client-specific activation once. */
+/** Parse effective registrations and their client-specific activation once.
+ * A supplied scope retains failed cleanup; otherwise transfer its exact failure.
+ */
 export const readClientRegistrationInspections = async (
   home: string,
   currentCommandPath: string | undefined = CURRENT_ENTRYPOINT_PATH,
@@ -146,7 +156,18 @@ export const readClientRegistrationInspections = async (
       });
       continue;
     }
-    if (!(await clientEvidencePresent(client))) continue;
+    const presence = await clientEvidencePresent(client);
+    if (!presence.ok) {
+      record({
+        client: client.name,
+        config_path: presence.error.path,
+        command: [],
+        state: "invalid",
+        remediation: presence.error.detail,
+      });
+      continue;
+    }
+    if (!presence.value) continue;
     const manualRemediation = manualRegistrationRemediation(client.name);
     if (client.format === "unsupported") {
       if (manualRemediation !== undefined)
@@ -166,6 +187,11 @@ export const readClientRegistrationInspections = async (
         options.resources,
       );
       if (!configuration.ok) {
+        if (
+          options.resources === undefined &&
+          configuration.error.cleanupFailure !== undefined
+        )
+          throw configuration.error.cleanupFailure;
         record({
           client: client.name,
           config_path: configuration.error.path,
@@ -188,6 +214,11 @@ export const readClientRegistrationInspections = async (
         options.resources,
       );
       if (!policy.ok) {
+        if (
+          options.resources === undefined &&
+          policy.error.cleanupFailure !== undefined
+        )
+          throw policy.error.cleanupFailure;
         record({
           client: client.name,
           config_path: configPath,
@@ -307,6 +338,11 @@ export const readClientRegistrationInspections = async (
         activation,
       );
     } catch (cause: unknown) {
+      if (
+        options.resources === undefined &&
+        cause instanceof RegularFileCleanupFailure
+      )
+        throw cause;
       record(
         unavailableStatus(
           client,
@@ -408,27 +444,11 @@ const registrationAligned = ({
     })
   )
     return "aligned";
-  if (
-    currentCommandPath !== undefined &&
-    currentCommandPath.length > 0 &&
-    command.length === 3 &&
-    command[2] === "mcp" &&
-    isAbsolute(command[0] ?? "") &&
-    isAbsolute(command[1] ?? "") &&
-    resolve(command[0] ?? "") === resolve(process.execPath) &&
-    resolve(command[1] ?? "") === currentCommandPath
-  )
-    return "aligned";
-  if (
-    currentCommandPath !== undefined &&
-    currentCommandPath.length > 0 &&
-    command.length === 2 &&
-    command[1] === "mcp" &&
-    isAbsolute(command[0] ?? "") &&
-    resolve(command[0] ?? "") === currentCommandPath
-  )
-    return "aligned";
-  return "stale";
+  // Other owned package references remain stale until pinned to this version.
+  if (clientRegistrationPackageReference(command) !== undefined) return "stale";
+  // The identity owner already established an exact direct launcher match.
+  // A bare command still depends on the client's PATH, so cannot prove alignment.
+  return isAbsolute(command[0] ?? "") ? "aligned" : "stale";
 };
 
 const parseRegistration = (
@@ -490,7 +510,7 @@ const remediation = (client: SetupClient): string => {
 };
 
 const unknownEntryPointRemediation = (): string =>
-  "The existing registration was retained because its executable identity cannot be verified. Run the installed REA CLI or a supported package runner, then rerun rea doctor; no registration was changed.";
+  "The existing registration was retained because its executable identity cannot be verified. Check the registered launcher path, symlink targets and access permissions. Run the installed REA CLI or a supported package runner, then rerun rea doctor; no registration was changed.";
 
 const configuredStatus = (
   client: SetupClient,
@@ -532,7 +552,7 @@ const timeoutAdvisory = (
     client.name === "codex" ? registration.tool_timeout_sec : undefined;
   if (toolTimeout === undefined) return undefined;
   const providerAllowance = mcpProviderDeadlineAllowanceMs(timeoutInputs);
-  if (toolTimeout * 1000 >= providerAllowance) return undefined;
+  if (Number(toolTimeout) * 1000 >= providerAllowance) return undefined;
   return `The configured tool_timeout_sec (${String(toolTimeout)} seconds) is shorter than REA's known provider allowance (${String(providerAllowance)} ms), so provider startup or an upstream request may exceed this client deadline. REA recommends tool_timeout_sec = ${String(recommendedMcpToolTimeoutSeconds(timeoutInputs))} seconds to cover that allowance plus ${String(MCP_STARTUP_POLICY.toolOperationHeadroomMs / 1000)} seconds of operation headroom; this additional headroom is a recommendation, not a guarantee for every analysis.`;
 };
 
@@ -564,22 +584,28 @@ const unavailableStatus = (
   remediation: remediation(client),
 });
 
-const clientEvidencePresent = async (client: SetupClient): Promise<boolean> => {
-  for (const path of clientEvidencePaths(client))
-    if (await exists(path)) return true;
-  return false;
-};
-
-const exists = async (path: string | undefined): Promise<boolean> => {
-  if (path === undefined) return false;
-  try {
-    await access(path);
-    return true;
-  } catch (cause: unknown) {
-    // best-effort cleanup: optional registration probing; absence means unregistered.
-    void cause;
-    return false;
+/** Entry presence is independent of whether its target can currently be read. */
+const clientEvidencePresent = async (
+  client: SetupClient,
+): Promise<
+  Result<boolean, { readonly path: string; readonly detail: string }>
+> => {
+  let unavailable:
+    | { readonly path: string; readonly detail: string }
+    | undefined;
+  for (const path of clientEvidencePaths(client)) {
+    try {
+      await lstat(path);
+      return ok(true);
+    } catch (cause: unknown) {
+      if (!isMissing(cause))
+        unavailable ??= {
+          path,
+          detail: `Client configuration evidence at ${path} could not be inspected: ${cause instanceof Error ? cause.message : String(cause)}. Check file permissions and rerun rea doctor.`,
+        };
+    }
   }
+  return unavailable === undefined ? ok(false) : err(unavailable);
 };
 
 const isMissing = (cause: unknown): boolean =>

@@ -124,6 +124,7 @@ export class AnalysisOutputError extends AnalysisError {
 export class AnalysisCapabilityUnavailableError extends AnalysisError {
   readonly _tag = "AnalysisCapabilityUnavailableError";
   override readonly userMessage: string | undefined;
+  readonly remediationAction: string | undefined;
   /** Incomplete cleanup must settle before the operation can be retried. */
   readonly retryable: boolean;
 
@@ -133,6 +134,7 @@ export class AnalysisCapabilityUnavailableError extends AnalysisError {
     readonly reason: string,
     options?: AnalysisErrorOptions & {
       readonly userMessage?: string;
+      readonly remediationAction?: string;
       readonly retryable?: boolean;
     },
   ) {
@@ -141,6 +143,7 @@ export class AnalysisCapabilityUnavailableError extends AnalysisError {
       options,
     );
     this.userMessage = options?.userMessage;
+    this.remediationAction = options?.remediationAction;
     this.retryable = options?.retryable === true && !this.cleanupIncomplete;
   }
 }
@@ -160,16 +163,25 @@ export class AnalysisCancelledError extends AnalysisError {
 /** Provider-neutral operation exceeded its declared execution deadline. */
 export class AnalysisTimeoutError extends AnalysisError {
   readonly _tag = "AnalysisTimeoutError";
+  override readonly userMessage: string | undefined;
+  readonly remediationAction: string | undefined;
 
   constructor(
     readonly operation: string,
     readonly timeoutMs: number,
-    options?: AnalysisErrorOptions,
+    options?: AnalysisErrorOptions & {
+      /** Provider-specific explanation of which deadline elapsed. */
+      readonly userMessage?: string;
+      /** Provider-specific setting or action that changes that deadline. */
+      readonly remediationAction?: string;
+    },
   ) {
     super(
       `Analysis operation timed out after ${String(timeoutMs)}ms: ${operation}`,
       options,
     );
+    this.userMessage = options?.userMessage;
+    this.remediationAction = options?.remediationAction;
   }
 }
 

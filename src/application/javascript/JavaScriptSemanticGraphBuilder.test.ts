@@ -1050,18 +1050,18 @@ it("projects and adopts more than the default per-file capacity when explicitly 
   const steps = projectJavaScriptSemanticFileSteps(
     file,
     analyzeJavaScriptSemantics(text),
-    20_002,
+    { nodes: 20_002, unknowns: 20_002 },
   );
   let result = steps.next();
   while (!result.done) result = steps.next();
   expect(result.value.nodes).toHaveLength(20_002);
-  expect(result.value.truncated).toBe(false);
+  expect(result.value.nodesTruncated).toBe(false);
   const projection = createJavaScriptSemanticGraphProjection({
     totalNodes: 20_010,
     fileNodes: 20_002,
   });
   projection.adoptFileProjection(result.value);
-  expect(projection.remainingFileNodeBudget()).toBe(8);
+  expect(projection.remainingFileCapacity().nodes).toBe(8);
   const graph = projection.finish(SHA256, {
     graph_id: `jag_${"b".repeat(64)}`,
     nodes: [],
@@ -1117,7 +1117,10 @@ it("projects more fingerprints than push accepts as arguments", () => {
 
 it("adopts more fingerprints than push accepts as arguments", () => {
   const { file, ir } = fingerprintedFunction();
-  const steps = projectJavaScriptSemanticFileSteps(file, ir, 100);
+  const steps = projectJavaScriptSemanticFileSteps(file, ir, {
+    nodes: 100,
+    unknowns: 100,
+  });
   let result = steps.next();
   while (!result.done) result = steps.next();
   const [fingerprint] = result.value.fingerprints;

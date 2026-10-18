@@ -84,6 +84,7 @@ export const registerFlutterCommands = (
               provider,
               "flutter",
               spec.operation,
+              signal,
             ),
           ),
         ),
