@@ -180,7 +180,6 @@ describe("macOS Hopper installation", () => {
     ).resolves.toMatchObject({ status: "installed" });
     expect(host.replaces).toBe(true);
   });
-
 });
 
 describe("macOS Hopper installation failures", () => {

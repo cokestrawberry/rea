@@ -2462,11 +2462,7 @@ export class AdbProvider {
         regularFile.error instanceof AnalysisProtocolError
           ? execFileOutputFailure(regularFile.error.cause)
           : undefined;
-      if (
-        failure?.code !== 1 ||
-        failure.stdout !== "" ||
-        failure.stderr !== ""
-      )
+      if (failure?.code !== 1 || failure.stdout !== "" || failure.stderr !== "")
         return regularFile;
       return err(
         new AnalysisInputError(operation, undefined, [
