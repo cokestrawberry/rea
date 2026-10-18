@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   installMacHopper,
-  installMacHopperBundle,
   type MacHopperBundleVerification,
   type MacHopperBundleInstallResult,
   type MacHopperInstallHost,
@@ -182,6 +181,9 @@ describe("macOS Hopper installation", () => {
     expect(host.replaces).toBe(true);
   });
 
+});
+
+describe("macOS Hopper installation failures", () => {
   it("cleans and detaches after bundle validation fails", async () => {
     const host = new FakeMacHopperHost();
     host.verification = "invalid_signature";
