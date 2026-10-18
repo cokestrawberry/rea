@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { localPathStringSchema } from "../domain/localPath.js";
 import type { ToolContract } from "./toolContractTypes.js";
 import { evidenceResultOf } from "./toolOutputSchemaPrimitives.js";
 import { toolContractMetadata } from "./toolEffects.js";
@@ -29,12 +30,9 @@ export const GDB_TOOL_CONTRACTS = [
     description:
       "Start a BYO GDB process in MI3 mode when available, suppress startup files, and disable auto-loading. Persistent GDB sessions are available only on Linux, where REA can verify live inferior output descriptors through /proc before detaching; macOS descriptor verification is not implemented, and Windows Job Object cleanup can terminate debugger inferiors. Requires inferior_tty, a caller-selected terminal for future inferior runs, so target output uses that terminal while the configuration remains verified; REA verifies the setting through GDB/MI before the session becomes ready. The selected terminal must remain available after GDB exits. A live inferior can be detached during close only while this durable output sink remains verified. The session persists in this REA MCP server process and receives an explicit session ID.",
     inputSchema: z.strictObject({
-      inferior_tty: z
-        .string()
-        .min(1)
-        .describe(
-          "Caller-selected terminal path for future inferior runs. GDB must report the exact configured path before the session is ready.",
-        ),
+      inferior_tty: localPathStringSchema.describe(
+        "Caller-selected terminal path for future inferior runs. GDB must report the exact configured path before the session is ready.",
+      ),
     }),
     outputSchema: z.strictObject({
       session_id: sessionId,

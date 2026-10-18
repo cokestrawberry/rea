@@ -370,6 +370,7 @@ const finishProcessRun = async (options: {
   readonly progress: ProcessCaptureProgressTracker;
   readonly progressCounts: () => ProcessCaptureProgressCounts;
   readonly resourceScope?: ProcessCaptureResourceScope;
+  readonly signal?: AbortSignal;
 }): Promise<ProcessCapture> => {
   options.progress.closeLive();
   await options.stopSampler();
@@ -395,6 +396,9 @@ const finishProcessRun = async (options: {
       ? await releaseProcessResources(cleanupOptions)
       : await options.resourceScope.release(cleanupOptions);
   options.runtime?.scenarioSignals.finish();
+  let { capture, executionFailure } = options;
+  if (executionFailure === undefined && options.signal?.aborted)
+    executionFailure = processCaptureCancelled();
   const observedExit =
     options.observations?.exit.state === "available"
       ? options.observations.exit.value.reason
@@ -403,14 +407,10 @@ const finishProcessRun = async (options: {
     phase: "cleanup",
     counts: options.progressCounts(),
     terminal: true,
-    disposition: captureProgressDisposition(
-      observedExit,
-      options.executionFailure,
-    ),
+    disposition: captureProgressDisposition(observedExit, executionFailure),
     cleanup,
   });
   const cleanupFailure = cleanupReportFailure(cleanup);
-  let { capture, executionFailure } = options;
   let verifiedCapture: ProcessCapture | undefined;
   if (capture !== undefined && cleanupFailure === undefined) {
     const settlement: UnverifiedProcessCapture["settlement"] =
@@ -439,6 +439,10 @@ const finishProcessRun = async (options: {
     rootPid === undefined
       ? { scenario: options.scenario }
       : { scenario: options.scenario, rootPid };
+  // Cancellation remains authoritative until finalization has settled, even
+  // when the workload exited normally before cleanup began.
+  if (executionFailure === undefined && options.signal?.aborted)
+    executionFailure = processCaptureCancelled();
   return resolveProcessResult(
     cleanupFailure === undefined ? verifiedCapture : capture,
     executionFailure,
@@ -667,6 +671,10 @@ const runProcessScenario = async (
       counts: progressCounts(),
       terminal: true,
       disposition: signal?.aborted === true ? "cancelled" : "failed",
+      ...(cause instanceof ProcessCaptureError &&
+      cause.cleanupReport !== undefined
+        ? { cleanup: cause.cleanupReport }
+        : {}),
     });
     throw cause;
   }
@@ -824,6 +832,7 @@ const runProcessScenario = async (
     progress: progressTracker,
     progressCounts,
     ...(resourceScope === undefined ? {} : { resourceScope }),
+    ...(signal === undefined ? {} : { signal }),
   });
 };
 

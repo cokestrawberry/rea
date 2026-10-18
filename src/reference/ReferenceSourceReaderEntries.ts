@@ -135,6 +135,7 @@ export const traverseDirectory = async (
         readFailure,
       ),
     );
+    scheduleObservedDirectories(state, directories);
     return { ok: true, value: undefined };
   }
   const after = await validateDirectory(
@@ -153,6 +154,7 @@ export const traverseDirectory = async (
         "Directory changed while it was read",
       ),
     );
+    scheduleObservedDirectories(state, directories);
     return { ok: true, value: undefined };
   }
   if (current.path !== state.root)
@@ -161,9 +163,16 @@ export const traverseDirectory = async (
       kind: "directory",
       path: pathFromRoot(state.root, current.path),
     });
+  scheduleObservedDirectories(state, directories);
+  return { ok: true, value: undefined };
+};
+
+const scheduleObservedDirectories = (
+  state: TraversalState,
+  directories: PendingDirectory[],
+): void => {
   directories.reverse();
   state.pending.push(...directories);
-  return { ok: true, value: undefined };
 };
 
 const directoryReadFailure = (cause: unknown): string => {

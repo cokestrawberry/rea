@@ -125,6 +125,7 @@ const SIZE_PAIR = /^Physical size:\s+(\d+)x(\d+)$/u;
 const SIZE_OVERRIDE = /^Override size:\s+(\d+)x(\d+)$/u;
 const DENSITY_PHYSICAL = /^Physical density:\s+(\d+)$/u;
 const DENSITY_OVERRIDE = /^Override density:\s+(\d+)$/u;
+const DENSITY_BARE = /^(\d+)$/u;
 
 /** Parse `wm size` output into physical and optional override sizes. */
 export const parseWmSizeOutput = (
@@ -153,7 +154,12 @@ export const parseWmSizeOutput = (
   return { physical, override };
 };
 
-/** Parse `wm density` output. Older builds print a bare number. */
+/**
+ * Parse `wm density` output. Current builds print labeled physical and
+ * optional override lines; older builds print the physical density as a
+ * bare number on its own line (morluto/rea#3942). A labeled declaration
+ * wins over a bare one so a mixed dump cannot downgrade the physical value.
+ */
 export const parseWmDensityOutput = (
   stdout: string,
 ): {
@@ -162,14 +168,17 @@ export const parseWmDensityOutput = (
 } => {
   let physical = null;
   let override = null;
+  let bare = null;
   for (const line of stdout.split(/\r?\n/u)) {
     const trimmed = line.trim();
     const physicalMatch = DENSITY_PHYSICAL.exec(trimmed);
     if (physicalMatch !== null) physical = Number(physicalMatch[1]!);
     const overrideMatch = DENSITY_OVERRIDE.exec(trimmed);
     if (overrideMatch !== null) override = Number(overrideMatch[1]!);
+    const bareMatch = DENSITY_BARE.exec(trimmed);
+    if (bareMatch !== null && bare === null) bare = Number(bareMatch[1]!);
   }
-  return { physical, override };
+  return { physical: physical ?? bare, override };
 };
 
 /** Parse focus declarations from `dumpsys window windows` or `displays`. */
@@ -193,7 +202,8 @@ export const parseWindowFocusOutput = (
 
 export interface AdbPackageDetails {
   readonly versionName: string | null;
-  readonly versionCode: number | null;
+  /** Signed 64-bit long version code exactly as Package Manager prints it. */
+  readonly versionCode: string | null;
   readonly firstInstallTime: string | null;
   readonly lastUpdateTime: string | null;
   readonly installerPackageName: string | null;
@@ -214,7 +224,7 @@ export const parseDumpsysPackageOutput = (
 ): AdbPackageDetails => {
   const details: {
     versionName: string | null;
-    versionCode: number | null;
+    versionCode: string | null;
     firstInstallTime: string | null;
     lastUpdateTime: string | null;
     installerPackageName: string | null;
@@ -252,8 +262,8 @@ export const parseDumpsysPackageOutput = (
     if (key === "versionName" && details.versionName === null)
       details.versionName = value === "" ? null : value;
     else if (key === "versionCode" && details.versionCode === null) {
-      const parsed = /^(\d+)/u.exec(value);
-      if (parsed !== null) details.versionCode = Number(parsed[1]!);
+      const parsed = /^(-?\d+)/u.exec(value);
+      if (parsed !== null) details.versionCode = parsed[1]!;
     } else if (key === "firstInstallTime" && details.firstInstallTime === null)
       details.firstInstallTime = value === "" ? null : value;
     else if (key === "lastUpdateTime" && details.lastUpdateTime === null)

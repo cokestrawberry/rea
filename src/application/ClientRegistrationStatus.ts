@@ -14,7 +14,13 @@ import { valid } from "semver";
 
 import { PRODUCT_IDENTITY } from "../identity.js";
 import { CURRENT_ENTRYPOINT_PATH } from "../process/CurrentEntrypointPath.js";
-import { MCP_STARTUP_POLICY } from "../mcpStartupPolicy.js";
+import {
+  MCP_STARTUP_POLICY,
+  mcpProviderDeadlineAllowanceMs,
+  recommendedMcpToolTimeoutMs,
+  recommendedMcpToolTimeoutSeconds,
+  type McpToolTimeoutInputs,
+} from "../mcpStartupPolicy.js";
 import {
   clientRegistrationPackageReference,
   classifyClientRegistrationCommand,
@@ -28,6 +34,8 @@ import {
 import type { SetupClient } from "./SupportedClients.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
 import { dshDocument } from "./DshCordisPatch.js";
+import { clientRegistrationEnvironmentDetails } from "./ClientRegistrationEnvironment.js";
+import type { ProviderRequestBudgetResolver } from "./ClientRegistrationEnvironment.js";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 
 interface ClientRegistrationStatusBase {
@@ -35,6 +43,8 @@ interface ClientRegistrationStatusBase {
   readonly config_path: string;
   /** Exact package reference requested by npx/bunx, when registration uses one. */
   readonly package_reference?: string;
+  /** Non-blocking timeout guidance; caller-selected values remain aligned. */
+  readonly advisory?: string;
 }
 
 type RegistrationCommand = readonly [string, ...string[]];
@@ -73,6 +83,7 @@ const registrationSchema = z
     command: z.string().min(1),
     args: z.array(z.string()).default([]),
     startup_timeout_sec: z.number().positive().optional(),
+    tool_timeout_sec: z.number().positive().optional(),
     startupTimeoutMs: z.number().positive().optional(),
     toolTimeoutMs: z.number().positive().optional(),
     type: z.string().optional(),
@@ -88,6 +99,7 @@ interface ClientRegistrationReadOptions {
   readonly platform?: NodeJS.Platform;
   readonly environment?: NodeJS.ProcessEnv;
   readonly resources?: ArtifactResourceScope;
+  readonly resolveProviderRequestBudget?: ProviderRequestBudgetResolver;
 }
 
 /** Registration facts shared by diagnostics and update maintenance. */
@@ -215,6 +227,28 @@ export const readClientRegistrationInspections = async (
             }
           : client;
       const registration = parseRegistration(raw, effectiveClient);
+      const registrationEnvironment =
+        client.name === "kimi" || client.name === "codex"
+          ? clientRegistrationEnvironmentDetails(
+              parsed,
+              {},
+              "effective",
+              options.resolveProviderRequestBudget,
+            )
+          : undefined;
+      if (
+        registrationEnvironment !== undefined &&
+        !registrationEnvironment.ok
+      ) {
+        record({
+          client: client.name,
+          config_path: configPath,
+          command: [],
+          state: "invalid",
+          remediation: registrationEnvironment.error.message,
+        });
+        continue;
+      }
       const command: RegistrationCommand = [
         registration.command,
         ...registration.args,
@@ -225,12 +259,22 @@ export const readClientRegistrationInspections = async (
       const packageVersionDrift =
         packageVersion !== undefined &&
         packageVersion !== PRODUCT_IDENTITY.packageVersion;
-      const alignment = registrationAligned(
+      const alignment = registrationAligned({
         registration,
-        effectiveClient,
+        client: effectiveClient,
         currentCommandPath,
-        options.platform ?? process.platform,
-      );
+        platform: options.platform ?? process.platform,
+        kimiInputSchemaProfileSelected:
+          registrationEnvironment?.ok === true &&
+          registrationEnvironment.value.values.REA_MCP_INPUT_SCHEMA_PROFILE !==
+            undefined,
+        kimiToolTimeoutMs:
+          registrationEnvironment?.ok === true
+            ? recommendedMcpToolTimeoutMs(
+                registrationEnvironment.value.timeoutInputs,
+              )
+            : undefined,
+      });
       record(
         configuredStatus(
           effectiveClient,
@@ -252,6 +296,13 @@ export const readClientRegistrationInspections = async (
                 ? unknownEntryPointRemediation()
                 : undefined),
           packageReference,
+          registrationEnvironment?.ok === true
+            ? timeoutAdvisory(
+                client,
+                registration,
+                registrationEnvironment.value.timeoutInputs,
+              )
+            : undefined,
         ),
         activation,
       );
@@ -284,12 +335,21 @@ const registrationActivation = (
     ? "disabled"
     : "enabled";
 
-const registrationAligned = (
-  registration: z.output<typeof registrationSchema>,
-  client: SetupClient,
-  currentCommandPath: string | undefined,
-  platform: NodeJS.Platform,
-): "aligned" | "stale" | "unknown" => {
+const registrationAligned = ({
+  registration,
+  client,
+  currentCommandPath,
+  platform,
+  kimiInputSchemaProfileSelected,
+  kimiToolTimeoutMs,
+}: {
+  readonly registration: z.output<typeof registrationSchema>;
+  readonly client: SetupClient;
+  readonly currentCommandPath: string | undefined;
+  readonly platform: NodeJS.Platform;
+  readonly kimiInputSchemaProfileSelected: boolean;
+  readonly kimiToolTimeoutMs: number | undefined;
+}): "aligned" | "stale" | "unknown" => {
   const command = [registration.command, ...registration.args];
   const identity = classifyClientRegistrationCommand(
     command,
@@ -303,13 +363,16 @@ const registrationAligned = (
       MCP_STARTUP_POLICY.codexStartupTimeoutSeconds
   )
     return "stale";
+  if (client.name === "codex" && registration.tool_timeout_sec === undefined)
+    return "stale";
   if (
     client.name === "kimi" &&
     (registration.startupTimeoutMs !==
       MCP_STARTUP_POLICY.kimiStartupTimeoutMs ||
-      registration.toolTimeoutMs !== MCP_STARTUP_POLICY.kimiToolTimeoutMs)
+      registration.toolTimeoutMs !== kimiToolTimeoutMs)
   )
     return "stale";
+  if (client.name === "kimi" && !kimiInputSchemaProfileSelected) return "stale";
   if (
     (client.format === "kimi" ||
       client.format === "omp" ||
@@ -435,6 +498,7 @@ const configuredStatus = (
   state: "aligned" | "stale" | "unknown",
   policyRemediation?: string,
   packageReference?: string,
+  advisory?: string,
 ): ClientRegistrationStatus =>
   state === "aligned"
     ? {
@@ -446,6 +510,7 @@ const configuredStatus = (
           : { package_reference: packageReference }),
         state,
         remediation: null,
+        ...(advisory === undefined ? {} : { advisory }),
       }
     : {
         client: client.name,
@@ -457,6 +522,19 @@ const configuredStatus = (
         state,
         remediation: policyRemediation ?? remediation(client),
       };
+
+const timeoutAdvisory = (
+  client: SetupClient,
+  registration: z.output<typeof registrationSchema>,
+  timeoutInputs: McpToolTimeoutInputs,
+): string | undefined => {
+  const toolTimeout =
+    client.name === "codex" ? registration.tool_timeout_sec : undefined;
+  if (toolTimeout === undefined) return undefined;
+  const providerAllowance = mcpProviderDeadlineAllowanceMs(timeoutInputs);
+  if (toolTimeout * 1000 >= providerAllowance) return undefined;
+  return `The configured tool_timeout_sec (${String(toolTimeout)} seconds) is shorter than REA's known provider allowance (${String(providerAllowance)} ms), so provider startup or an upstream request may exceed this client deadline. REA recommends tool_timeout_sec = ${String(recommendedMcpToolTimeoutSeconds(timeoutInputs))} seconds to cover that allowance plus ${String(MCP_STARTUP_POLICY.toolOperationHeadroomMs / 1000)} seconds of operation headroom; this additional headroom is a recommendation, not a guarantee for every analysis.`;
+};
 
 const exactRegisteredPackageVersion = (
   packageReference: string | undefined,

@@ -140,6 +140,39 @@ describe("server and catalog identity", () => {
     );
   });
 
+  it("binds output schema profile and canonical output contracts into identity", () => {
+    const full = createCatalogDigests();
+    const off = createCatalogDigests(
+      TOOL_CONTRACTS,
+      PROMPT_CONTRACTS,
+      undefined,
+      "off",
+    );
+    expect(off.tools_sha256).not.toBe(full.tools_sha256);
+    expect(off.combined_sha256).not.toBe(full.combined_sha256);
+    expect(off.prompts_sha256).toBe(full.prompts_sha256);
+
+    const changedOutput = TOOL_CONTRACTS.map((contract, index) =>
+      index === 0
+        ? {
+            ...contract,
+            outputSchema: z.strictObject({ profile_probe: z.literal(true) }),
+          }
+        : contract,
+    );
+    const changedFull = createCatalogDigests(changedOutput);
+    const changedOff = createCatalogDigests(
+      changedOutput,
+      PROMPT_CONTRACTS,
+      undefined,
+      "off",
+    );
+    expect(changedFull.tools_sha256).not.toBe(full.tools_sha256);
+    expect(changedOff.tools_sha256).not.toBe(off.tools_sha256);
+    expect(changedFull.combined_sha256).not.toBe(full.combined_sha256);
+    expect(changedOff.combined_sha256).not.toBe(off.combined_sha256);
+  });
+
   it("changes catalog identity when advertised input examples change", () => {
     const contract = TOOL_CONTRACTS.find((item) => item.examples.length > 0);
     if (contract === undefined) throw new Error("expected an input example");
@@ -376,7 +409,11 @@ describe("active-target availability over MCP", () => {
     const session = createTestBinarySession(
       availabilityProvider(["inspect_macho", "inspect_artifact"]),
     );
-    const server = createServer({ kind: "session", session });
+    // Availability does not depend on compiling every advertised output schema.
+    const server = createServer(
+      { kind: "session", session },
+      { environment: { REA_MCP_OUTPUT_SCHEMA_PROFILE: "off" } },
+    );
     const client = new Client({ name: "availability-test", version: "1" });
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();

@@ -10,8 +10,13 @@ import type { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 
-/** One artifact resource and its format-specific cleanup owner. */
+/** One artifact resource and the capability that owns its cleanup. */
 export type ArtifactResourceOwner =
+  | {
+      readonly kind: "lease";
+      readonly resource: string;
+      readonly lease: { release(): Promise<void> };
+    }
   | {
       readonly kind: "javascript-source-analysis";
       readonly resource: string;
@@ -61,6 +66,17 @@ export type ArtifactResourceOwner =
 export type ArtifactCleanupAttempt =
   | { readonly kind: "released" }
   | { readonly kind: "failed"; readonly cause: unknown };
+
+/** Retry failure carrying the exact retained owners that did not release. */
+export class ArtifactResourceRetryFailure extends ArtifactReaderFailure {
+  constructor(
+    readonly failedOwners: readonly ArtifactResourceOwner[],
+    message: string,
+    options: ConstructorParameters<typeof ArtifactReaderFailure>[2],
+  ) {
+    super("unavailable", message, options);
+  }
+}
 
 /** Caller-owned scope that retains failed artifact cleanup for a later close. */
 export class ArtifactResourceScope {
@@ -163,8 +179,8 @@ export class ArtifactResourceScope {
     const resources = [
       ...new Set(observations.flatMap(({ resources }) => resources)),
     ];
-    throw new ArtifactReaderFailure(
-      "unavailable",
+    throw new ArtifactResourceRetryFailure(
+      failures.map(({ owner }) => owner),
       `Artifact cleanup remains incomplete: ${resources.join(", ")}`,
       {
         cause: new AggregateError(
@@ -182,6 +198,9 @@ export class ArtifactResourceScope {
 
 const cleanup = async (owner: ArtifactResourceOwner): Promise<void> => {
   switch (owner.kind) {
+    case "lease":
+      await owner.lease.release();
+      return;
     case "javascript-source-analysis":
       await owner.analysis.close();
       return;

@@ -16,6 +16,7 @@ import {
 import { readTypeMemberListFacts } from "./ManagedTypeMemberLists.js";
 import {
   readManagedPeLayout,
+  type ManagedCliHeader,
   type ManagedPeLayout,
 } from "./ManagedPeReader.js";
 import {
@@ -36,8 +37,8 @@ import {
 type Inventory = ReturnType<typeof readManagedMetadataInventory>;
 
 /**
- * Report a PE whose CLI metadata is absent or cannot be admitted. `native`
- * holds the CLI header facts when the header itself was admitted; otherwise
+ * Report a PE whose CLI metadata is absent or cannot be admitted. `cli`
+ * holds the CLI header when the header itself was admitted; otherwise
  * the header is absent (`not-managed`) or unreadable (`malformed`).
  */
 const emptyInspection = (
@@ -45,10 +46,10 @@ const emptyInspection = (
   bytes: Buffer,
   classification: "not-managed" | "malformed",
   {
-    native = null,
+    cli = null,
     issues = [],
   }: {
-    readonly native?: ManagedNativeBoundaryInspection["cli_native"] | null;
+    readonly cli?: ManagedCliHeader | null;
     readonly issues?: readonly ManagedParseIssue[];
   } = {},
 ): ManagedNativeBoundaryInspection => {
@@ -75,11 +76,11 @@ const emptyInspection = (
         requires_artifact_sha256: target.sha256,
         requires_mvid: null,
       },
-      cli_native: native,
+      cli_native: cliNative(cli),
       module_refs: [],
       pinvoke_imports: [],
       native_implementations: [],
-      summary: nativeBoundarySummary(native, {
+      summary: nativeBoundarySummary(cli, {
         module_ref_count: 0,
         pinvoke_import_count: 0,
         native_implementation_count: 0,
@@ -144,7 +145,7 @@ export const inspectManagedNativeBoundariesBytes = (
   } catch (cause: unknown) {
     if (!(cause instanceof ManagedReaderFailure)) throw cause;
     return emptyInspection(target, bytes, "malformed", {
-      native: cliNative(pe),
+      cli: pe.cli,
       issues: [cause.issue],
     });
   }
@@ -182,13 +183,12 @@ export const inspectManagedNativeBoundariesBytes = (
       moduleRefs,
       imports,
       implementations,
-      native: cliNative(pe),
       issues,
     });
   } catch (cause: unknown) {
     if (!(cause instanceof ManagedReaderFailure)) throw cause;
     return emptyInspection(target, bytes, "malformed", {
-      native: cliNative(pe),
+      cli: pe.cli,
       issues: [...issues, cause.issue],
     });
   }

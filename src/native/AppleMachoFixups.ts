@@ -510,14 +510,17 @@ const chainedFixups = (
 
 const uleb = (bytes: Buffer, cursor: { at: number }, end: number): bigint => {
   let value = 0n;
-  let shift = 0n;
+  let shift = 0;
   for (;;) {
     if (cursor.at >= end) throw new RangeError("Truncated bind opcode operand");
     const byte = bytes[cursor.at++] ?? 0;
-    value |= BigInt(byte & 0x7f) << shift;
-    shift += 7n;
+    const slice = byte & 0x7f;
+    if ((shift === 63 && slice > 1) || (shift === 64 && slice !== 0))
+      throw new RangeError("Oversized bind opcode operand");
+    if (shift < 64) value |= BigInt(slice) << BigInt(shift);
+    // Padding may extend the encoding, but never the represented integer.
+    shift = Math.min(64, shift + 7);
     if ((byte & 0x80) === 0) return value;
-    if (shift > 63n) throw new RangeError("Oversized bind opcode operand");
   }
 };
 

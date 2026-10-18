@@ -915,16 +915,11 @@ export const dataEffectArgumentBindingId = (
     ? (resolveSemanticBindingState(state, node, node.name)?.bindingId ?? null)
     : null;
 
-/** Read one JSON primitive default without evaluating code. */
-export const dataEffectPrimitive = (
-  node: t.Node,
-): string | number | boolean | null => {
-  if (t.isStringLiteral(node) || t.isNumericLiteral(node)) return node.value;
-  if (t.isBooleanLiteral(node)) return node.value;
-  return null;
-};
-
-/** Read one static string or expression-free template. */
+/**
+ * Read one static string or expression-free template. A template recovered
+ * with an invalid escape has no cooked value; its raw spelling is not a
+ * JavaScript string, so it stays dynamic.
+ */
 export const dataEffectLiteralString = (
   node:
     | t.Expression
@@ -935,9 +930,8 @@ export const dataEffectLiteralString = (
 ): string | null => {
   if (node === undefined) return null;
   const literal = readExactJavaScriptLiteral(node);
-  if (literal.found && typeof literal.value === "string") return literal.value;
-  return t.isTemplateLiteral(node) && node.expressions.length === 0
-    ? (node.quasis[0]?.value.raw ?? null)
+  return literal.found && typeof literal.value === "string"
+    ? literal.value
     : null;
 };
 

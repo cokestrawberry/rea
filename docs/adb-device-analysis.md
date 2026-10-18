@@ -108,6 +108,13 @@ The `replaced` result is `null`: the successful install response does not say
 whether the package was installed fresh or replaced, and REA does not query the
 device first. The install verdict and host APK digest remain available.
 
+Push and install consume a private snapshot of the selected local input. The
+reported size and SHA-256 identify those consumed bytes; `local_path` and
+`apk_path` retain the original input path, whose contents may change later.
+Snapshot creation needs temporary disk space proportional to the input size.
+Failed snapshot cleanup remains owned and is retried before later operations
+and during shutdown.
+
 ## Interpret the result
 
 - **Directory names retain whitespace and newlines.** Symlink targets do too,
@@ -173,6 +180,9 @@ device first. The install verdict and host APK digest remain available.
   as a regular file before creating output. A file left by a failed or
   cancelled pull stays in place, and the error's partial observation gives its
   `local_path` and an unknown digest status.
+- Screen capture checks cancellation before publishing its exclusive output.
+  If cancellation arrives after publication, the error retains the committed
+  file's path, digest and dimensions; the file remains available as evidence.
 - Bugreports collect into isolated staging and publish with exclusive creation;
   filename collisions select the next numeric suffix. If publication fails, the
   completed archive remains in staging. The error's partial observation gives

@@ -1,5 +1,6 @@
 import type { DoctorReport, DoctorScope, runDoctor } from "./Doctor.js";
 import type { LinuxDistribution } from "./LinuxHopper.js";
+import type { HopperReleaseError } from "./HopperReleaseFeed.js";
 import type {
   SkillDestination,
   SkillInstallResult,
@@ -20,6 +21,8 @@ export interface SetupInitialState {
   readonly hopperPath?: string;
   /** Whether the caller explicitly selected a Hopper launcher in its environment. */
   readonly hopperLauncherConfigured?: boolean;
+  /** Whether the caller or host has an analysis provider configuration. */
+  readonly providerConfigured: boolean;
   readonly providerEnvironment: SetupProviderEnvironment;
   readonly doctor: DoctorReport;
 }
@@ -65,6 +68,7 @@ export type ClientConfigurationInspection =
 export interface SetupHost {
   readonly platform: NodeJS.Platform;
   readonly homeDirectory: string;
+  readonly linuxHopperReleaseCache?: Result<string, HopperReleaseError>;
   skillDestinations(clientIds: readonly string[]): readonly SkillDestination[];
   readonly registrationCommand: readonly string[];
   /** Why client registration cannot proceed from this host. */
