@@ -35,6 +35,7 @@ export const registerFirmwareCommands = (
           service,
           "firmware",
           operation,
+          signal,
         ),
       ),
     );

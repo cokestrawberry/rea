@@ -1,8 +1,5 @@
 import type { AnalysisError } from "../../../src/domain/analysisErrorBase.js";
-import type {
-  RecordedCrash,
-  RecordedCrashArchitecture,
-} from "../../../src/domain/native/recordedCrash.js";
+import type { RecordedCrash } from "../../../src/domain/native/recordedCrash.js";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -26,7 +23,7 @@ import {
 } from "../../fixtures/providerProcess.js";
 import {
   recordedCrashFixture,
-  addRecordedCrashProcessInfo,
+  recordedCrashFileMappingFixture,
   recordedCrashDebuggerFixture,
   recordedCrashFixtureBytes,
   recordedCrashSignalFixture,
@@ -133,11 +130,22 @@ it
     const architecture = scenario.endsWith("aarch64")
       ? "aarch64-little-endian"
       : "x86_64-little-endian";
-    const { path, value, bytes } = await fixture(
-      true,
-      scenario === "wrong-owner-display",
-      architecture,
-    );
+    const { path, value, bytes } = await fixture((path) => {
+      const value = recordedCrashSignalFixture(path, architecture);
+      if (scenario === "wrong-owner-display") {
+        value.notes = value.notes.map((note) =>
+          note.index === 0
+            ? {
+                ...note,
+                owner_bytes_base64: Buffer.from("EVIL\0").toString("base64"),
+                owner_display: "EVIL",
+              }
+            : note,
+        );
+        value.threads = [];
+      }
+      return value;
+    });
     if (scenario.startsWith("wrong-ei-version-"))
       bytes[6] = Number(scenario.at(-1));
     if (scenario.startsWith("wrong-e-version-"))
@@ -202,10 +210,8 @@ it
   .runIf(host)
   .each([
     "unconfigured",
+    "unsafe-mapping",
     "success",
-    "unrecorded-pid",
-    "missing-prpsinfo",
-    "leader-not-a-thread",
     "process-failure",
     "invalid-context",
     "cancelled",
@@ -217,14 +223,13 @@ it
   "owns optional context from the same snapshot: %s",
   async (scenario) => {
     const { path, value, bytes, root } = await fixture(
-      false,
-      false,
-      "x86_64-little-endian",
-      scenario === "missing-prpsinfo"
-        ? undefined
-        : scenario === "leader-not-a-thread"
-          ? 456
-          : 123,
+      scenario === "unsafe-mapping"
+        ? (path) =>
+            recordedCrashFileMappingFixture(
+              [Buffer.from("../../outside-owned-root")],
+              path,
+            )
+        : recordedCrashFixture,
     );
     const controller = new AbortController();
     let owned = "";
@@ -282,8 +287,6 @@ it
         }
         expect(request.snapshot_path).toBe(snapshotPath);
         const context = recordedCrashDebuggerFixture();
-        if (scenario === "unrecorded-pid") context.historical_pid = 1;
-        if (scenario === "leader-not-a-thread") context.historical_pid = 456;
         if (scenario === "invalid-context")
           context.maps = context.maps.map((map) => ({ ...map, end: "0x0" }));
         await writeFile(
@@ -316,19 +319,28 @@ it
       },
       { signal: controller.signal },
     );
-    expectOptionalContextResult(scenario, result);
-    if (!result.ok)
-      expectRetainedPartialObservation(scenario, result.error, value);
-    if (scenario === "cancelled-exec-foreign")
-      await expectForeignDebuggerPreserved(debuggerProcess);
-    if (scenario === "cancelled" || scenario === "cancelled-exec") {
-      if (debuggerProcess === undefined)
-        throw new Error("Expected an owned debugger process");
-      expect(
-        debuggerProcess.exitCode !== null ||
-          debuggerProcess.signalCode !== null,
-      ).toBe(true);
+    if (scenario === "success") {
+      if (!result.ok) throw result.error;
+      expect(result.value.debugger).toMatchObject({
+        status: "available",
+        maps: [{ permissions: null }],
+        diagnostics: { stdout: "debugger stage diagnostic" },
+      });
+    } else {
+      if (result.ok) throw new Error("Expected optional debugger failure");
+      expectOptionalContextFailure(scenario, result.error, value);
+      if (scenario === "unsafe-mapping") {
+        expect(launches).toBe(1);
+        await expect(access(owned)).rejects.toMatchObject({ code: "ENOENT" });
+        snapshotPath = "";
+        await expectBasicCoreFallback(provider, path, value.notes);
+        expect(launches).toBe(2);
+      }
+      if (scenario === "cancelled-exec-foreign")
+        await expectForeignDebuggerPreserved(debuggerProcess);
     }
+    if (scenario === "cancelled" || scenario === "cancelled-exec")
+      expectDebuggerStopped(debuggerProcess);
     expect(await readFile(path)).toEqual(bytes);
     if (
       scenario === "cleanup-failure" ||
@@ -361,66 +373,45 @@ it
   },
 );
 
-const expectOptionalContextResult = (
-  scenario: string,
-  result: Awaited<ReturnType<PwntoolsRecordedCrashProvider["inspect"]>>,
-) => {
-  if (
-    [
-      "success",
-      "unrecorded-pid",
-      "missing-prpsinfo",
-      "leader-not-a-thread",
-    ].includes(scenario)
-  ) {
-    if (!result.ok) throw result.error;
-    expect(result.value.debugger).toMatchObject({
-      status: "available",
-      historical_pid:
-        scenario === "success"
-          ? 123
-          : scenario === "leader-not-a-thread"
-            ? 456
-            : null,
-      maps: [{ permissions: null }],
-      diagnostics: { stdout: "debugger stage diagnostic" },
-    });
-  } else {
-    if (result.ok) throw new Error("Expected optional debugger failure");
-    expectOptionalContextFailure(scenario, result.error);
-  }
+const expectDebuggerStopped = (
+  child: SpawnedOwnedProviderProcess["process"] | undefined,
+): void => {
+  if (child === undefined)
+    throw new Error("Expected an owned debugger process");
+  expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
 };
 
-const expectRetainedPartialObservation = (
-  scenario: string,
-  error: AnalysisError,
-  value: RecordedCrash,
+const expectBasicCoreFallback = async (
+  provider: PwntoolsRecordedCrashProvider,
+  path: string,
+  notes: RecordedCrash["notes"],
 ) => {
-  if (
-    scenario === "invalid-context" ||
-    scenario.startsWith("cancelled") ||
-    scenario === "cleanup-failure"
-  )
-    expect(error.partialObservation).toMatchObject({
-      artifact: {
-        ...value.artifact,
-        sha256: createHash("sha256")
-          .update(recordedCrashFixtureBytes(value))
-          .digest("hex"),
-      },
-      threads: value.threads,
-      notes: value.notes,
-    });
+  const basic = await provider.inspect({
+    path,
+    include_debugger_context: false,
+  });
+  if (!basic.ok) throw basic.error;
+  expect(basic.value.notes).toEqual(notes);
+  expect(basic.value.debugger).toEqual({ status: "not-requested" });
 };
 
 const expectOptionalContextFailure = (
   scenario: string,
   error: AnalysisError,
+  value: RecordedCrash,
 ) => {
   const projected = projectAnalysisError(error);
+  if (scenario === "unsafe-mapping")
+    expect(error).toMatchObject({
+      _tag: "AnalysisCapabilityUnavailableError",
+      partialObservation: {
+        notes: value.notes,
+        debugger: { status: "unavailable", requested: true },
+      },
+    });
   if (scenario === "cancelled-exec-foreign")
     expect(projected.code).toBe("cleanup_incomplete");
-  if (scenario === "unconfigured")
+  if (scenario === "unconfigured" || scenario === "unsafe-mapping")
     expect(projected).toMatchObject({
       details: { captured_output: { stdout: "basic stage diagnostic" } },
     });
@@ -441,6 +432,16 @@ const expectOptionalContextFailure = (
     expect(serialized).toContain(
       scenario.startsWith("cancelled") ? "ready" : "debugger stage diagnostic",
     );
+    expect(error.partialObservation).toMatchObject({
+      artifact: {
+        ...value.artifact,
+        sha256: createHash("sha256")
+          .update(recordedCrashFixtureBytes(value))
+          .digest("hex"),
+      },
+      threads: value.threads,
+      notes: value.notes,
+    });
     expect(error._tag).toBe(
       scenario === "invalid-context"
         ? "AnalysisOutputError"
@@ -473,30 +474,12 @@ const expectOptionalContextFailure = (
 };
 
 const fixture = async (
-  includeSignal = false,
-  opaqueOwner = false,
-  architecture: RecordedCrashArchitecture = "x86_64-little-endian",
-  processPid?: number,
+  createReport: (path: string) => RecordedCrash = recordedCrashFixture,
 ) => {
   const workspace = await createTestWorkspace("rea-recorded-core-seam-");
   onTestFinished(() => removeTestWorkspace(workspace.root));
   const path = join(workspace.root, "recorded.core");
-  const value = includeSignal
-    ? recordedCrashSignalFixture(path, architecture)
-    : recordedCrashFixture(path, architecture);
-  if (processPid !== undefined) addRecordedCrashProcessInfo(value, processPid);
-  if (opaqueOwner) {
-    value.notes = value.notes.map((note) =>
-      note.index === 0
-        ? {
-            ...note,
-            owner_bytes_base64: Buffer.from("EVIL\0").toString("base64"),
-            owner_display: "EVIL",
-          }
-        : note,
-    );
-    value.threads = [];
-  }
+  const value = createReport(path);
   const bytes = recordedCrashFixtureBytes(value);
   await writeFile(path, bytes);
   return { path, value, bytes, root: workspace.root };

@@ -581,7 +581,7 @@ export class PcapProvider {
     const info = await this.run(
       "inspect_pcap_capture",
       selection.capinfos.command,
-      ["-M", "--", snapshot.path],
+      ["-M", "-S", "--", snapshot.path],
       { timeoutMs: 60_000, maxOutputBytes: 64 * 1024 },
       signal,
       snapshot,

@@ -5,28 +5,15 @@ import {
   type NativeLoadImageCheck,
   type NativeLoadImageObservation,
 } from "../domain/native/nativeLoadImage.js";
-import {
-  observeMzWindowsHeader,
-  parseDosMzHeader,
-  type DosMzHeader,
-} from "../domain/dosMz.js";
+import { parseDosMzHeader, type DosMzHeader } from "../domain/dosMz.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import { validateDosComLength } from "../domain/dosCom.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { ghidraRawBinaryLanguage } from "./GhidraRawBinaryLanguage.js";
-import type { GhidraSnapshotReader } from "./GhidraSnapshotReader.js";
 
 const sha256 = (bytes: Buffer): string =>
   createHash("sha256").update(bytes).digest("hex");
-const sha256Stream = async (
-  rest: AsyncIterable<Buffer>,
-  prefix: Buffer = Buffer.alloc(0),
-): Promise<string> => {
-  const hash = createHash("sha256").update(prefix);
-  for await (const chunk of rest) hash.update(chunk);
-  return hash.digest("hex");
-};
 const address = (offset: number): string => `0x${offset.toString(16)}`;
 const limitations = [
   "Verification covers original/modified FileBytes, every initialized target-backed header/module mapping, relocation records and the external entry point. Mapping ends are inclusive.",
@@ -35,45 +22,27 @@ const limitations = [
   "A mismatching memory digest identifies the reported source range; it does not locate the first differing byte inside that range.",
 ];
 
-// The relocation table and new-header pointer lie within the declared header,
-// so parsing reads that prefix, the file size and one pointed-to signature.
-const readDosMzHeader = async (
-  snapshot: GhidraSnapshotReader,
-): Promise<Result<DosMzHeader, string>> => {
-  const probe = await snapshot.read(0, Math.min(snapshot.size, 64));
-  const headerBytes = probe.length >= 10 ? probe.readUInt16LE(8) * 16 : 0;
-  const prefix =
-    headerBytes > probe.length
-      ? await snapshot.read(0, Math.min(snapshot.size, headerBytes))
-      : probe;
-  const windowsHeader = observeMzWindowsHeader(prefix, snapshot.size);
-  const signature =
-    windowsHeader.state === "signature-needed"
-      ? await snapshot.read(
-          windowsHeader.offset,
-          Math.min(windowsHeader.offset + 4, snapshot.size),
-        )
-      : undefined;
-  return parseDosMzHeader(prefix, snapshot.size, signature);
+export type GhidraDosImage = {
+  readonly header: DosMzHeader;
+  readonly loadSegment: number;
+  readonly modified: Buffer;
+  readonly expectedRelocations: NativeLoadImageObservation["relocations"];
 };
 
-/** Verify measured MZ import state against the session's immutable snapshot. */
-export const attestGhidraDosLoadImage = async (
-  snapshot: GhidraSnapshotReader,
-  targetSha256: string,
-  observations: NativeLoadImageObservation,
-): Promise<Result<NativeLoadImage, string>> => {
-  if ((await sha256Stream(snapshot.stream(0))) !== targetSha256)
-    return err(
-      "Ghidra load-image snapshot digest does not match the admitted target",
-    );
-  const parsed = await readDosMzHeader(snapshot);
+/** Prepare initialized bytes and relocation facts without copying overlays. */
+export const prepareGhidraDosLoadImage = (
+  bytes: Buffer,
+  fileBytes: number,
+  signatureAtOffset?: Buffer,
+): Result<GhidraDosImage, string> => {
+  const parsed = parseDosMzHeader(bytes, fileBytes, signatureAtOffset);
   if (!parsed.ok) return parsed;
   const header = parsed.value;
+  if (header.imageBytes > bytes.length)
+    return err("DOS MZ initialized image was not completely captured");
   const loadSegment = 0x1000;
-  const bytes = await snapshot.read(0, header.imageBytes);
-  const modified = Buffer.from(bytes);
-  const expectedRelocations = [];
+  const modified = Buffer.from(bytes.subarray(0, header.imageBytes));
+  const applied = [];
   for (let index = 0; index < header.relocationCount; index += 1) {
     const table = header.relocationTableOffset + index * 4;
     const offset = bytes.readUInt16LE(table);
@@ -85,7 +54,12 @@ export const attestGhidraDosLoadImage = async (
     const relocated =
       (modified.readUInt16LE(fileOffset) + loadSegment) & 0xffff;
     modified.writeUInt16LE(relocated, fileOffset);
-    expectedRelocations.push({
+    applied.push({ segment, offset, fileOffset, original, relocated });
+  }
+  // Application records describe their own fixup; the bridge reads memory
+  // once all fixups have completed, including later overlapping writes.
+  const expectedRelocations = applied.map(
+    ({ segment, offset, fileOffset, original, relocated }) => ({
       address: address(loadSegment * 16 + segment * 16 + offset),
       segment: (loadSegment + segment) & 0xffff,
       offset,
@@ -96,8 +70,29 @@ export const attestGhidraDosLoadImage = async (
       memory_bytes_hex: modified
         .subarray(fileOffset, fileOffset + 2)
         .toString("hex"),
-    });
-  }
+    }),
+  );
+  return ok({ header, loadSegment, modified, expectedRelocations });
+};
+
+export type GhidraDosLoadImageSource = {
+  readonly sha256: string;
+  readonly fileBytes: number;
+  readonly modifiedSha256: string;
+  readonly image: GhidraDosImage;
+};
+
+/** Verify measured MZ import state against complete identity and prepared image facts. */
+export const attestGhidraDosLoadImage = (
+  source: GhidraDosLoadImageSource,
+  targetSha256: string,
+  observations: NativeLoadImageObservation,
+): Result<NativeLoadImage, string> => {
+  if (source.sha256 !== targetSha256)
+    return err(
+      "Ghidra load-image snapshot digest does not match the admitted target",
+    );
+  const { header, loadSegment, modified, expectedRelocations } = source.image;
   const checks: NativeLoadImageCheck[] = [];
   const check = (
     name: string,
@@ -125,14 +120,17 @@ export const attestGhidraDosLoadImage = async (
   check("image_base", "0x0", observations.image_base);
   check("default_address_space", "ram", observations.default_address_space);
   check("source_file_count", 1, observations.source_files.length);
-  const source = observations.source_files[0];
-  check("source_file_size", snapshot.size, source?.size ?? null);
-  check("original_file_sha256", targetSha256, source?.original_sha256 ?? null);
-  // Relocations only change the load module, so the overlay is hashed as stored.
+  const observedSource = observations.source_files[0];
+  check("source_file_size", source.fileBytes, observedSource?.size ?? null);
+  check(
+    "original_file_sha256",
+    targetSha256,
+    observedSource?.original_sha256 ?? null,
+  );
   check(
     "modified_file_sha256",
-    await sha256Stream(snapshot.stream(header.imageBytes), modified),
-    source?.modified_sha256 ?? null,
+    source.modifiedSha256,
+    observedSource?.modified_sha256 ?? null,
   );
   const entryAddress = address(
     ((loadSegment + header.entrySegment) & 0xffff) * 16 + header.entryOffset,
@@ -161,7 +159,7 @@ export const attestGhidraDosLoadImage = async (
     rows(observations.relocations),
   );
 
-  checkMappings(header, loadSegment * 16, bytes, modified, observations, check);
+  checkMappings(header, loadSegment * 16, modified, observations, check);
   return ok(
     nativeLoadImageSchema.parse({
       status: checks.every((item) => item.matched) ? "verified" : "mismatch",
@@ -186,7 +184,6 @@ export const attestGhidraDosLoadImage = async (
 const checkMappings = (
   header: Pick<DosMzHeader, "headerBytes" | "imageBytes">,
   loadBase: number,
-  bytes: Buffer,
   modified: Buffer,
   observations: NativeLoadImageObservation,
   check: (
@@ -264,7 +261,7 @@ const checkMappings = (
     check(`${at}.end`, expectedEnd, mapping.end, start, mapping.end);
     check(
       `${at}.memory_sha256`,
-      start !== null && end !== null && end <= bytes.length
+      start !== null && end !== null && end <= modified.length
         ? sha256(modified.subarray(start, end))
         : null,
       mapping.sha256,
@@ -338,7 +335,6 @@ export const attestGhidraDosComLoadImage = (
   checkMappings(
     { headerBytes: 0, imageBytes: bytes.length },
     0x10100,
-    bytes,
     bytes,
     observations,
     check,

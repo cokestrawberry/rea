@@ -1,7 +1,7 @@
 <div align="center">
 
 [English](../../README.md) · [简体中文](README_zh.md) · [繁體中文](README_zh-TW.md) · [日本語](README_ja.md) · **한국어** · [Türkçe](README_tr.md) · [Русский](README_ru.md) · [Tiếng Việt](README_vi.md) · [ไทย](README_th.md) · [Deutsch](README_de.md) · [Español](README_es.md) · [Français](README_fr.md) · [Українська](README_uk.md) · [Polski](README_pl.md) · [Português (Brasil)](README_pt-BR.md) · [العربية](README_ar.md) · [فارسی](README_fa.md) · [Bahasa Indonesia](README_id.md) · [Italiano](README_it.md)
-· [Ελληνικά](README_el.md)
+· [Ελληνικά](README_el.md) · [മലയാളം](README_ml.md)
 
 # REA: 무엇이든 리버스 엔지니어링
 
@@ -283,7 +283,7 @@ npx rea-agents@latest setup
 
 ## 스타 기록
 
-🎉 **GitHub 스타 250,000개, 감사합니다!**
+🎉 **GitHub 스타 300,000개, 감사합니다!**
 
 REA를 사용하고, 버그를 보고하고, 기능을 요청하고, 빌드를 테스트하고, 수정에 기여해 주신 모든 분께 감사드립니다.
 
@@ -308,6 +308,10 @@ REA는 법을 준수하는 연구, 교육, 상호운용성 확보, 소프트웨�
 REA에 도움을 보태 주세요! [issue를 등록](https://github.com/morluto/rea/issues)해 버그나 기능을 제안하거나, [pull request를 보내](https://github.com/morluto/rea/pulls) 코드와 문서를 개선할 수 있습니다.
 
 개발 환경과 검사 항목은 [CONTRIBUTING.md](../../CONTRIBUTING.md), 검증 절차는 [테스트 가이드](../testing.md), 프로젝트 구조는 [아키텍처 지도](../architecture.mermaid)를 참고하세요.
+
+한국어 번역도 개선할 수 있습니다. 이 README를 수정할 때는 [영문 README](../../README.md)의 명령어, 요구 사항, 분석 범위와 일치하는지 확인하세요. 웹사이트 번역은 `website/locales/ko/messages.po`의 `msgstr` 값을 수정하세요.
+
+웹사이트 번역의 수정 방법, 검사 명령, 로컬 미리보기는 `website/locales/README.md`를 따르세요. 위 기여 문서의 **Translation corrections** 절에서 이 가이드로 이동할 수 있습니다. 명령어, 경로, 자리표시자, 기록된 근거는 그대로 보존하세요. `website/_site/`의 한국어 HTML은 자동 생성되므로 직접 수정하지 마세요.
 
 ## 라이선스
 

@@ -66,6 +66,7 @@ export const registerWebModuleCommands = (
             service,
             "rea-web-module-trace",
             "trace_web_module_imports",
+            signal,
           ),
         ),
       ),

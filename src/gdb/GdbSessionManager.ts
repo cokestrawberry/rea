@@ -1309,14 +1309,15 @@ export class GdbSessionManager {
               );
             if (!session.inferiorTtyVerified)
               return err(
-                new AnalysisInputError("close_gdb_session", undefined, [
+                new AnalysisCapabilityUnavailableError(
+                  GDB_PROVIDER_IDENTITY.id,
+                  "close_gdb_session",
+                  "Live GDB inferiors require an explicit disposition because no durable inferior TTY is verified.",
                   {
-                    path: ["session_id"],
-                    reason: "invalid_value",
-                    message:
+                    remediationAction:
                       "GDB inferior TTY verification was revoked. Thread-group reports cannot confirm target state; REA retains the debugger and its output streams.",
                   },
-                ]),
+                ),
               );
             if (groupCount === 0) {
               session.noInferiorVerified = true;

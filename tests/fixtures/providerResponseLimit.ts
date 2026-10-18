@@ -1,8 +1,9 @@
 import { vi } from "vitest";
 
-export const runtime = vi.hoisted(() => ({
+const runtime = vi.hoisted(() => ({
   limit: undefined as number | undefined,
 }));
+export { runtime };
 vi.mock("node:buffer", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:buffer")>();
   return {
